@@ -1,7 +1,7 @@
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader, Cursor, Read, Write};
+use std::io::{self, BufRead, BufReader, Cursor, Read, Seek, SeekFrom, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
@@ -63,6 +63,7 @@ struct PortConfig {
 struct RequestHeaders {
     content_length: usize,
     accept: String,
+    range: String,
     if_none_match: String,
     fetch_dest: String,
     connection: String,
@@ -965,6 +966,16 @@ fn handle_connection_with_auth(
         );
     }
     if asset_mode {
+        if has_extension(&canonical, "mp4") {
+            return send_ranged_file(
+                &mut stream,
+                &canonical,
+                metadata.len(),
+                mime_type(&canonical),
+                &headers.range,
+                head_only,
+            );
+        }
         return send_file(
             &mut stream,
             &canonical,
@@ -1039,6 +1050,15 @@ fn handle_connection_with_auth(
         return send_file_page(&mut stream, &body, &relative, head_only);
     }
 
+    if has_extension(&canonical, "mp4") && request_wants_html(&headers) {
+        let title = canonical
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("Video");
+        let body = render_video_page(title, metadata.len());
+        return send_file_page(&mut stream, &body, &relative, head_only);
+    }
+
     if has_extension(&canonical, "drawio") && request_wants_html(&headers) {
         if metadata.len() > MAX_DRAWIO_VIEWER_FILE {
             return send_text(
@@ -1092,13 +1112,24 @@ fn handle_connection_with_auth(
         }
     }
 
-    send_file(
-        &mut stream,
-        &canonical,
-        metadata.len(),
-        mime_type(&canonical),
-        head_only,
-    )
+    if has_extension(&canonical, "mp4") {
+        send_ranged_file(
+            &mut stream,
+            &canonical,
+            metadata.len(),
+            mime_type(&canonical),
+            &headers.range,
+            head_only,
+        )
+    } else {
+        send_file(
+            &mut stream,
+            &canonical,
+            metadata.len(),
+            mime_type(&canonical),
+            head_only,
+        )
+    }
 }
 
 fn handle_raw_request(
@@ -1184,6 +1215,71 @@ fn send_file(
         io::copy(&mut file, stream)?;
     }
     Ok(())
+}
+
+fn send_ranged_file(
+    stream: &mut TcpStream,
+    path: &Path,
+    length: u64,
+    content_type: &str,
+    range: &str,
+    head_only: bool,
+) -> io::Result<()> {
+    if range.is_empty() {
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {length}\r\nContent-Type: {content_type}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n"
+        )?;
+        if !head_only {
+            let mut file = File::open(path)?;
+            io::copy(&mut file, stream)?;
+        }
+        return Ok(());
+    }
+
+    let Some((start, end)) = parse_byte_range(range, length) else {
+        return write!(
+            stream,
+            "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{length}\r\nContent-Length: 0\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n"
+        );
+    };
+    let response_length = end - start + 1;
+    write!(
+        stream,
+        "HTTP/1.1 206 Partial Content\r\nContent-Length: {response_length}\r\nContent-Type: {content_type}\r\nContent-Range: bytes {start}-{end}/{length}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n"
+    )?;
+    if !head_only {
+        let mut file = File::open(path)?;
+        file.seek(SeekFrom::Start(start))?;
+        io::copy(&mut file.take(response_length), stream)?;
+    }
+    Ok(())
+}
+
+fn parse_byte_range(value: &str, length: u64) -> Option<(u64, u64)> {
+    let range = value.strip_prefix("bytes=")?;
+    if length == 0 || range.contains(',') {
+        return None;
+    }
+    let (start, end) = range.split_once('-')?;
+    if start.is_empty() {
+        let suffix = end.parse::<u64>().ok()?;
+        if suffix == 0 {
+            return None;
+        }
+        let suffix = suffix.min(length);
+        return Some((length - suffix, length - 1));
+    }
+    let start = start.parse::<u64>().ok()?;
+    if start >= length {
+        return None;
+    }
+    let end = if end.is_empty() {
+        length - 1
+    } else {
+        end.parse::<u64>().ok()?.min(length - 1)
+    };
+    (start <= end).then_some((start, end))
 }
 
 fn send_image_headers(
@@ -1275,6 +1371,8 @@ fn read_request_headers<R: BufRead>(reader: &mut R) -> io::Result<RequestHeaders
                 headers.if_none_match = value.trim().to_owned();
             } else if name.eq_ignore_ascii_case("accept") {
                 headers.accept = value.trim().to_ascii_lowercase();
+            } else if name.eq_ignore_ascii_case("range") {
+                headers.range = value.trim().to_ascii_lowercase();
             } else if name.eq_ignore_ascii_case("sec-fetch-dest") {
                 headers.fetch_dest = value.trim().to_ascii_lowercase();
             } else if name.eq_ignore_ascii_case("connection") {
@@ -1889,6 +1987,7 @@ fn render_directory_page_at(
             (file_kind(&entry.path).to_string(), human_size(entry.size))
         };
         let is_image = !entry.is_dir && is_image_file(&entry.path);
+        let is_video = !entry.is_dir && has_extension(&entry.path, "mp4");
         let thumb = (!entry.is_dir)
             .then(|| {
                 thumbnail_url(
@@ -1911,13 +2010,22 @@ fn render_directory_page_at(
                 )
             })
             .flatten();
-        let class = match (entry.is_dir, is_image, has_extension(&entry.path, "svg")) {
-            (true, _, _) => "folder",
-            (false, true, true) => "file image vector",
-            (false, true, false) => "file image",
-            (false, false, _) => "file",
+        let class = match (
+            entry.is_dir,
+            is_image,
+            is_video,
+            has_extension(&entry.path, "svg"),
+        ) {
+            (true, _, _, _) => "folder",
+            (false, true, _, true) => "file image vector",
+            (false, true, _, false) => "file image",
+            (false, false, true, _) => "file video",
+            (false, false, false, _) => "file",
         };
-        let glyph = match (&thumb, &gallery_thumb) {
+        let glyph = if is_video {
+            "<span class=\"glyph\" aria-hidden=\"true\"><svg viewBox=\"0 0 24 18\"><rect x=\"1\" y=\"1\" width=\"22\" height=\"16\" rx=\"3\"></rect><path d=\"m10 5.5 6 3.5-6 3.5Z\"></path></svg></span>".to_string()
+        } else {
+            match (&thumb, &gallery_thumb) {
             (Some(src), Some(gallery_src)) => format!(
                 "<span class=\"glyph\" aria-hidden=\"true\"><img data-list-src=\"{src}\" data-gallery-src=\"{gallery_src}\" alt=\"\" decoding=\"async\" draggable=\"false\" onerror=\"this.hidden=true;this.closest('.glyph').classList.add('thumbnail-error')\"></span>"
             ),
@@ -1925,6 +2033,7 @@ fn render_directory_page_at(
                 "<span class=\"glyph\" aria-hidden=\"true\"><img data-list-src=\"{src}\" alt=\"\" decoding=\"async\" draggable=\"false\" onerror=\"this.hidden=true;this.closest('.glyph').classList.add('thumbnail-error')\"></span>"
             ),
             (None, _) => "<span class=\"glyph\" aria-hidden=\"true\"></span>".to_string(),
+            }
         };
         let glyph = if is_image {
             let favourite_hidden = if entry.favourite { "" } else { " hidden" };
@@ -2261,6 +2370,7 @@ fn file_kind(path: &Path) -> &'static str {
         "c" | "h" | "cc" | "cpp" | "cxx" | "hpp" | "hxx" => "C/C++",
         "lisp" | "lsp" | "cl" | "el" | "scm" | "ss" | "rkt" => "LISP",
         "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" => "IMAGE",
+        "mp4" => "VIDEO",
         "drawio" => "DRAWIO",
         "pdf" => "PDF",
         "txt" => "TEXT",
@@ -2605,6 +2715,34 @@ fn render_image_page(title: &str, kind: &str, size: u64) -> String {
     let kind = escape_html(kind);
     format!(
         "<!doctype html>\n<html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\"><title>{title}</title><style>{SVG_CSS}</style></head><body><header><button class=\"back\" id=\"history-back\" type=\"button\" aria-label=\"返回上一页\">←</button><span class=\"kind\">{kind}</span><span class=\"filename\">{title}</span><span class=\"meta\">{size}</span><button id=\"scale\" type=\"button\">原始尺寸</button><a class=\"raw\" href=\"?mode=asset\">原图</a></header><main class=\"canvas\"><img id=\"artwork\" src=\"?mode=asset\" alt=\"{title}\"><p id=\"error\" hidden>无法渲染这张图片</p></main><script>{SVG_JS}</script></body></html>",
+        size = human_size(size)
+    )
+}
+
+const VIDEO_CSS: &str = r#"
+:root { color-scheme:dark; --paper:#0b0d12; --surface:#141821; --ink:#f1f3f8; --muted:#9ba3b2; --line:#2b3240; --accent:#a9a5ff; --accent-soft:#292943; --file-header-padding:max(1rem,calc((100vw - 1500px)/2)); }
+* { box-sizing:border-box; }
+html,body { width:100%; min-height:100%; }
+body { margin:0; color:var(--ink); background:var(--paper); font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans-serif; }
+header { position:sticky; top:0; z-index:3; display:flex; align-items:center; gap:.65rem; min-height:3.6rem; padding:.7rem var(--file-header-padding); border-bottom:1px solid var(--line); background:rgba(11,13,18,.9); backdrop-filter:blur(16px); }
+.back { display:grid; place-items:center; width:2rem; height:2rem; border:0; border-radius:.5rem; color:var(--muted); background:transparent; font:inherit; cursor:pointer; }
+.back:hover { color:var(--accent); background:var(--accent-soft); }
+.kind { flex:0 0 auto; padding:.28rem .5rem; border-radius:.35rem; color:#11131b; background:var(--accent); font:750 .62rem/1 ui-monospace,SFMono-Regular,Consolas,monospace; letter-spacing:.05em; }
+.filename { min-width:0; overflow:hidden; font:650 .82rem/1.2 ui-monospace,SFMono-Regular,Consolas,monospace; text-overflow:ellipsis; white-space:nowrap; }
+.meta { margin-left:auto; color:var(--muted); font:500 .7rem/1 ui-monospace,SFMono-Regular,Consolas,monospace; white-space:nowrap; }
+.download { flex:0 0 auto; padding:.6rem .75rem; border:1px solid var(--line); border-radius:.5rem; color:var(--ink); font:650 .72rem/1 ui-sans-serif,sans-serif; text-decoration:none; }
+.download:hover { border-color:var(--accent); color:var(--accent); background:var(--accent-soft); }
+main { min-height:calc(100vh - 6rem); min-height:calc(100dvh - 6rem); display:grid; place-items:center; padding:1.2rem; }
+.player { position:relative; display:grid; place-items:center; width:min(100%,1500px); min-height:min(76vh,52rem); overflow:hidden; border:1px solid var(--line); border-radius:1rem; background:#000; box-shadow:0 28px 80px rgba(0,0,0,.38); }
+video { display:block; width:100%; max-height:calc(100vh - 8.5rem); max-height:calc(100dvh - 8.5rem); background:#000; }
+:focus-visible { outline:3px solid color-mix(in srgb,var(--accent) 60%,transparent); outline-offset:2px; }
+@media (max-width:650px) { :root { --file-header-padding:.65rem; } .meta { display:none; } header { gap:.45rem; } main { min-height:calc(100dvh - 6rem); padding:.6rem; } .player { width:100%; min-height:0; border-radius:.65rem; } video { max-height:calc(100dvh - 7.5rem); } }
+"#;
+
+fn render_video_page(title: &str, size: u64) -> String {
+    let title = escape_html(title);
+    format!(
+        "<!doctype html>\n<html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\"><title>{title}</title><style>{VIDEO_CSS}</style></head><body><header><button class=\"back\" id=\"history-back\" type=\"button\" aria-label=\"返回上一页\">←</button><span class=\"kind\">MP4</span><span class=\"filename\">{title}</span><span class=\"meta\">{size}</span><a class=\"download\" href=\"?mode=asset\" download>下载</a></header><main><div class=\"player\"><video controls playsinline preload=\"metadata\" src=\"?mode=asset\">浏览器无法播放这个 MP4 文件。</video></div></main></body></html>",
         size = human_size(size)
     )
 }
@@ -5179,6 +5317,11 @@ h1 { position:relative; z-index:1; margin:0; overflow-wrap:anywhere; font-family
 .folder .glyph { height:1rem; margin-top:.2rem; border:0; border-radius:.18rem; background:var(--folder); opacity:1; }
 .folder .glyph::before { position:absolute; left:.08rem; top:-.28rem; width:.62rem; height:.38rem; border-radius:.18rem .18rem 0 0; background:var(--folder); content:""; }
 .file .glyph::after { position:absolute; right:-2px; top:-2px; width:.42rem; height:.42rem; border-left:2px solid var(--muted); border-bottom:2px solid var(--muted); background:var(--surface); content:""; }
+.video .glyph { width:2.2rem; height:1.65rem; border:0; color:var(--muted); opacity:1; }
+.video .glyph::after { content:none; }
+.video .glyph svg { display:block; width:100%; height:100%; overflow:visible; fill:none; stroke:currentColor; stroke-width:1.5; }
+.video .glyph path { fill:var(--accent); stroke:none; }
+.entry.video:hover .glyph { color:var(--accent); }
 .entry.image .glyph { width:2.55rem; height:2.55rem; overflow:hidden; border:1px solid var(--line); border-radius:.55rem; background-color:var(--surface); background-image:linear-gradient(45deg,var(--grid) 25%,transparent 25%),linear-gradient(-45deg,var(--grid) 25%,transparent 25%),linear-gradient(45deg,transparent 75%,var(--grid) 75%),linear-gradient(-45deg,transparent 75%,var(--grid) 75%); background-position:0 0,0 5px,5px -5px,-5px 0; background-size:10px 10px; box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--line) 65%,transparent); opacity:1; }
 .entry.image .glyph::after { content:none; }
 .favourite-mark { position:absolute; right:.1rem; bottom:.1rem; display:block; width:1rem; height:1rem; color:#ff4f78; filter:drop-shadow(0 2px 4px rgba(0,0,0,.55)); pointer-events:none; }
@@ -6660,6 +6803,7 @@ fn mime_type(path: &Path) -> &'static str {
         "ico" => "image/x-icon",
         "wasm" => "application/wasm",
         "pdf" => "application/pdf",
+        "mp4" => "video/mp4",
         "xml" => "application/xml",
         _ => "application/octet-stream",
     }
@@ -8363,6 +8507,23 @@ mod tests {
     }
 
     #[test]
+    fn directory_uses_a_video_glyph_for_mp4_files() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("clip.mp4"), b"video").unwrap();
+
+        let page = render_directory_page(
+            directory.path(),
+            directory.path(),
+            &StateStore::new(None).unwrap(),
+        )
+        .unwrap();
+
+        assert!(page.contains("class=\"entry file video\""));
+        assert!(page.contains("<svg viewBox=\"0 0 24 18\">"));
+        assert!(page.contains("<span class=\"kind\">VIDEO</span>"));
+    }
+
+    #[test]
     fn generates_a_downscaled_thumbnail_for_raster_images() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("wide.png");
@@ -8475,6 +8636,79 @@ mod tests {
         assert!(page.contains(">PNG</span>"));
         assert!(page.contains("photo&lt;&amp;&gt;.png"));
         assert!(!page.contains("photo<&>.png"));
+    }
+
+    #[test]
+    fn renders_mp4_with_native_video_controls() {
+        let page = render_video_page("clip<&>.mp4", 4096);
+
+        assert!(page.starts_with("<!doctype html>"));
+        assert!(page.contains("<video controls playsinline preload=\"metadata\""));
+        assert!(page.contains("src=\"?mode=asset\""));
+        assert!(page.contains("href=\"?mode=asset\" download"));
+        assert!(page.contains("clip&lt;&amp;&gt;.mp4"));
+        assert_eq!(mime_type(Path::new("clip.mp4")), "video/mp4");
+        assert_eq!(file_kind(Path::new("clip.mp4")), "VIDEO");
+    }
+
+    #[test]
+    fn serves_mp4_byte_ranges() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("clip.mp4"), b"0123456789").unwrap();
+        let root = fs::canonicalize(directory.path()).unwrap();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let state = StateStore::new(None).unwrap();
+            for _ in 0..3 {
+                let (stream, _) = listener.accept().unwrap();
+                handle_connection(
+                    stream,
+                    &root,
+                    &CollaborationHub::default(),
+                    &ReviewHub::default(),
+                    false,
+                    None,
+                    &state,
+                )
+                .unwrap();
+            }
+        });
+        let request = |target: &str, headers: &str| {
+            let mut client = TcpStream::connect(address).unwrap();
+            write!(
+                client,
+                "GET {target} HTTP/1.1\r\nHost: localhost\r\n{headers}Connection: close\r\n\r\n"
+            )
+            .unwrap();
+            let mut response = String::new();
+            client.read_to_string(&mut response).unwrap();
+            response
+        };
+
+        let page = request("/clip.mp4", "Accept: text/html\r\n");
+        assert!(page.starts_with("HTTP/1.1 200 OK"));
+        assert!(page.contains("<video controls"));
+
+        let range = request("/clip.mp4?mode=asset", "Range: bytes=2-5\r\n");
+        assert!(range.starts_with("HTTP/1.1 206 Partial Content"));
+        assert!(range.contains("Content-Type: video/mp4\r\n"));
+        assert!(range.contains("Content-Range: bytes 2-5/10\r\n"));
+        assert!(range.ends_with("2345"));
+
+        let invalid = request("/clip.mp4?mode=asset", "Range: bytes=20-30\r\n");
+        assert!(invalid.starts_with("HTTP/1.1 416 Range Not Satisfiable"));
+        assert!(invalid.contains("Content-Range: bytes */10\r\n"));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn parses_open_and_suffix_byte_ranges() {
+        assert_eq!(parse_byte_range("bytes=3-", 10), Some((3, 9)));
+        assert_eq!(parse_byte_range("bytes=-4", 10), Some((6, 9)));
+        assert_eq!(parse_byte_range("bytes=8-20", 10), Some((8, 9)));
+        assert_eq!(parse_byte_range("bytes=4-2", 10), None);
+        assert_eq!(parse_byte_range("bytes=0-1,4-5", 10), None);
     }
 
     #[test]
