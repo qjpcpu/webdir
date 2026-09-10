@@ -655,16 +655,27 @@ fn handle_connection_with_auth(
             );
         }
         return match fs::remove_file(root.join(&relative)) {
-            Ok(()) => match state.clear_image_state(&canonical) {
-                Ok(()) => send_empty(&mut stream, 204, "No Content"),
-                Err(_) => send_text(
-                    &mut stream,
-                    500,
-                    "Internal Server Error",
-                    "图片已删除，但清除待删除标记失败。\n",
-                    false,
-                ),
-            },
+            Ok(()) => {
+                let comments_result = gallery_comments::remove_for_image(&canonical);
+                let state_result = state.clear_image_state(&canonical);
+                match (comments_result, state_result) {
+                    (Ok(()), Ok(())) => send_empty(&mut stream, 204, "No Content"),
+                    (Err(_), _) => send_text(
+                        &mut stream,
+                        500,
+                        "Internal Server Error",
+                        "图片已删除，但清除图片评论失败。\n",
+                        false,
+                    ),
+                    (_, Err(_)) => send_text(
+                        &mut stream,
+                        500,
+                        "Internal Server Error",
+                        "图片已删除，但清除待删除标记失败。\n",
+                        false,
+                    ),
+                }
+            }
             Err(_) => send_text(
                 &mut stream,
                 500,
@@ -1589,6 +1600,7 @@ fn delete_marked_images(
     state: &StateStore,
 ) -> io::Result<DeleteMarkedImagesResult> {
     let mut result = DeleteMarkedImagesResult::default();
+    let mut targets = Vec::new();
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
         let path = entry.path();
@@ -1607,20 +1619,41 @@ fn delete_marked_images(
         if !state.is_deletion_marked(&canonical)? {
             continue;
         }
-        if let Err(error) = fs::remove_file(&path) {
-            result
-                .errors
-                .push(format!("{}：{error}", entry.file_name().to_string_lossy()));
-            continue;
-        }
-        result.deleted += 1;
-        if let Err(error) = state.clear_image_state(&canonical) {
-            result.errors.push(format!(
-                "{} 已删除，但清理缓存失败：{error}",
-                entry.file_name().to_string_lossy()
-            ));
-        }
+        targets.push((path, canonical, entry.file_name()));
     }
+
+    std::thread::scope(|scope| {
+        let handles = targets
+            .into_iter()
+            .map(|(path, canonical, name)| {
+                scope.spawn(move || {
+                    let mut errors = Vec::new();
+                    if let Err(error) = fs::remove_file(&path) {
+                        errors.push(format!("{}：{error}", name.to_string_lossy()));
+                        return (false, errors);
+                    }
+                    if let Err(error) = gallery_comments::remove_for_image(&canonical) {
+                        errors.push(format!(
+                            "{} 已删除，但清理评论失败：{error}",
+                            name.to_string_lossy()
+                        ));
+                    }
+                    if let Err(error) = state.clear_image_state(&canonical) {
+                        errors.push(format!(
+                            "{} 已删除，但清理缓存失败：{error}",
+                            name.to_string_lossy()
+                        ));
+                    }
+                    (true, errors)
+                })
+            })
+            .collect::<Vec<_>>();
+        for handle in handles {
+            let (deleted, errors) = handle.join().unwrap();
+            result.deleted += usize::from(deleted);
+            result.errors.extend(errors);
+        }
+    });
     Ok(result)
 }
 
@@ -3451,7 +3484,7 @@ if (galleryToggle) {
   let previewTrigger = null;
   let deleting = false;
   let liking = 0;
-  let marking = false;
+  let marking = 0;
   let moving = false;
   let lastImageTap = null;
   let adjacentPreloads = [];
@@ -3471,6 +3504,7 @@ if (galleryToggle) {
   let editingCommentId = null;
   let deleteAllCommentsTimer = null;
   const pendingFavourites = new WeakSet();
+  const pendingDeletionMarks = new WeakSet();
   const galleryCommentList = commentsDrawer.querySelector('.gallery-comment-list');
   const galleryCommentEmpty = commentsDrawer.querySelector('.gallery-comment-empty');
   const galleryCommentComposer = commentsDrawer.querySelector('.gallery-comment-composer');
@@ -3530,7 +3564,7 @@ if (galleryToggle) {
     deletionToggle.setAttribute('aria-pressed', String(marked));
     deletionToggle.title = marked ? '取消标记 (d)' : '标记删除 (d)';
     deletionToggle.setAttribute('aria-label', deletionToggle.title);
-    deletionToggle.disabled = marking;
+    deletionToggle.disabled = previewTrigger ? pendingDeletionMarks.has(previewTrigger) : false;
     const count = markedEntries().length;
     deletionCount.textContent = String(count);
     deleteMarkedButton.disabled = count === 0 || moving;
@@ -4017,10 +4051,12 @@ if (galleryToggle) {
   favouriteToggle.addEventListener('click', toggleFavourite);
 
   const toggleDeletionMark = async () => {
-    if (!previewTrigger || lightbox.hidden || marking || deleting || moving || deleteDialog.open) return;
+    if (!previewTrigger || lightbox.hidden || deleting || moving || deleteDialog.open) return;
     const entry = previewTrigger;
+    if (pendingDeletionMarks.has(entry)) return;
     const marked = entry.dataset.deletionMarked !== 'true';
-    marking = true;
+    marking++;
+    pendingDeletionMarks.add(entry);
     deletionMarkError.hidden = true;
     entry.dataset.deletionMarked = String(marked);
     entry.querySelector('.deletion-mark').hidden = !marked;
@@ -4036,7 +4072,8 @@ if (galleryToggle) {
         deletionMarkError.hidden = false;
       }
     } finally {
-      marking = false;
+      marking--;
+      pendingDeletionMarks.delete(entry);
       updateDeletionControls();
     }
   };

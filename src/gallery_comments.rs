@@ -119,6 +119,32 @@ pub(crate) fn apply(
     Ok(document)
 }
 
+pub(crate) fn remove_for_image(image_path: &Path) -> io::Result<()> {
+    let _operation = OPERATIONS.lock().unwrap();
+    let path = comments_path(image_path);
+    let source = match fs::read_to_string(&path) {
+        Ok(source) => source,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let mut document: GalleryComments = serde_json::from_str(&source).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("无法解析 {}：{error}", path.display()),
+        )
+    })?;
+    let image = image_path
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_default();
+    let original_len = document.comments.len();
+    document.comments.retain(|comment| comment.image != image);
+    if document.comments.len() != original_len {
+        write(image_path, &document)?;
+    }
+    Ok(())
+}
+
 fn write(image_path: &Path, document: &GalleryComments) -> io::Result<()> {
     let path = comments_path(image_path);
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
@@ -249,5 +275,34 @@ mod tests {
 
         assert_eq!(document.comments.len(), 1);
         assert_eq!(document.comments[0].id, "three");
+    }
+
+    #[test]
+    fn removes_deleted_images_comments() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("first.jpg");
+        let second = directory.path().join("second.jpg");
+        fs::write(&first, b"first").unwrap();
+        fs::write(&second, b"second").unwrap();
+        apply(
+            &first,
+            GalleryCommentAction::Add {
+                comment: comment("one", "first.jpg", "删除"),
+            },
+        )
+        .unwrap();
+        apply(
+            &second,
+            GalleryCommentAction::Add {
+                comment: comment("two", "second.jpg", "保留"),
+            },
+        )
+        .unwrap();
+
+        remove_for_image(&first).unwrap();
+
+        let document = read(&second).unwrap();
+        assert_eq!(document.comments.len(), 1);
+        assert_eq!(document.comments[0].id, "two");
     }
 }
