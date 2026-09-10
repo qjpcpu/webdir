@@ -3455,7 +3455,7 @@ if (galleryToggle) {
   commentsDrawer.className = 'gallery-comments';
   commentsDrawer.hidden = true;
   commentsDrawer.setAttribute('aria-label', '图片评论');
-  commentsDrawer.innerHTML = '<header><div><span>IMAGE NOTES</span><strong>图片评论</strong></div><button type="button" data-comments-close aria-label="关闭评论区"></button></header><div class="gallery-comments-image"><img alt=""><div><strong></strong><span></span></div><button type="button" data-comment-delete-all hidden>删除所有评论</button></div><div class="gallery-comment-list" role="feed"></div><div class="gallery-comment-empty"><strong>还没有评论</strong><span>记录构图、色彩或需要 AI 调整的细节。</span></div><form class="gallery-comment-composer"><div class="gallery-comment-identity" hidden><span>评论人 <strong></strong></span><button type="button" data-comment-change-author>更换</button></div><label data-comment-author>评论人<input name="author" autocomplete="name" placeholder="你的名字" required></label><label>评论内容<textarea name="body" rows="4" placeholder="例如：压低背景高光，让人物更突出…" required></textarea></label><p class="gallery-comment-hint">Enter 提交 · ⌘ Enter 换行</p><p class="gallery-comment-error" role="status" hidden></p><div><button type="button" data-comment-cancel hidden>取消编辑</button><button type="submit" class="comment-submit">添加评论</button></div></form><footer><a target="_blank">打开共享评论文件</a><span>.gallery-comments.json</span></footer>';
+  commentsDrawer.innerHTML = '<header><div><span>IMAGE NOTES</span><strong>图片评论</strong></div><button type="button" data-comments-close aria-label="关闭评论区"></button></header><div class="gallery-comments-image"><img alt=""><div><strong></strong><span></span></div><button type="button" data-comment-delete-all hidden>删除所有评论</button></div><div class="gallery-comment-list" role="feed"></div><div class="gallery-comment-empty"><strong>还没有评论</strong><span>记录构图、色彩或需要 AI 调整的细节。</span></div><form class="gallery-comment-composer"><div class="gallery-comment-identity" hidden><span>评论人 <strong></strong></span><button type="button" data-comment-change-author>更换</button></div><label data-comment-author>评论人<input name="author" autocomplete="name" placeholder="你的名字" required></label><label>评论内容<textarea name="body" rows="4" placeholder="例如：压低背景高光，让人物更突出…" required></textarea></label><p class="gallery-comment-hint">Enter 提交 · ⌘ Enter 换行</p><p class="gallery-comment-error" role="status" hidden></p><div><button type="button" data-comment-cancel hidden>取消编辑</button><button type="submit" class="comment-submit">添加评论</button></div></form><footer><a target="_blank">打开共享评论文件</a><span>gallery-comments.json</span></footer>';
   commentsDrawer.querySelector('[data-comments-close]').innerHTML = svgIcon(strokePath('m7 7 10 10M17 7 7 17'));
   lightbox.append(commentsDrawer);
   const galleryToast = document.createElement('div');
@@ -3498,7 +3498,7 @@ if (galleryToggle) {
   let lastCarouselEffect = null;
   let zoom = {scale: 1, x: 0, y: 0, mode: 'fit', originalLoaded: false};
   let pointerGesture = null;
-  let galleryComments = {version: 1, comments: []};
+  let galleryComments = {version: 1, instructions: [], comments: []};
   let galleryCommentsLoaded = false;
   let galleryCommentsLoading = false;
   let editingCommentId = null;
@@ -3608,7 +3608,7 @@ if (galleryToggle) {
     galleryCommentDeleteAll.hidden = comments.length === 0;
     galleryCommentDeleteAll.dataset.confirm = 'false';
     galleryCommentDeleteAll.textContent = '删除所有评论';
-    commentsDrawer.querySelector('footer a').href = new URL('.gallery-comments.json', location.href).href;
+    commentsDrawer.querySelector('footer a').href = new URL('gallery-comments.json', location.href).href;
     galleryCommentList.replaceChildren();
     comments.forEach(comment => {
       const article = document.createElement('article');
@@ -7662,7 +7662,7 @@ mod tests {
         );
 
         let listing = test_http_request(address, "GET", "/?view=gallery", "");
-        assert!(!body(listing).contains("href=\"/.gallery-comments.json\""));
+        assert!(!body(listing).contains("href=\"/gallery-comments.json\""));
         server.join().unwrap();
     }
 
@@ -8103,7 +8103,7 @@ mod tests {
         )
         .unwrap();
         fs::write(
-            directory.path().join(".gallery-comments.json"),
+            directory.path().join("gallery-comments.json"),
             r#"{"version":1,"comments":[]}"#,
         )
         .unwrap();
@@ -8117,7 +8117,7 @@ mod tests {
 
         assert!(page.contains("spec.md"));
         assert!(!page.contains("spec.md.review.json"));
-        assert!(!page.contains("href=\"/.gallery-comments.json\""));
+        assert!(!page.contains("href=\"/gallery-comments.json\""));
         assert!(page.contains("1 个文件"));
     }
 

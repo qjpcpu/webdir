@@ -54,18 +54,24 @@ cargo build --release
 Gallery 图片弹窗提供评论入口，也可以按 `c` 呼出评论区。评论支持添加、编辑和删除；桌面端使用
 侧边工作区，手机和平板使用适合软键盘的底部编辑面板。
 
-同一文件夹内的所有图片共享一个 `.gallery-comments.json`：
+同一文件夹内的所有图片共享一个 `gallery-comments.json`：
 
 ```json
 {
   "version": 1,
+  "instructions": [
+    "AI 只处理 resolved 为 false 的评论；完成评论要求后，将该评论的 resolved 改为 true，后续处理跳过 resolved 为 true 的评论。",
+    "编辑图片时不要覆盖原图。新生成的图片与原图放在同一文件夹，使用递增且不冲突的版本名：原图 xxx.ext 依次生成 xxx_v1.ext、xxx_v2.ext；如果当前文件名已经是 xxx_v1.ext，则下一版命名为 xxx_v2.ext。",
+    "除 _vN 后缀仅用于选择新生成图片的版本文件名外，图片文件名不带有特殊语义；不要根据文件名推断图片内容、处理要求或评论状态，以评论内容和 resolved 字段为准。"
+  ],
   "comments": [
     {
       "id": "comment-id",
       "image": "portrait.jpg",
       "author": "Alice",
       "body": "压低背景高光，让人物更突出",
-      "created_at": "2026-09-09T10:00:00.000Z"
+      "created_at": "2026-09-09T10:00:00.000Z",
+      "resolved": false
     }
   ]
 }

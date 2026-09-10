@@ -5,13 +5,15 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
-const COMMENTS_FILE_NAME: &str = ".gallery-comments.json";
+const COMMENTS_FILE_NAME: &str = "gallery-comments.json";
 static OPERATIONS: Mutex<()> = Mutex::new(());
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct GalleryComments {
     #[serde(default = "version")]
     pub version: u32,
+    #[serde(default = "instructions")]
+    pub instructions: Vec<String>,
     #[serde(default)]
     pub comments: Vec<GalleryComment>,
 }
@@ -23,6 +25,8 @@ pub(crate) struct GalleryComment {
     pub author: String,
     pub body: String,
     pub created_at: String,
+    #[serde(default)]
+    pub resolved: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edited_at: Option<String>,
 }
@@ -67,6 +71,7 @@ pub(crate) fn read(image_path: &Path) -> io::Result<GalleryComments> {
         }),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(GalleryComments {
             version: version(),
+            instructions: instructions(),
             comments: Vec::new(),
         }),
         Err(error) => Err(error),
@@ -161,6 +166,14 @@ fn version() -> u32 {
     1
 }
 
+fn instructions() -> Vec<String> {
+    vec![
+        "AI 只处理 resolved 为 false 的评论；完成评论要求后，将该评论的 resolved 改为 true，后续处理跳过 resolved 为 true 的评论。".into(),
+        "编辑图片时不要覆盖原图。新生成的图片与原图放在同一文件夹，使用递增且不冲突的版本名：原图 xxx.ext 依次生成 xxx_v1.ext、xxx_v2.ext；如果当前文件名已经是 xxx_v1.ext，则下一版命名为 xxx_v2.ext。".into(),
+        "除 _vN 后缀仅用于选择新生成图片的版本文件名外，图片文件名不带有特殊语义；不要根据文件名推断图片内容、处理要求或评论状态，以评论内容和 resolved 字段为准。".into(),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,6 +185,7 @@ mod tests {
             author: "Alice".into(),
             body: body.into(),
             created_at: "2026-09-09T10:00:00.000Z".into(),
+            resolved: false,
             edited_at: None,
         }
     }
@@ -206,6 +220,8 @@ mod tests {
             comments_path(&first),
             directory.path().join(COMMENTS_FILE_NAME)
         );
+        assert_eq!(document.instructions, instructions());
+        assert!(!document.comments[0].resolved);
     }
 
     #[test]
