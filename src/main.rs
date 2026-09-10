@@ -3404,7 +3404,7 @@ if (galleryToggle) {
   const shortcutHelp = document.createElement('aside');
   shortcutHelp.className = 'shortcut-help';
   shortcutHelp.hidden = true;
-  shortcutHelp.innerHTML = '<span>← / J 上一张 · → / K 下一张</span><span>F 点赞 · C 评论 · D 标记删除 · Ctrl K 直接删除</span><span>P 轮播 · 空格暂停</span><span>Esc 退出</span>';
+  shortcutHelp.innerHTML = '<span>← / J 上一张 · → / K 下一张</span><span>F 点赞 · C 评论 · 粘贴文本追加评论 · D 标记删除 · Ctrl K 直接删除</span><span>P 轮播 · 空格暂停</span><span>Esc 退出</span>';
   const figure = lightbox.querySelector('figure');
   figure.append(imageInfo, shortcutHelp);
   previewPrevious.innerHTML = svgIcon(strokePath('m15 6-6 6 6 6'));
@@ -3425,6 +3425,11 @@ if (galleryToggle) {
   commentsDrawer.innerHTML = '<header><div><span>IMAGE NOTES</span><strong>图片评论</strong></div><button type="button" data-comments-close aria-label="关闭评论区"></button></header><div class="gallery-comments-image"><img alt=""><div><strong></strong><span></span></div><button type="button" data-comment-delete-all hidden>删除所有评论</button></div><div class="gallery-comment-list" role="feed"></div><div class="gallery-comment-empty"><strong>还没有评论</strong><span>记录构图、色彩或需要 AI 调整的细节。</span></div><form class="gallery-comment-composer"><div class="gallery-comment-identity" hidden><span>评论人 <strong></strong></span><button type="button" data-comment-change-author>更换</button></div><label data-comment-author>评论人<input name="author" autocomplete="name" placeholder="你的名字" required></label><label>评论内容<textarea name="body" rows="4" placeholder="例如：压低背景高光，让人物更突出…" required></textarea></label><p class="gallery-comment-hint">Enter 提交 · ⌘ Enter 换行</p><p class="gallery-comment-error" role="status" hidden></p><div><button type="button" data-comment-cancel hidden>取消编辑</button><button type="submit" class="comment-submit">添加评论</button></div></form><footer><a target="_blank">打开共享评论文件</a><span>.gallery-comments.json</span></footer>';
   commentsDrawer.querySelector('[data-comments-close]').innerHTML = svgIcon(strokePath('m7 7 10 10M17 7 7 17'));
   lightbox.append(commentsDrawer);
+  const galleryToast = document.createElement('div');
+  galleryToast.className = 'gallery-toast';
+  galleryToast.setAttribute('role', 'status');
+  galleryToast.hidden = true;
+  lightbox.append(galleryToast);
   const deleteDialog = document.querySelector('#delete-dialog');
   const deleteName = deleteDialog.querySelector('#delete-name');
   const deleteError = deleteDialog.querySelector('#delete-error');
@@ -3478,6 +3483,12 @@ if (galleryToggle) {
   const galleryCommentCancel = commentsDrawer.querySelector('[data-comment-cancel]');
   const galleryCommentDeleteAll = commentsDrawer.querySelector('[data-comment-delete-all]');
   const commentCount = commentToggle.querySelector('b');
+  const showGalleryToast = message => {
+    galleryToast.textContent = message;
+    galleryToast.hidden = false;
+    clearTimeout(showGalleryToast.timer);
+    showGalleryToast.timer = setTimeout(() => { galleryToast.hidden = true; }, 2200);
+  };
   const scrollToLatestGalleryComment = (smooth = true) => requestAnimationFrame(() => {
     galleryCommentList.scrollTo({
       top: galleryCommentList.scrollHeight,
@@ -3646,6 +3657,40 @@ if (galleryToggle) {
     } finally {
       galleryCommentSubmit.disabled = false;
       galleryCommentDeleteAll.disabled = false;
+    }
+  };
+
+  const appendPastedGalleryComment = async body => {
+    const author = localStorage.getItem(REVIEW_IDENTITY_KEY)?.trim() || '';
+    if (!author) {
+      showGalleryToast('请先打开评论区设置评论人');
+      return;
+    }
+    const entry = previewTrigger;
+    try {
+      const response = await fetch(commentsEndpoint(), {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          type: 'add',
+          comment: {
+            id: crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+            image: currentImageName(),
+            author,
+            body,
+            created_at: new Date().toISOString()
+          }
+        })
+      });
+      if (!response.ok) throw new Error((await response.text()).trim() || '追加评论失败，请重试。');
+      if (previewTrigger === entry) {
+        galleryComments = await response.json();
+        galleryCommentsLoaded = true;
+        renderGalleryComments();
+      }
+      showGalleryToast('已追加评论');
+    } catch (error) {
+      showGalleryToast(error.message);
     }
   };
 
@@ -4783,6 +4828,14 @@ if (galleryToggle) {
     setZoom(zoom.scale * Math.exp(-event.deltaY * .0015), {x: event.clientX, y: event.clientY});
     showChrome();
   }, {passive: false});
+  document.addEventListener('paste', event => {
+    if (lightbox.hidden || deleting || deleteDialog.open || event.defaultPrevented) return;
+    if (event.target.closest?.('input, textarea, select') || event.target.isContentEditable) return;
+    const body = event.clipboardData?.getData('text/plain').trim() || '';
+    if (!body) return;
+    event.preventDefault();
+    appendPastedGalleryComment(body);
+  });
   document.addEventListener('keydown', event => {
     if (deleting || deleteDialog.open) return;
     const commentEditorActive = !commentsDrawer.hidden
@@ -5115,6 +5168,7 @@ h1 { position:relative; z-index:1; margin:0; overflow-wrap:anywhere; font-family
 .image-info,.shortcut-help { position:absolute; z-index:7; right:.5rem; bottom:4.2rem; display:flex; flex-wrap:wrap; align-items:center; gap:.65rem; max-width:min(92vw,36rem); padding:.75rem .9rem; border:1px solid rgba(255,255,255,.16); border-radius:.8rem; color:rgba(255,255,255,.82); background:rgba(14,16,23,.88); box-shadow:0 14px 44px rgba(0,0,0,.3); backdrop-filter:blur(16px); font-size:.72rem; }
 .image-info a { color:#fff; text-underline-offset:.2em; }
 .shortcut-help { left:50%; right:auto; justify-content:center; transform:translateX(-50%); }
+.gallery-toast { position:fixed; z-index:15; left:50%; bottom:max(1.25rem,env(safe-area-inset-bottom)); max-width:calc(100vw - 2rem); padding:.7rem .95rem; border:1px solid rgba(255,255,255,.18); border-radius:.7rem; color:#fff; background:rgba(17,19,27,.92); box-shadow:0 14px 44px rgba(0,0,0,.38); backdrop-filter:blur(16px); font:650 .76rem/1.4 ui-sans-serif,-apple-system,sans-serif; transform:translateX(-50%); pointer-events:none; }
 .gallery-comments { position:fixed; z-index:12; top:max(1rem,env(safe-area-inset-top)); right:max(1rem,env(safe-area-inset-right)); bottom:max(1rem,env(safe-area-inset-bottom)); display:grid; grid-template-columns:minmax(0,1fr); grid-template-rows:auto auto minmax(0,1fr) auto auto; width:min(25rem,calc(100vw - 2rem)); overflow:hidden; border:1px solid rgba(255,255,255,.18); border-radius:1.1rem; color:#f5f5fa; background:rgba(17,19,27,.96); box-shadow:0 28px 90px rgba(0,0,0,.52); backdrop-filter:blur(24px) saturate(125%); animation:gallery-comments-in .34s cubic-bezier(.16,1,.3,1); }
 @keyframes gallery-comments-in { from { opacity:0; transform:translateX(1.5rem) scale(.985); } }
 .gallery-comments>header { grid-area:1/1; display:flex; align-items:center; justify-content:space-between; padding:1.1rem 1.15rem .9rem; border-bottom:1px solid rgba(255,255,255,.1); }

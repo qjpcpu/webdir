@@ -342,6 +342,28 @@ test('comments own keyboard input and reuse the Markdown review identity', async
   await expect(page.locator('[data-comment-delete-all]')).toBeHidden();
 });
 
+test('pasting text while viewing an image appends a comment without opening comments', async ({page}) => {
+  await page.addInitScript(() => localStorage.setItem('webdir-review-identity', 'Alice'));
+  await page.request.post('/01-portrait.svg?mode=gallery-comments', {data: {type: 'delete-all'}});
+  await openGalleryImage(page);
+
+  await page.locator('#image-lightbox').evaluate(element => {
+    const event = new Event('paste', {bubbles: true, cancelable: true});
+    Object.defineProperty(event, 'clipboardData', {
+      value: {getData: type => type === 'text/plain' ? '  从剪贴板追加的评论  ' : ''}
+    });
+    element.dispatchEvent(event);
+  });
+
+  await expect(page.locator('.gallery-comments')).toBeHidden();
+  await expect(page.locator('.gallery-toast')).toHaveText('已追加评论');
+  await expect(page.locator('.gallery-toast')).toBeVisible();
+  await expect(page.locator('.comment-toggle b')).toHaveText('1');
+  const response = await page.request.get('/01-portrait.svg?mode=gallery-comments');
+  const comments = (await response.json()).comments.filter(comment => comment.image === '01-portrait.svg');
+  expect(comments).toMatchObject([{author: 'Alice', body: '从剪贴板追加的评论'}]);
+});
+
 test('comments keep a single-column drawer in a wide browser window', async ({page}) => {
   await openGalleryImage(page);
   await page.keyboard.press('c');
