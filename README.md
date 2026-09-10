@@ -139,6 +139,7 @@ codex> 处理掉 your-plan.md.review.json 的评论
 - `favourites` 保存图片点赞状态。
 - `deletion_marks` 保存待删除标记。
 - `directory_favourites` 保存目录收藏；目录页仅显示当前 `--dir` 及其子目录内的收藏，因此多个进程共享缓存时不会看到范围外目录。
+- `image_similarity_features` 保存感知哈希、分区 HSV、边缘方向和宽高比特征，`image_similarity_orders` 保存最终聚类顺序；图片文件版本变化后自动重新计算。
 
 未指定 `--cache` 时使用进程内 SQLite，退出服务后状态自然消失。图片移动到整理目录时，相关状态会
 跟随新路径；图片被删除时，其状态同步清理。

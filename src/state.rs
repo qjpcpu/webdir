@@ -36,6 +36,16 @@ impl StateStore {
                 CREATE TABLE IF NOT EXISTS directory_favourite_labels (
                     path BLOB PRIMARY KEY NOT NULL,
                     label TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS image_similarity_features (
+                    path BLOB PRIMARY KEY NOT NULL,
+                    source_version TEXT NOT NULL,
+                    feature BLOB NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS image_similarity_orders (
+                    path BLOB PRIMARY KEY NOT NULL,
+                    source_version TEXT NOT NULL,
+                    image_order TEXT NOT NULL
                 );",
             )
             .map_err(sqlite_error)?;
@@ -189,7 +199,77 @@ impl StateStore {
                 params![path_bytes(path)],
             )
             .map_err(sqlite_error)?;
+        transaction
+            .execute(
+                "DELETE FROM image_similarity_features WHERE path = ?1",
+                params![path_bytes(path)],
+            )
+            .map_err(sqlite_error)?;
         transaction.commit().map_err(sqlite_error)
+    }
+
+    pub(crate) fn image_similarity_feature(
+        &self,
+        path: &Path,
+        source_version: &str,
+    ) -> io::Result<Option<Vec<u8>>> {
+        let connection = self.connection.lock().unwrap();
+        connection
+            .query_row(
+                "SELECT feature FROM image_similarity_features WHERE path = ?1 AND source_version = ?2",
+                params![path_bytes(path), source_version],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sqlite_error)
+    }
+
+    pub(crate) fn set_image_similarity_feature(
+        &self,
+        path: &Path,
+        source_version: &str,
+        feature: &[u8],
+    ) -> io::Result<()> {
+        let connection = self.connection.lock().unwrap();
+        connection
+            .execute(
+                "INSERT OR REPLACE INTO image_similarity_features (path, source_version, feature) VALUES (?1, ?2, ?3)",
+                params![path_bytes(path), source_version, feature],
+            )
+            .map(|_| ())
+            .map_err(sqlite_error)
+    }
+
+    pub(crate) fn image_similarity_order(
+        &self,
+        path: &Path,
+        source_version: &str,
+    ) -> io::Result<Option<String>> {
+        let connection = self.connection.lock().unwrap();
+        connection
+            .query_row(
+                "SELECT image_order FROM image_similarity_orders WHERE path = ?1 AND source_version = ?2",
+                params![path_bytes(path), source_version],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sqlite_error)
+    }
+
+    pub(crate) fn set_image_similarity_order(
+        &self,
+        path: &Path,
+        source_version: &str,
+        image_order: &str,
+    ) -> io::Result<()> {
+        let connection = self.connection.lock().unwrap();
+        connection
+            .execute(
+                "INSERT OR REPLACE INTO image_similarity_orders (path, source_version, image_order) VALUES (?1, ?2, ?3)",
+                params![path_bytes(path), source_version, image_order],
+            )
+            .map(|_| ())
+            .map_err(sqlite_error)
     }
 
     fn contains(&self, table: &str, path: &Path) -> io::Result<bool> {
@@ -255,11 +335,32 @@ mod tests {
         let state = StateStore::new(Some(cache.path())).unwrap();
         state.set_favourite(first, true).unwrap();
         state.set_deletion_mark(second, true).unwrap();
+        state
+            .set_image_similarity_feature(first, "v1", &[1, 2, 3])
+            .unwrap();
+        state
+            .set_image_similarity_order(Path::new("/photos"), "v1", "[\"猫.png\"]")
+            .unwrap();
         drop(state);
 
         let reopened = StateStore::new(Some(cache.path())).unwrap();
         assert!(reopened.is_favourite(first).unwrap());
         assert!(reopened.is_deletion_marked(second).unwrap());
+        assert_eq!(
+            reopened.image_similarity_feature(first, "v1").unwrap(),
+            Some(vec![1, 2, 3])
+        );
+        assert_eq!(
+            reopened.image_similarity_feature(first, "v2").unwrap(),
+            None
+        );
+        assert_eq!(
+            reopened
+                .image_similarity_order(Path::new("/photos"), "v1")
+                .unwrap()
+                .as_deref(),
+            Some("[\"猫.png\"]")
+        );
         assert!(cache.path().join("webdir.sqlite").is_file());
         assert!(!cache.path().join("favourites").exists());
         assert!(!cache.path().join("deletion-marks").exists());

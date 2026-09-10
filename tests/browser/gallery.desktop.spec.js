@@ -1,6 +1,39 @@
 const { test, expect } = require('@playwright/test');
 const { openGalleryImage } = require('./helpers');
 
+test('sorting works in gallery and list views and drives preview order', async ({page}) => {
+  await page.goto('/?view=gallery');
+  const imageNames = () => page.locator('.listing > .entry.image .entry-name').allTextContents();
+  const defaultNames = await imageNames();
+  await page.evaluate(() => {
+    const modified = {'01-portrait.svg': 100, '02-landscape.svg': 300, '03-square.svg': 200};
+    document.querySelectorAll('.entry.image').forEach(entry => {
+      entry.dataset.modified = String(modified[entry.querySelector('.entry-name').textContent]);
+    });
+  });
+
+  await page.locator('#directory-sort').selectOption('modified');
+  await expect.poll(imageNames).toEqual(['02-landscape.svg', '03-square.svg', '01-portrait.svg']);
+  await page.locator('.listing > .entry.image').first().click();
+  await expect(page.locator('.lightbox-name')).toHaveText('02-landscape.svg');
+  await page.keyboard.press('k');
+  await expect(page.locator('.lightbox-name')).toHaveText('03-square.svg');
+  await page.keyboard.press('Escape');
+
+  await page.locator('#gallery-toggle').click();
+  await expect(page.locator('.listing')).not.toHaveClass(/gallery/);
+  await page.locator('#directory-sort').selectOption('name');
+  await expect.poll(imageNames).toEqual(['01-portrait.svg', '02-landscape.svg', '03-square.svg']);
+  await page.locator('#directory-sort').selectOption('default');
+  await expect.poll(imageNames).toEqual(defaultNames);
+
+  await page.locator('#gallery-toggle').click();
+  await page.locator('#directory-sort').selectOption('similarity');
+  await expect(page.locator('#directory-sort')).toHaveValue('similarity');
+  await page.reload();
+  await expect(page.locator('#directory-sort')).toHaveValue('similarity');
+});
+
 test('folder stars update favourites without reloading the directory', async ({page}) => {
   for (const suffix of ['', '-2', '-3', '-4']) {
     await page.request.delete(`/shortcut-folder${suffix}/?mode=directory-favourite`);

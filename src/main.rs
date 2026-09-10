@@ -18,6 +18,7 @@ use tungstenite::handshake::derive_accept_key;
 mod collaboration;
 mod gallery_comments;
 mod image_cache;
+mod image_similarity;
 mod review;
 mod state;
 mod thumbnails;
@@ -237,7 +238,7 @@ fn bind_listener(config: &PortConfig) -> io::Result<TcpListener> {
 }
 
 fn usage() -> &'static str {
-    "用法: webdir [-p PORT] [-pid FILE] [-cache DIR] [-dir DIR] [--auth-token TOKEN] [--raw]\n\n选项:\n  -p, --port PORT      指定监听端口（默认 8080）\n  -pid, --pid FILE     将启动进程 PID 写入指定文件\n  -cache, --cache DIR   指定缓存根目录（缩略图、点赞和待删除标记存入 DIR）\n  -dir, --dir DIR      指定托管目录（默认当前目录）\n  --auth-token TOKEN   为所有访问启用 token 认证\n  --raw                以原始静态网站服务器模式运行\n  -h, --help           显示帮助"
+    "用法: webdir [-p PORT] [-pid FILE] [-cache DIR] [-dir DIR] [--auth-token TOKEN] [--raw]\n\n选项:\n  -p, --port PORT      指定监听端口（默认 8080）\n  -pid, --pid FILE     将启动进程 PID 写入指定文件\n  -cache, --cache DIR   指定缓存根目录（缩略图、图片特征和状态存入 DIR）\n  -dir, --dir DIR      指定托管目录（默认当前目录）\n  --auth-token TOKEN   为所有访问启用 token 认证\n  --raw                以原始静态网站服务器模式运行\n  -h, --help           显示帮助"
 }
 
 fn write_pid_file(path: &Path) -> io::Result<()> {
@@ -440,6 +441,27 @@ fn handle_connection_with_auth(
     };
 
     let metadata = fs::metadata(&canonical)?;
+    if mode.as_deref() == Some("similarity-order") {
+        if !matches!(method, "GET" | "HEAD") || !metadata.is_dir() {
+            return send_text(
+                &mut stream,
+                405,
+                "Method Not Allowed",
+                "请从 Gallery 使用相似图片排序\n",
+                head_only,
+            );
+        }
+        return match image_similarity::order(&canonical, state) {
+            Ok(order) => send_json(&mut stream, &order, head_only),
+            Err(error) => send_text(
+                &mut stream,
+                500,
+                "Internal Server Error",
+                &format!("计算图片相似度失败：{error}\n"),
+                head_only,
+            ),
+        };
+    }
     if mode.as_deref() == Some("directory-favourite-label") {
         if method != "POST" || !metadata.is_dir() {
             return send_text(
@@ -1482,6 +1504,7 @@ struct DirectoryEntry {
     path: PathBuf,
     is_dir: bool,
     size: u64,
+    modified: u128,
     image_version: Option<String>,
     favourite: bool,
     deletion_marked: bool,
@@ -1818,6 +1841,11 @@ fn render_directory_page_at(
             path: entry.path(),
             is_dir,
             size: metadata.as_ref().map_or(0, fs::Metadata::len),
+            modified: metadata
+                .as_ref()
+                .and_then(|metadata| metadata.modified().ok())
+                .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |duration| duration.as_millis()),
             image_version,
             favourite,
             deletion_marked,
@@ -1936,12 +1964,14 @@ fn render_directory_page_at(
                 ("☆", "添加到收藏夹")
             };
             rows.push_str(&format!(
-                "<div class=\"entry {class}\"><a class=\"folder-open\" href=\"{href}\">{glyph}<span class=\"entry-name\">{name}</span><span class=\"kind\">{kind}</span><span class=\"detail\">{detail}</span><span class=\"arrow\" aria-hidden=\"true\">→</span></a><button class=\"folder-favourite-toggle\" type=\"button\" data-directory-favourite-toggle=\"{href}\" aria-pressed=\"{}\" aria-label=\"{label}：{name}\" title=\"{label}\">{star}</button></div>",
+                "<div class=\"entry {class}\" data-modified=\"{}\"><a class=\"folder-open\" href=\"{href}\">{glyph}<span class=\"entry-name\">{name}</span><span class=\"kind\">{kind}</span><span class=\"detail\">{detail}</span><span class=\"arrow\" aria-hidden=\"true\">→</span></a><button class=\"folder-favourite-toggle\" type=\"button\" data-directory-favourite-toggle=\"{href}\" aria-pressed=\"{}\" aria-label=\"{label}：{name}\" title=\"{label}\">{star}</button></div>",
+                entry.modified,
                 entry.directory_favourite
             ));
         } else {
             rows.push_str(&format!(
-                "<a class=\"entry {class}\" href=\"{href}\"{preview}>{glyph}<span class=\"entry-name\">{name}</span><span class=\"kind\">{kind}</span><span class=\"detail\">{detail}</span><span class=\"arrow\" aria-hidden=\"true\">→</span></a>"
+                "<a class=\"entry {class}\" href=\"{href}\" data-modified=\"{}\"{preview}>{glyph}<span class=\"entry-name\">{name}</span><span class=\"kind\">{kind}</span><span class=\"detail\">{detail}</span><span class=\"arrow\" aria-hidden=\"true\">→</span></a>",
+                entry.modified
             ));
         }
     }
@@ -1970,7 +2000,7 @@ fn render_directory_page_at(
         "<button class=\"directory-favourite-toggle\" id=\"directory-favourite-toggle\" type=\"button\" aria-pressed=\"false\">添加到收藏夹</button>"
     };
     Ok(format!(
-        "<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">\n<title>{title} · 文件浏览</title>\n<style>{DIRECTORY_CSS}</style>\n</head>\n<body>\n<main><nav class=\"breadcrumbs\" aria-label=\"当前位置\">{breadcrumbs}</nav>{directory_favourites}<header><p class=\"eyebrow\">WEBDIR / DIRECTORY</p><h1>{title}</h1><p class=\"summary\">{directory_count} 个目录 · {file_count} 个文件</p>{directory_favourite_toggle}{gallery_toggle}<input class=\"directory-search\" id=\"directory-search\" type=\"search\" aria-label=\"搜索文件名\" placeholder=\"搜索当前目录的文件名…\" autocomplete=\"off\">{gallery_tools}<p class=\"directory-notice\" id=\"directory-notice\" role=\"status\" hidden></p></header><section class=\"listing\" aria-label=\"目录内容\">{rows}</section></main><nav class=\"scroll-jumps\" id=\"scroll-jumps\" aria-label=\"页面快速跳转\" hidden><button id=\"scroll-to-top\" type=\"button\" aria-label=\"回到顶部\" title=\"回到顶部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 14 6-6 6 6\"></path><path d=\"M6 19h12\"></path></svg></button><button id=\"scroll-to-bottom\" type=\"button\" aria-label=\"回到底部\" title=\"回到底部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 10 6 6 6-6\"></path><path d=\"M6 5h12\"></path></svg></button></nav><div class=\"image-lightbox\" id=\"image-lightbox\" role=\"dialog\" aria-modal=\"true\" aria-label=\"图片预览\" hidden><button class=\"lightbox-close\" type=\"button\" aria-label=\"关闭图片预览\">×</button><div class=\"lightbox-shell\"><div class=\"lightbox-position\" id=\"lightbox-position\" aria-live=\"polite\"></div><nav class=\"lightbox-filmstrip\" id=\"lightbox-filmstrip\" aria-label=\"图片缩略图导航\"></nav><figure><div class=\"lightbox-stage\"><img class=\"lightbox-image\" alt=\"\"><div class=\"favourite-burst\" id=\"favourite-burst\" aria-hidden=\"true\" hidden><svg viewBox=\"0 0 24 24\"><path d=\"M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21l7.7-7.5 1.1-1.1a5.5 5.5 0 0 0 0-7.8Z\"></path></svg></div></div><figcaption><span class=\"lightbox-name\"></span><span class=\"lightbox-controls\"><button class=\"preview-step\" id=\"preview-previous\" type=\"button\" aria-label=\"上一张\" title=\"上一张\">←</button><button class=\"favourite-toggle\" id=\"favourite-toggle\" type=\"button\" aria-label=\"点赞 (f)\" aria-pressed=\"false\" title=\"点赞 (f)\">♡</button><button class=\"preview-step\" id=\"preview-next\" type=\"button\" aria-label=\"下一张\" title=\"下一张\">→</button><button class=\"deletion-toggle\" id=\"deletion-toggle\" type=\"button\" aria-label=\"标记待删除 (d)\" aria-pressed=\"false\" title=\"标记待删除 (d)\">标记删除</button><button class=\"carousel-toggle\" id=\"carousel-toggle\" type=\"button\" aria-label=\"进入轮播 (p)\" aria-pressed=\"false\" title=\"进入轮播 (p)\">轮播</button></span></figcaption><p class=\"lightbox-error\" id=\"favourite-error\" role=\"status\" hidden></p><p class=\"lightbox-error\" id=\"deletion-mark-error\" role=\"status\" hidden></p></figure></div>{GALLERY_DELETE_DIALOG}</div>{GALLERY_MARKED_DELETE_DIALOG}\n<script>{FILE_SHORTCUT_JS}</script><script>{DIRECTORY_JS}</script>\n</body>\n</html>"
+        "<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">\n<title>{title} · 文件浏览</title>\n<style>{DIRECTORY_CSS}</style>\n</head>\n<body>\n<main><nav class=\"breadcrumbs\" aria-label=\"当前位置\">{breadcrumbs}</nav>{directory_favourites}<header><p class=\"eyebrow\">WEBDIR / DIRECTORY</p><h1>{title}</h1><p class=\"summary\">{directory_count} 个目录 · {file_count} 个文件</p>{directory_favourite_toggle}{gallery_toggle}<div class=\"directory-browser-tools\"><input class=\"directory-search\" id=\"directory-search\" type=\"search\" aria-label=\"搜索文件名\" placeholder=\"搜索当前目录的文件名…\" autocomplete=\"off\"><label class=\"directory-sort\">排序<select id=\"directory-sort\" aria-label=\"目录排序\"><option value=\"default\">默认</option><option value=\"modified\">按修改时间</option><option value=\"name\">按名称</option></select></label></div>{gallery_tools}<p class=\"directory-notice\" id=\"directory-notice\" role=\"status\" hidden></p></header><section class=\"listing\" aria-label=\"目录内容\">{rows}</section></main><nav class=\"scroll-jumps\" id=\"scroll-jumps\" aria-label=\"页面快速跳转\" hidden><button id=\"scroll-to-top\" type=\"button\" aria-label=\"回到顶部\" title=\"回到顶部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 14 6-6 6 6\"></path><path d=\"M6 19h12\"></path></svg></button><button id=\"scroll-to-bottom\" type=\"button\" aria-label=\"回到底部\" title=\"回到底部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 10 6 6 6-6\"></path><path d=\"M6 5h12\"></path></svg></button></nav><div class=\"image-lightbox\" id=\"image-lightbox\" role=\"dialog\" aria-modal=\"true\" aria-label=\"图片预览\" hidden><button class=\"lightbox-close\" type=\"button\" aria-label=\"关闭图片预览\">×</button><div class=\"lightbox-shell\"><div class=\"lightbox-position\" id=\"lightbox-position\" aria-live=\"polite\"></div><nav class=\"lightbox-filmstrip\" id=\"lightbox-filmstrip\" aria-label=\"图片缩略图导航\"></nav><figure><div class=\"lightbox-stage\"><img class=\"lightbox-image\" alt=\"\"><div class=\"favourite-burst\" id=\"favourite-burst\" aria-hidden=\"true\" hidden><svg viewBox=\"0 0 24 24\"><path d=\"M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21l7.7-7.5 1.1-1.1a5.5 5.5 0 0 0 0-7.8Z\"></path></svg></div></div><figcaption><span class=\"lightbox-name\"></span><span class=\"lightbox-controls\"><button class=\"preview-step\" id=\"preview-previous\" type=\"button\" aria-label=\"上一张\" title=\"上一张\">←</button><button class=\"favourite-toggle\" id=\"favourite-toggle\" type=\"button\" aria-label=\"点赞 (f)\" aria-pressed=\"false\" title=\"点赞 (f)\">♡</button><button class=\"preview-step\" id=\"preview-next\" type=\"button\" aria-label=\"下一张\" title=\"下一张\">→</button><button class=\"deletion-toggle\" id=\"deletion-toggle\" type=\"button\" aria-label=\"标记待删除 (d)\" aria-pressed=\"false\" title=\"标记待删除 (d)\">标记删除</button><button class=\"carousel-toggle\" id=\"carousel-toggle\" type=\"button\" aria-label=\"进入轮播 (p)\" aria-pressed=\"false\" title=\"进入轮播 (p)\">轮播</button></span></figcaption><p class=\"lightbox-error\" id=\"favourite-error\" role=\"status\" hidden></p><p class=\"lightbox-error\" id=\"deletion-mark-error\" role=\"status\" hidden></p></figure></div>{GALLERY_DELETE_DIALOG}</div>{GALLERY_MARKED_DELETE_DIALOG}\n<script>{FILE_SHORTCUT_JS}</script><script>{DIRECTORY_JS}</script>\n</body>\n</html>"
     ))
 }
 
@@ -3282,8 +3312,67 @@ if (history.state?.moveNotice) {
 
 const listing = document.querySelector('.listing');
 const directorySearch = document.querySelector('#directory-search');
+const directorySort = document.querySelector('#directory-sort');
 const directoryEmpty = document.querySelector('#directory-empty');
 const deletionFilter = document.querySelector('#deletion-filter');
+if (document.querySelector('#gallery-toggle')) {
+  const option = document.createElement('option');
+  option.value = 'similarity';
+  option.textContent = '按图片相似度';
+  directorySort.append(option);
+}
+const DIRECTORY_SORT_KEY = 'webdir-directory-sort';
+const savedDirectorySort = localStorage.getItem(DIRECTORY_SORT_KEY);
+if (savedDirectorySort && Array.from(directorySort.options).some(option => option.value === savedDirectorySort)) {
+  directorySort.value = savedDirectorySort;
+}
+const sortableEntries = Array.from(listing.querySelectorAll('.entry'));
+sortableEntries.forEach((entry, index) => { entry.dataset.defaultOrder = String(index); });
+const entryName = entry => entry.querySelector('.entry-name').textContent;
+const compareEntryNames = (left, right) => entryName(left).localeCompare(entryName(right), undefined, {
+  numeric: true,
+  sensitivity: 'base'
+}) || entryName(left).localeCompare(entryName(right));
+let similarityOrderRequest = null;
+const loadSimilarityOrder = async () => {
+  if (!similarityOrderRequest) {
+    const url = new URL(location.href);
+    url.search = '?mode=similarity-order';
+    similarityOrderRequest = fetch(url).then(async response => {
+      if (!response.ok) throw new Error((await response.text()).trim() || '无法计算图片相似度');
+      return response.json();
+    });
+  }
+  return similarityOrderRequest;
+};
+const sortDirectory = async () => {
+  const entries = sortableEntries.filter(entry => entry.isConnected);
+  if (directorySort.value === 'modified') {
+    entries.sort((left, right) => Number(right.dataset.modified) - Number(left.dataset.modified) || compareEntryNames(left, right));
+  } else if (directorySort.value === 'name') {
+    entries.sort(compareEntryNames);
+  } else if (directorySort.value === 'similarity') {
+    try {
+      const order = await loadSimilarityOrder();
+      if (directorySort.value !== 'similarity') return;
+      const ranks = new Map(order.map((name, index) => [name, index]));
+      const category = entry => entry.classList.contains('folder') ? 0 : entry.classList.contains('image') ? 1 : 2;
+      entries.sort((left, right) => {
+        const categoryOrder = category(left) - category(right);
+        if (categoryOrder) return categoryOrder;
+        if (category(left) === 1) return ranks.get(entryName(left)) - ranks.get(entryName(right));
+        return Number(left.dataset.defaultOrder) - Number(right.dataset.defaultOrder);
+      });
+    } catch (error) {
+      directoryNotice.textContent = error.message;
+      directoryNotice.hidden = false;
+      return;
+    }
+  } else {
+    entries.sort((left, right) => Number(left.dataset.defaultOrder) - Number(right.dataset.defaultOrder));
+  }
+  entries.forEach(entry => listing.insertBefore(entry, directoryEmpty));
+};
 const filterDirectory = () => {
   const query = directorySearch.value.trim().toLowerCase();
   const markedOnly = deletionFilter?.getAttribute('aria-pressed') === 'true';
@@ -3305,6 +3394,11 @@ const filterDirectory = () => {
     : query ? '没有匹配的文件或目录' : '这个目录是空的';
 };
 directorySearch.addEventListener('input', filterDirectory);
+directorySort.addEventListener('change', () => {
+  localStorage.setItem(DIRECTORY_SORT_KEY, directorySort.value);
+  sortDirectory();
+});
+sortDirectory();
 filterDirectory();
 
 const scrollJumps = document.querySelector('#scroll-jumps');
@@ -3479,8 +3573,8 @@ if (galleryToggle) {
   const mobileTouch = matchMedia('(hover: none) and (pointer: coarse)');
   const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
   const REVIEW_IDENTITY_KEY = 'webdir-review-identity';
-  const imageModel = Array.from(listing.querySelectorAll('.entry.image[data-preview-src]'));
-  const visibleImages = () => imageModel.filter(entry => entry.isConnected && !entry.hidden);
+  const imageModel = () => Array.from(listing.querySelectorAll('.entry.image[data-preview-src]'));
+  const visibleImages = () => imageModel().filter(entry => !entry.hidden);
   let previewTrigger = null;
   let deleting = false;
   let liking = 0;
@@ -4109,7 +4203,7 @@ if (galleryToggle) {
   };
   moveFavouriteButton.addEventListener('click', () => {
     if (moving) return;
-    const count = imageModel.filter(entry => entry.dataset.favourite === 'true').length;
+    const count = imageModel().filter(entry => entry.dataset.favourite === 'true').length;
     if (count === 0) {
       directoryNotice.textContent = '没有图片需要移动';
       directoryNotice.hidden = false;
@@ -5048,8 +5142,12 @@ h1 { position:relative; z-index:1; margin:0; overflow-wrap:anywhere; font-family
 .directory-favourite-toggle { position:relative; z-index:2; min-height:2rem; margin-top:.85rem; padding:.38rem .65rem; border:1px solid var(--line); border-radius:.45rem; color:var(--muted); background:var(--surface); font:600 .72rem/1 ui-sans-serif,-apple-system,sans-serif; cursor:pointer; }
 .directory-favourite-toggle:hover,.directory-favourite-toggle[aria-pressed="true"] { border-color:var(--accent); color:var(--accent); background:var(--accent-soft); }
 .directory-favourite-toggle:disabled { opacity:.5; cursor:wait; }
-.directory-search { position:relative; z-index:1; display:block; width:100%; margin-top:1.25rem; padding:.75rem .9rem; border:1px solid var(--line); border-radius:.65rem; color:var(--ink); background:var(--paper); font:inherit; }
+.directory-browser-tools { position:relative; z-index:1; display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:stretch; gap:.55rem; margin-top:1.25rem; }
+.directory-search { display:block; width:100%; min-width:0; padding:.75rem .9rem; border:1px solid var(--line); border-radius:.65rem; color:var(--ink); background:var(--paper); font:inherit; }
 .directory-search::placeholder { color:var(--muted); }
+.directory-sort { display:flex; align-items:center; gap:.45rem; padding:.35rem .4rem .35rem .7rem; border:1px solid var(--line); border-radius:.65rem; color:var(--muted); background:var(--paper); font:650 .72rem/1 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans-serif; white-space:nowrap; }
+.directory-sort:focus-within { border-color:var(--accent); box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 18%,transparent); }
+.directory-sort select { min-height:2rem; padding:0 1.7rem 0 .55rem; border:0; border-left:1px solid var(--line); color:var(--ink); background:transparent; font:inherit; cursor:pointer; outline:0; }
 .gallery-organise { position:relative; z-index:1; display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:.4rem; margin-top:.75rem; }
 .organise-label { margin-right:.25rem; color:var(--muted); font-size:.72rem; }
 .gallery-organise button { display:inline-flex; align-items:center; gap:.4rem; min-height:2rem; padding:.35rem .6rem; border:1px solid var(--line); border-radius:.45rem; color:var(--muted); background:var(--surface); font:500 .72rem/1.3 ui-sans-serif,-apple-system,sans-serif; cursor:pointer; transition:color .15s ease,border-color .15s ease,background .15s ease; }
@@ -5269,7 +5367,7 @@ h1 { position:relative; z-index:1; margin:0; overflow-wrap:anywhere; font-family
 .empty span { font:300 3rem/1 ui-monospace,SFMono-Regular,Consolas,monospace; }
 .empty p { margin:.8rem 0 0; }
 :focus-visible { outline:3px solid color-mix(in srgb,var(--accent) 55%,transparent); outline-offset:-3px; }
-@media (max-width:650px) { main,.gallery-mode main { width:100%; padding:1rem; } main>header { padding:1.5rem 1.1rem; } .view-toggle { position:relative; right:auto; top:auto; width:max-content; margin-top:1rem; } .entry { grid-template-columns:2.4rem minmax(0,1fr) auto; padding-inline:1rem; } .kind,.arrow { display:none; } .detail { grid-column:3; } .folder .detail { display:none; } .folder-favourite-toggle { position:static; grid-column:3; justify-self:end; } .entry.image .glyph { width:2.4rem; height:2.4rem; } .listing.gallery { grid-template-columns:repeat(auto-fill,minmax(145px,1fr)); gap:.65rem; padding:.65rem; } .gallery .entry { grid-template-columns:minmax(0,1fr); grid-template-rows:8.5rem auto auto; padding:.6rem; } .gallery .entry:hover { padding:.6rem; } .gallery .entry.image .glyph { width:100%; height:100%; } .gallery .detail { grid-column:1; grid-row:3; justify-self:start; } .scroll-jumps { right:max(.4rem,env(safe-area-inset-right)); } .scroll-jumps button { width:2.8rem; height:2.8rem; } .image-lightbox { padding:max(.7rem,env(safe-area-inset-top)) max(.7rem,env(safe-area-inset-right)) max(.7rem,env(safe-area-inset-bottom)) max(.7rem,env(safe-area-inset-left)); } .lightbox-shell { gap:.45rem; } .lightbox-filmstrip { grid-template-columns:repeat(5,3.35rem); gap:.25rem; } .filmstrip-slot { width:3.35rem; } .filmstrip-slot[data-distance="3"] { display:none; } .image-lightbox figcaption { flex-wrap:wrap; } .lightbox-name { width:100%; text-align:center; } .lightbox-controls { gap:.25rem; } .preview-step,.deletion-toggle,.carousel-toggle,.comment-toggle,.viewer-more-toggle { min-width:2.8rem; width:2.8rem; height:2.8rem; } .favourite-toggle { width:2.9rem; height:2.9rem; } .gallery-comments { inset:auto max(.45rem,env(safe-area-inset-right)) max(.45rem,env(safe-area-inset-bottom)) max(.45rem,env(safe-area-inset-left)); width:auto; height:min(92dvh,42rem); border-radius:1.15rem; animation-name:gallery-comments-mobile-in; } @keyframes gallery-comments-mobile-in { from { opacity:0; transform:translateY(1.5rem) scale(.985); } } .gallery-comment-composer textarea { min-height:4.8rem; } }
+@media (max-width:650px) { main,.gallery-mode main { width:100%; padding:1rem; } main>header { padding:1.5rem 1.1rem; } .view-toggle { position:relative; right:auto; top:auto; width:max-content; margin-top:1rem; } .directory-browser-tools { grid-template-columns:1fr; } .directory-sort { justify-self:end; } .entry { grid-template-columns:2.4rem minmax(0,1fr) auto; padding-inline:1rem; } .kind,.arrow { display:none; } .detail { grid-column:3; } .folder .detail { display:none; } .folder-favourite-toggle { position:static; grid-column:3; justify-self:end; } .entry.image .glyph { width:2.4rem; height:2.4rem; } .listing.gallery { grid-template-columns:repeat(auto-fill,minmax(145px,1fr)); gap:.65rem; padding:.65rem; } .gallery .entry { grid-template-columns:minmax(0,1fr); grid-template-rows:8.5rem auto auto; padding:.6rem; } .gallery .entry:hover { padding:.6rem; } .gallery .entry.image .glyph { width:100%; height:100%; } .gallery .detail { grid-column:1; grid-row:3; justify-self:start; } .scroll-jumps { right:max(.4rem,env(safe-area-inset-right)); } .scroll-jumps button { width:2.8rem; height:2.8rem; } .image-lightbox { padding:max(.7rem,env(safe-area-inset-top)) max(.7rem,env(safe-area-inset-right)) max(.7rem,env(safe-area-inset-bottom)) max(.7rem,env(safe-area-inset-left)); } .lightbox-shell { gap:.45rem; } .lightbox-filmstrip { grid-template-columns:repeat(5,3.35rem); gap:.25rem; } .filmstrip-slot { width:3.35rem; } .filmstrip-slot[data-distance="3"] { display:none; } .image-lightbox figcaption { flex-wrap:wrap; } .lightbox-name { width:100%; text-align:center; } .lightbox-controls { gap:.25rem; } .preview-step,.deletion-toggle,.carousel-toggle,.comment-toggle,.viewer-more-toggle { min-width:2.8rem; width:2.8rem; height:2.8rem; } .favourite-toggle { width:2.9rem; height:2.9rem; } .gallery-comments { inset:auto max(.45rem,env(safe-area-inset-right)) max(.45rem,env(safe-area-inset-bottom)) max(.45rem,env(safe-area-inset-left)); width:auto; height:min(92dvh,42rem); border-radius:1.15rem; animation-name:gallery-comments-mobile-in; } @keyframes gallery-comments-mobile-in { from { opacity:0; transform:translateY(1.5rem) scale(.985); } } .gallery-comment-composer textarea { min-height:4.8rem; } }
 @media (max-height:620px) { .gallery-comments>header { padding:.7rem .9rem .6rem; } .gallery-comments>header button { width:2.15rem; height:2.15rem; } .gallery-comments-image { grid-template-columns:2.7rem minmax(0,1fr) auto; gap:.65rem; padding:.55rem .9rem; } .gallery-comments-image img { width:2.7rem; height:2.7rem; } .gallery-comment-empty { gap:.25rem; padding:.75rem; } .gallery-comment-composer { max-height:58dvh; gap:.5rem; padding:.7rem .9rem; } .gallery-comment-composer textarea { min-height:4rem; } .gallery-comments>footer { display:none; } }
 @media (max-width:1024px),(hover:none) and (pointer:coarse) { .preview-step,.deletion-toggle,.carousel-toggle,.comment-toggle,.viewer-more-toggle,.viewer-tools button,.shortcut-help-toggle { min-width:3rem; height:3rem; } .lightbox-controls { width:100%; min-width:0; flex-shrink:1; justify-content:center; flex-wrap:wrap; } .viewer-extras,.viewer-tools { width:100%; justify-content:center; border:0; } .image-info,.shortcut-help { left:50%; right:auto; bottom:8.7rem; width:max-content; max-width:calc(100vw - 2rem); transform:translateX(-50%); } }
 @media (hover:none) and (pointer:coarse) { .listing.gallery .entry.image,.listing.gallery .entry.image:hover { display:block; padding:0; } .listing.gallery .entry.image::after,.listing.gallery .entry.image .entry-name,.listing.gallery .entry.image .detail { opacity:1; transform:none; } .image-lightbox figcaption { padding-bottom:max(.2rem,env(safe-area-inset-bottom)); } }
@@ -7853,8 +7951,7 @@ mod tests {
         });
 
         let root_listing = test_http_request(address, "GET", "/", "");
-        assert!(root_listing
-            .contains("class=\"entry folder\"><a class=\"folder-open\" href=\"/Documents/\""));
+        assert!(root_listing.contains("<a class=\"folder-open\" href=\"/Documents/\""));
         let documents_position = root_listing
             .find("class=\"entry-name\">Documents</span>")
             .unwrap();
@@ -7871,9 +7968,7 @@ mod tests {
         assert!(listing.contains(
             "id=\"directory-favourite-toggle\" type=\"button\" aria-pressed=\"true\">移出收藏夹"
         ));
-        assert!(listing.contains(
-            "class=\"entry folder\"><a class=\"folder-open\" href=\"/Documents/nested/\""
-        ));
+        assert!(listing.contains("<a class=\"folder-open\" href=\"/Documents/nested/\""));
         assert!(listing.contains("data-directory-favourite-toggle=\"/Documents/nested/\""));
         let file = test_http_request(address, "GET", "/Documents/nested/note.txt", "");
         assert!(file.starts_with("HTTP/1.1 200 OK"));
@@ -7955,7 +8050,17 @@ mod tests {
         assert!(page.contains("src=\"/icon.svg?mode=asset&amp;v="));
         assert!(page.contains("class=\"entry file\" href=\"/notes.md\""));
         assert!(!page.contains("notes.md?mode=thumb"));
-        assert!(page.contains("class=\"entry folder\"><a class=\"folder-open\" href=\"/docs/\""));
+        assert!(page.contains("class=\"entry folder\" data-modified=\""));
+        assert!(page.contains("<a class=\"folder-open\" href=\"/docs/\""));
+        assert!(page.contains("id=\"directory-sort\" aria-label=\"目录排序\""));
+        assert!(page.contains("<option value=\"default\">默认</option>"));
+        assert!(page.contains("<option value=\"modified\">按修改时间</option>"));
+        assert!(page.contains("<option value=\"name\">按名称</option>"));
+        assert!(page.contains("option.value = 'similarity'"));
+        assert!(page.contains("option.textContent = '按图片相似度'"));
+        assert!(page.contains("const DIRECTORY_SORT_KEY = 'webdir-directory-sort'"));
+        assert!(page.contains("url.search = '?mode=similarity-order'"));
+        assert!(page.contains("data-modified=\""));
         assert!(page.contains("class=\"folder-favourite-toggle\" type=\"button\" data-directory-favourite-toggle=\"/docs/\" aria-pressed=\"false\""));
         assert!(page.contains("data-list-src=\"/photo.png?mode=thumb&amp;v="));
         assert!(
