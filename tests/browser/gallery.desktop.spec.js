@@ -34,6 +34,19 @@ test('sorting works in gallery and list views and drives preview order', async (
   await expect(page.locator('#directory-sort')).toHaveValue('similarity');
 });
 
+test('directory search survives a page reload', async ({page}) => {
+  await page.goto('/?view=gallery');
+  await page.locator('#directory-search').fill('landscape');
+  await expect(page.locator('.listing > .entry.image:visible')).toHaveCount(1);
+  await expect(page.locator('.listing > .entry.image:visible .entry-name')).toHaveText('02-landscape.svg');
+
+  await page.reload();
+
+  await expect(page.locator('#directory-search')).toHaveValue('landscape');
+  await expect(page.locator('.listing > .entry.image:visible')).toHaveCount(1);
+  await expect(page.locator('.listing > .entry.image:visible .entry-name')).toHaveText('02-landscape.svg');
+});
+
 test('folder stars update favourites without reloading the directory', async ({page}) => {
   for (const suffix of ['', '-2', '-3', '-4']) {
     await page.request.delete(`/shortcut-folder${suffix}/?mode=directory-favourite`);
@@ -123,6 +136,14 @@ test('portrait layout, horizontal transitions, toolbar wake-up, and explicit clo
   expect(Math.abs(layout.image.width - layout.stage.width)).toBeLessThanOrEqual(1);
   expect(Math.abs(layout.image.height - layout.stage.height)).toBeLessThanOrEqual(1);
   await expect(page.locator('#image-lightbox')).toHaveClass(/chrome-hidden/);
+  await expect(page.locator('.lightbox-name')).toBeVisible();
+  await expect(page.locator('.lightbox-name')).toHaveText('01-portrait.svg');
+  await expect(page.locator('.lightbox-controls')).toHaveCSS('opacity', '0');
+  await expect.poll(() => page.locator('#image-lightbox figcaption').evaluate(caption => {
+    const name = caption.querySelector('.lightbox-name').getBoundingClientRect();
+    const bounds = caption.getBoundingClientRect();
+    return Math.abs(name.left + name.width / 2 - (bounds.left + bounds.width / 2));
+  })).toBeLessThanOrEqual(1);
   await expect(page.locator('.lightbox-filmstrip')).toBeVisible();
   await expect(page.locator('.lightbox-close')).toBeVisible();
   await expect(page.locator('.lightbox-position')).toHaveText('1 / 3');

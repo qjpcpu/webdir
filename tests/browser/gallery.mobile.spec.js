@@ -46,7 +46,14 @@ test('mobile directory favourites keep every shortcut reachable without overlapp
 test('screen-wide vertical swipe hands off without snapping back', async ({page}) => {
   await openGalleryImage(page);
   await expect(page.locator('#image-lightbox')).toHaveClass(/chrome-hidden/);
-  await expect(page.locator('#image-lightbox figcaption')).toHaveCSS('opacity', '0');
+  await expect(page.locator('.lightbox-name')).toBeVisible();
+  await expect(page.locator('.lightbox-name')).toHaveText('01-portrait.svg');
+  await expect(page.locator('.lightbox-controls')).toHaveCSS('opacity', '0');
+  await expect.poll(() => page.locator('#image-lightbox figcaption').evaluate(caption => {
+    const name = caption.querySelector('.lightbox-name').getBoundingClientRect();
+    const bounds = caption.getBoundingClientRect();
+    return Math.abs(name.left + name.width / 2 - (bounds.left + bounds.width / 2));
+  })).toBeLessThanOrEqual(1);
   await expect(page.locator('.lightbox-position')).toBeVisible();
   await expect(page.locator('.lightbox-filmstrip')).toBeVisible();
   await expect(page.locator('.lightbox-close')).toBeVisible();
@@ -93,7 +100,7 @@ test('screen-wide vertical swipe hands off without snapping back', async ({page}
   await dispatchTouchPointer(page, '#image-lightbox', 'pointerdown', x, startY, 2);
   await dispatchTouchPointer(page, '#image-lightbox', 'pointerup', x, startY, 2);
   await expect(page.locator('#image-lightbox')).not.toHaveClass(/chrome-hidden/);
-  await expect(page.locator('#image-lightbox figcaption')).toHaveCSS('opacity', '1');
+  await expect(page.locator('.lightbox-controls')).toHaveCSS('opacity', '1');
   await expect(page.locator('.lightbox-state')).toHaveCSS('opacity', '1');
   await dispatchTouchPointer(page, '#image-lightbox', 'pointerdown', x, startY, 3);
   await dispatchTouchPointer(page, '#image-lightbox', 'pointermove', x, endY, 3);

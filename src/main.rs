@@ -3453,6 +3453,9 @@ const directorySearch = document.querySelector('#directory-search');
 const directorySort = document.querySelector('#directory-sort');
 const directoryEmpty = document.querySelector('#directory-empty');
 const deletionFilter = document.querySelector('#deletion-filter');
+if (typeof history.state?.directorySearch === 'string') {
+  directorySearch.value = history.state.directorySearch;
+}
 if (document.querySelector('#gallery-toggle')) {
   const option = document.createElement('option');
   option.value = 'similarity';
@@ -3531,7 +3534,10 @@ const filterDirectory = () => {
     ? '当前文件夹没有待删除图片'
     : query ? '没有匹配的文件或目录' : '这个目录是空的';
 };
-directorySearch.addEventListener('input', filterDirectory);
+directorySearch.addEventListener('input', () => {
+  history.replaceState({...history.state, directorySearch: directorySearch.value}, '');
+  filterDirectory();
+});
 directorySort.addEventListener('change', () => {
   localStorage.setItem(DIRECTORY_SORT_KEY, directorySort.value);
   sortDirectory();
@@ -5416,7 +5422,7 @@ h1 { position:relative; z-index:1; margin:0; overflow-wrap:anywhere; font-family
 .favourite-burst.liked path { fill:currentColor; stroke:#fff; stroke-width:.7; }
 .image-lightbox figcaption { display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:.65rem .75rem; min-width:0; padding:0 .25rem .15rem; font-size:.82rem; transition:opacity .22s ease,transform .3s cubic-bezier(.16,1,.3,1); }
 .lightbox-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.lightbox-controls { display:flex; flex-shrink:0; align-items:center; gap:.4rem; }
+.lightbox-controls { display:flex; flex-shrink:0; align-items:center; gap:.4rem; transition:opacity .22s ease,transform .3s cubic-bezier(.16,1,.3,1); }
 .preview-step,.deletion-toggle,.carousel-toggle,.comment-toggle,.viewer-more-toggle,.viewer-tools button,.shortcut-help-toggle { position:relative; display:grid; place-items:center; min-width:2.75rem; height:2.75rem; padding:0 .7rem; border:1px solid rgba(255,255,255,.26); border-radius:.8rem; color:#fff; background:rgba(255,255,255,.045); font:650 .72rem/1 sans-serif; cursor:pointer; transition:background .18s ease,border-color .18s ease,transform .18s cubic-bezier(.16,1,.3,1); }
 .preview-step,.deletion-toggle,.carousel-toggle,.comment-toggle,.viewer-more-toggle { width:2.75rem; padding:0; }
 .preview-step svg,.deletion-toggle svg,.carousel-toggle svg,.comment-toggle svg,.viewer-more-toggle svg,.viewer-tools svg,.shortcut-help-toggle svg,.lightbox-close svg,.gallery-comments button svg { width:1.15rem; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
@@ -5495,7 +5501,9 @@ h1 { position:relative; z-index:1; margin:0; overflow-wrap:anywhere; font-family
 .carousel-hud { position:fixed; z-index:10; left:50%; bottom:max(1.25rem,env(safe-area-inset-bottom)); display:none; gap:.45rem; transform:translateX(-50%); transition:opacity .22s ease,transform .3s cubic-bezier(.16,1,.3,1); }
 .carousel-hud button { min-height:2.75rem; padding:.65rem .9rem; border:1px solid rgba(255,255,255,.25); border-radius:.75rem; color:#fff; background:rgba(12,14,20,.72); backdrop-filter:blur(12px); cursor:pointer; }
 .carousel-notice { align-self:center; padding:.55rem .7rem; border-radius:.65rem; color:rgba(255,255,255,.78); background:rgba(12,14,20,.72); font-size:.72rem; backdrop-filter:blur(12px); }
-.image-lightbox.chrome-hidden figcaption { opacity:0; pointer-events:none; transform:translateY(.55rem); }
+.image-lightbox.chrome-hidden figcaption { display:grid; grid-template-columns:minmax(0,1fr); justify-items:center; }
+.image-lightbox.chrome-hidden .lightbox-name,.image-lightbox.chrome-hidden .lightbox-controls { grid-area:1/1; }
+.image-lightbox.chrome-hidden .lightbox-controls { opacity:0; pointer-events:none; transform:translateY(.55rem); }
 .image-lightbox:not(.carousel-mode) .lightbox-state { opacity:1; transform:none; }
 .image-lightbox.carousel-mode { padding:0; background:#000; backdrop-filter:none; }
 .image-lightbox:fullscreen { width:100vw; height:100vh; height:100dvh; inset:0; }
