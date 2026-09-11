@@ -1,6 +1,67 @@
 const { test, expect } = require('@playwright/test');
 const { dispatchTouchPointer, openGalleryImage } = require('./helpers');
 
+test('browser back closes the image at the same gallery scroll position', async ({page}) => {
+  await page.goto('/');
+  await page.goto('/?view=gallery');
+  const entry = page.locator('.listing.gallery .entry.image').first();
+  await entry.scrollIntoViewIfNeeded();
+  await page.evaluate(() => { window.galleryNavigationMarker = true; });
+  await entry.click();
+  const scrollPosition = await page.evaluate(() => ({x: scrollX, y: scrollY}));
+  await expect(page.locator('#image-lightbox')).toBeVisible();
+  await page.keyboard.press('k');
+  await expect(page.locator('.lightbox-name')).toHaveText('02-landscape.svg');
+  await page.keyboard.press('k');
+  await expect(page.locator('.lightbox-name')).toHaveText('03-square.svg');
+
+  await page.goBack();
+
+  await expect(page).toHaveURL('/?view=gallery');
+  await expect(page.locator('#image-lightbox')).toBeHidden();
+  await expect(page.locator('.listing.gallery')).toBeVisible();
+  expect(await page.evaluate(() => window.galleryNavigationMarker)).toBe(true);
+  expect(await page.evaluate(() => ({x: scrollX, y: scrollY}))).toEqual(scrollPosition);
+  await expect(page.locator('main')).toHaveJSProperty('inert', false);
+
+  await page.goForward();
+  await expect(page.locator('#image-lightbox')).toBeVisible();
+  await expect(page.locator('.lightbox-name')).toHaveText('03-square.svg');
+  await page.goBack();
+  await expect(page.locator('#image-lightbox')).toBeHidden();
+  await page.goBack();
+  await expect(page).toHaveURL('/');
+});
+
+test('closing and reopening images keeps browser back navigation usable', async ({page}) => {
+  await page.goto('/');
+  await openGalleryImage(page);
+  await page.locator('.lightbox-close').click();
+  await expect(page.locator('#image-lightbox')).toBeHidden();
+
+  await page.locator('.listing.gallery .entry.image').last().click();
+  await expect(page.locator('#image-lightbox')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#image-lightbox')).toBeHidden();
+
+  await page.goBack();
+  await expect(page).toHaveURL('/');
+});
+
+test('browser back closes a restored image after reloading', async ({page}) => {
+  await page.goto('/');
+  await openGalleryImage(page);
+  await page.reload();
+  await expect(page.locator('#image-lightbox')).toBeVisible();
+  await expect(page.locator('.lightbox-name')).toHaveText('01-portrait.svg');
+
+  await page.goBack();
+  await expect(page).toHaveURL('/?view=gallery');
+  await expect(page.locator('#image-lightbox')).toBeHidden();
+  await page.goBack();
+  await expect(page).toHaveURL('/');
+});
+
 test('page jump buttons only appear while the page is scrolling', async ({page}) => {
   await page.goto('/?view=gallery');
   const scrollJumps = page.locator('#scroll-jumps');

@@ -4633,6 +4633,10 @@ if (galleryToggle) {
 
   const closeLightbox = () => {
     if (lightbox.hidden || deleting) return;
+    if (history.state?.galleryPreview) {
+      history.back();
+      return;
+    }
     clearTimeout(chromeTimer);
     mouseInChromeZone = false;
     setCarousel(false);
@@ -4655,7 +4659,7 @@ if (galleryToggle) {
     document.body.classList.remove('lightbox-open');
     document.querySelector('main').inert = false;
     scrollJumps.inert = false;
-    (previewTrigger || galleryToggle).focus();
+    (previewTrigger || galleryToggle).focus({preventScroll: mobileTouch.matches});
     previewTrigger = null;
     history.replaceState({...history.state, previewImage: null}, '');
     filterDirectory();
@@ -4843,6 +4847,11 @@ if (galleryToggle) {
     }
     if (gestureOffset !== null) clearGestureLayers(gestureIncoming);
     const opening = lightbox.hidden;
+    if (opening && mobileTouch.matches && !history.state?.galleryPreview) {
+      const state = {...history.state, previewImage: null, scrollX, scrollY};
+      history.replaceState(state, '');
+      history.pushState({...state, galleryPreview: true}, '');
+    }
     previewTrigger = entry;
     lightbox.dataset.filePath = entry.dataset.filePath;
     const name = entry.querySelector('.entry-name').textContent;
@@ -5219,6 +5228,16 @@ if (galleryToggle) {
 
   setGallery(new URLSearchParams(location.search).get('view') === 'gallery', false);
   updateDeletionControls();
+  window.addEventListener('popstate', () => {
+    if (!mobileTouch.matches) return;
+    if (history.state?.galleryPreview) {
+      const entry = visibleImages()
+        .find(entry => entry.dataset.listHref === history.state.previewImage);
+      if (entry) openLightbox(entry);
+    } else {
+      closeLightbox();
+    }
+  });
   if (listing.classList.contains('gallery') && history.state?.previewImage) {
     const entry = visibleImages()
       .find(entry => entry.dataset.listHref === history.state.previewImage);
