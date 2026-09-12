@@ -20,10 +20,12 @@ mod gallery_comments;
 mod image_cache;
 mod image_similarity;
 mod review;
+mod sharing;
 mod state;
 mod thumbnails;
 
 use image_cache::{hex_digest, ImageCache};
+use sharing::Access;
 use state::StateStore;
 
 use collaboration::CollaborationHub;
@@ -321,6 +323,7 @@ fn handle_connection_with_auth(
 
     let (request_path, query) = target.split_once('?').unwrap_or((target, ""));
     let request_path = request_path.split('#').next().unwrap_or("/");
+    let mut access = Access::default();
     if let Some(expected_token) = auth_token {
         if request_path == AUTH_PATH && method == "POST" {
             return if headers.auth_token == expected_token {
@@ -344,35 +347,85 @@ fn handle_connection_with_auth(
                 head_only,
             );
         }
-        match cookie_value(&headers.cookie, AUTH_COOKIE_NAME) {
-            Some(token) if token == expected_token => {}
-            Some(_) => {
-                return send_html_status(
+        let owner_cookie = cookie_value(&headers.cookie, AUTH_COOKIE_NAME);
+        access.can_share = !raw && owner_cookie.as_deref() == Some(expected_token);
+        if !raw {
+            if let Some(token) = query_parameter(query, "share") {
+                let scope = sharing::Scope::verify(&token, expected_token, root);
+                let relative =
+                    percent_decode(request_path).and_then(|path| safe_relative_path(&path));
+                if !matches!(method, "GET" | "HEAD")
+                    || !scope
+                        .as_ref()
+                        .zip(relative.as_ref())
+                        .is_some_and(|(scope, relative)| scope.allows_request(root, relative))
+                {
+                    return send_text(
+                        &mut stream,
+                        403,
+                        "Forbidden",
+                        "分享链接无效或超出分享范围\n",
+                        head_only,
+                    );
+                }
+                let remaining = query
+                    .split('&')
+                    .filter(|part| {
+                        percent_decode(part.split('=').next().unwrap_or("")).as_deref()
+                            != Some("share")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("&");
+                let location = format!(
+                    "{}{}{}",
+                    url_for_path(relative.as_ref().unwrap(), request_path.ends_with('/')),
+                    if remaining.is_empty() { "" } else { "?" },
+                    remaining
+                );
+                write!(stream, "HTTP/1.1 303 See Other\r\nLocation: {location}\r\nSet-Cookie: {}={token}; Path=/; HttpOnly; SameSite=Lax\r\nCache-Control: no-store\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", sharing::COOKIE_NAME)?;
+                return Ok(());
+            }
+            if !access.can_share {
+                if let Some(token) = cookie_value(&headers.cookie, sharing::COOKIE_NAME) {
+                    access.scope = sharing::Scope::verify(&token, expected_token, root);
+                    if access.scope.is_none() {
+                        return send_text(
+                            &mut stream,
+                            403,
+                            "Forbidden",
+                            "分享链接无效\n",
+                            head_only,
+                        );
+                    }
+                }
+            }
+        }
+        if owner_cookie.as_deref() != Some(expected_token) && access.scope.is_none() {
+            return match owner_cookie {
+                Some(_) => send_html_status(
                     &mut stream,
                     403,
                     "Forbidden",
                     &render_invalid_access_page(),
                     head_only,
-                )
-            }
-            None if matches!(method, "GET" | "HEAD") && request_wants_html(&headers) => {
-                return send_html_status(
-                    &mut stream,
-                    401,
-                    "Unauthorized",
-                    &render_auth_page(target),
-                    head_only,
-                )
-            }
-            None => {
-                return send_html_status(
+                ),
+                None if matches!(method, "GET" | "HEAD") && request_wants_html(&headers) => {
+                    send_html_status(
+                        &mut stream,
+                        401,
+                        "Unauthorized",
+                        &render_auth_page(target),
+                        head_only,
+                    )
+                }
+                None => send_html_status(
                     &mut stream,
                     401,
                     "Unauthorized",
                     &render_invalid_access_page(),
                     head_only,
-                )
-            }
+                ),
+            };
         }
     }
     if raw {
@@ -404,9 +457,9 @@ fn handle_connection_with_auth(
     }
     if matches!(method, "GET" | "HEAD")
         && matches!(request_path, "/favicon.svg" | "/favicon.ico")
-        && !root.join(request_path.trim_start_matches('/')).is_file()
+        && (access.scope.is_some() || !root.join(request_path.trim_start_matches('/')).is_file())
     {
-        let icon = render_site_icon(root);
+        let icon = render_site_icon(access.scope.as_ref().map_or(root, |scope| &scope.canonical));
         return send_content(&mut stream, icon.as_bytes(), "image/svg+xml", head_only);
     }
     let mode = query_parameter(query, "mode");
@@ -431,17 +484,66 @@ fn handle_connection_with_auth(
         None => return send_text(&mut stream, 403, "Forbidden", "禁止访问\n", head_only),
     };
 
+    if !access.allows_request(root, &relative) {
+        return send_text(&mut stream, 403, "Forbidden", "超出分享范围\n", head_only);
+    }
+
     let canonical = match fs::canonicalize(root.join(&relative)) {
         Ok(path) if path.starts_with(root) || traverses_directory_symlink(root, &relative) => path,
         Ok(_) => return send_text(&mut stream, 403, "Forbidden", "禁止访问\n", head_only),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            let body = render_not_found_page(&decoded);
+            let body = access.not_found(&decoded);
             return send_html_status(&mut stream, 404, "Not Found", &body, head_only);
         }
         Err(error) => return Err(error),
     };
 
     let metadata = fs::metadata(&canonical)?;
+    if mode.as_deref() == Some("share") {
+        if !access.can_share {
+            return send_text(
+                &mut stream,
+                403,
+                "Forbidden",
+                "请使用主访问令牌登录后生成分享链接\n",
+                head_only,
+            );
+        }
+        if method != "POST" || !(metadata.is_file() || metadata.is_dir()) {
+            return send_text(
+                &mut stream,
+                405,
+                "Method Not Allowed",
+                "仅支持分享文件或目录\n",
+                head_only,
+            );
+        }
+        let directory = if metadata.is_dir() {
+            relative.as_path()
+        } else {
+            relative.parent().unwrap()
+        };
+        let token = sharing::sign(directory, auth_token.unwrap())?;
+        let url = format!(
+            "{}?share={token}",
+            url_for_path(&relative, metadata.is_dir())
+        );
+        return send_json(&mut stream, &serde_json::json!({"url": url}), false);
+    }
+    let review_access = review_data_mode || review_action_mode || review_collaboration_mode;
+    let image_comments_access =
+        gallery_comments_mode || (method == "DELETE" && is_image_file(&canonical));
+    if (review_access && !access.allows(&review::sidecar_path(&canonical)))
+        || (image_comments_access && !access.allows(&gallery_comments::comments_path(&canonical)))
+    {
+        return send_text(
+            &mut stream,
+            403,
+            "Forbidden",
+            "评论文件超出分享范围\n",
+            head_only,
+        );
+    }
     if mode.as_deref() == Some("similarity-order") {
         if !matches!(method, "GET" | "HEAD") || !metadata.is_dir() {
             return send_text(
@@ -452,7 +554,7 @@ fn handle_connection_with_auth(
                 head_only,
             );
         }
-        return match image_similarity::order(&canonical, state) {
+        return match image_similarity::order_with_access(&canonical, state, &access) {
             Ok(order) => send_json(&mut stream, &order, head_only),
             Err(error) => send_text(
                 &mut stream,
@@ -525,6 +627,18 @@ fn handle_connection_with_auth(
                 .collect::<Vec<_>>(),
             None => return send_text(&mut stream, 400, "Bad Request", "无效的收藏夹路径\n", false),
         };
+        if paths
+            .iter()
+            .any(|path| !access.allows_request(root, path.strip_prefix(root).unwrap()))
+        {
+            return send_text(
+                &mut stream,
+                403,
+                "Forbidden",
+                "收藏目录超出分享范围\n",
+                false,
+            );
+        }
         return match state.reorder_directory_favourites(&paths) {
             Ok(()) => send_empty(&mut stream, 204, "No Content"),
             Err(_) => send_text(
@@ -647,7 +761,11 @@ fn handle_connection_with_auth(
                 )
             }
         };
-        return send_json(&mut stream, &batch_images(&canonical, state, action), false);
+        return send_json(
+            &mut stream,
+            &batch_images_with_access(&canonical, state, action, &access),
+            false,
+        );
     }
     if method == "DELETE" {
         if !metadata.is_file() || !is_image_file(&canonical) {
@@ -699,17 +817,18 @@ fn handle_connection_with_auth(
             };
             return send_redirect(&mut stream, &location);
         }
-        let body = render_directory_page_at(
+        let body = render_directory_page_with_access(
             root,
             &canonical,
             &relative,
             state,
             query_parameter(query, "view").as_deref() == Some("gallery"),
+            &access,
         )?;
         return send_html(&mut stream, &body, head_only);
     }
     if !metadata.is_file() {
-        let body = render_not_found_page(&decoded);
+        let body = access.not_found(&decoded);
         return send_html_status(&mut stream, 404, "Not Found", &body, head_only);
     }
 
@@ -1021,7 +1140,7 @@ fn handle_connection_with_auth(
             .and_then(|name| name.to_str())
             .unwrap_or("SVG image");
         let body = render_svg_page(title, metadata.len());
-        return send_file_page(&mut stream, &body, &relative, head_only);
+        return send_file_page_with_access(&mut stream, &body, &relative, head_only, &access);
     }
 
     if is_raster_image(&canonical) && request_wants_html(&headers) {
@@ -1035,7 +1154,7 @@ fn handle_connection_with_auth(
             .unwrap_or("IMAGE")
             .to_ascii_uppercase();
         let body = render_image_page(title, &kind, metadata.len());
-        return send_file_page(&mut stream, &body, &relative, head_only);
+        return send_file_page_with_access(&mut stream, &body, &relative, head_only, &access);
     }
 
     if has_extension(&canonical, "mp4") && request_wants_html(&headers) {
@@ -1044,7 +1163,7 @@ fn handle_connection_with_auth(
             .and_then(|name| name.to_str())
             .unwrap_or("Video");
         let body = render_video_page(title, metadata.len());
-        return send_file_page(&mut stream, &body, &relative, head_only);
+        return send_file_page_with_access(&mut stream, &body, &relative, head_only, &access);
     }
 
     if has_extension(&canonical, "drawio") && request_wants_html(&headers) {
@@ -1075,7 +1194,7 @@ fn handle_connection_with_auth(
             .and_then(|name| name.to_str())
             .unwrap_or("Draw.io diagram");
         let body = render_drawio_page(&diagram, title, metadata.len());
-        return send_file_page(&mut stream, &body, &relative, head_only);
+        return send_file_page_with_access(&mut stream, &body, &relative, head_only, &access);
     }
 
     if has_extension(&canonical, "md") {
@@ -1085,7 +1204,7 @@ fn handle_connection_with_auth(
             .and_then(|name| name.to_str())
             .unwrap_or("Markdown");
         let body = render_markdown_page(&markdown, title);
-        return send_file_page(&mut stream, &body, &relative, head_only);
+        return send_file_page_with_access(&mut stream, &body, &relative, head_only, &access);
     }
 
     if request_wants_html(&headers) && metadata.len() <= MAX_TEXT_VIEWER_FILE {
@@ -1096,7 +1215,7 @@ fn handle_connection_with_auth(
                 text_file.kind,
                 &canonical,
             );
-            return send_file_page(&mut stream, &body, &relative, head_only);
+            return send_file_page_with_access(&mut stream, &body, &relative, head_only, &access);
         }
     }
 
@@ -1487,11 +1606,12 @@ body > header,.topbar { top:2.4rem; }
 .breadcrumb-menu a:hover { background:var(--accent-soft); }
 "#;
 
-fn send_file_page(
+fn send_file_page_with_access(
     stream: &mut TcpStream,
     body: &str,
     relative: &Path,
     head_only: bool,
+    access: &Access,
 ) -> io::Result<()> {
     let body = body
         .replacen(
@@ -1511,7 +1631,7 @@ fn send_file_page(
             "<header",
             &format!(
                 "<nav class=\"file-breadcrumbs\" aria-label=\"当前位置\">{}</nav><header",
-                render_breadcrumbs(relative.parent().unwrap())
+                render_breadcrumbs_with_access(relative.parent().unwrap(), access)
             ),
             1,
         )
@@ -1520,7 +1640,7 @@ fn send_file_page(
             &format!("<script>{FILE_SHORTCUT_JS}</script></body>"),
             1,
         );
-    send_html(stream, &body, head_only)
+    send_html(stream, &access.page(body), head_only)
 }
 
 fn send_html(stream: &mut TcpStream, body: &str, head_only: bool) -> io::Result<()> {
@@ -1664,10 +1784,20 @@ fn is_file_name(name: &str) -> bool {
     matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none()
 }
 
+#[cfg(test)]
 fn batch_images(
     directory: &Path,
     state: &StateStore,
     action: BatchImageAction,
+) -> BatchImagesResult {
+    batch_images_with_access(directory, state, action, &Access::default())
+}
+
+fn batch_images_with_access(
+    directory: &Path,
+    state: &StateStore,
+    action: BatchImageAction,
+    access: &Access,
 ) -> BatchImagesResult {
     let files = match &action {
         BatchImageAction::Move { files, .. }
@@ -1685,6 +1815,12 @@ fn batch_images(
                 return Err(io::Error::other("图片文件不存在"));
             }
             let source_key = fs::canonicalize(&source)?;
+            if !access.allows(&source_key)
+                || (!matches!(&action, BatchImageAction::ClearMark { .. })
+                    && !access.allows(&gallery_comments::comments_path(&source_key)))
+            {
+                return Err(io::Error::other("图片或评论文件超出分享范围"));
+            }
             match &action {
                 BatchImageAction::Move {
                     directory: destination,
@@ -1694,6 +1830,11 @@ fn batch_images(
                         return Err(io::Error::other("请输入目标文件夹名或 .."));
                     }
                     let target_directory = directory.join(destination);
+                    if !access.allows(&target_directory)
+                        || !access.allows(&target_directory.join("gallery-comments.json"))
+                    {
+                        return Err(io::Error::other("目标目录或评论文件超出分享范围"));
+                    }
                     fs::create_dir_all(&target_directory)?;
                     let target_directory = fs::canonicalize(target_directory)?;
                     let target = available_destination_path(&target_directory, OsStr::new(name))?;
@@ -1812,12 +1953,38 @@ fn render_breadcrumbs(relative: &Path) -> String {
     breadcrumbs
 }
 
-fn render_directory_favourites(
+fn render_breadcrumbs_with_access(relative: &Path, access: &Access) -> String {
+    let Some(scope) = &access.scope else {
+        return render_breadcrumbs(relative);
+    };
+    let mut path = scope.relative.clone();
+    let mut html = format!("<a href=\"{}\">分享目录</a>", url_for_path(&path, true));
+    for component in relative
+        .strip_prefix(&scope.relative)
+        .unwrap_or(Path::new(""))
+        .components()
+    {
+        path.push(component);
+        html.push_str(&format!(
+            "<span aria-hidden=\"true\">/</span><a href=\"{}\">{}</a>",
+            url_for_path(&path, true),
+            escape_html(&component.as_os_str().to_string_lossy())
+        ));
+    }
+    html
+}
+
+fn render_directory_favourites_with_access(
     root: &Path,
     directory: &Path,
     state: &StateStore,
+    access: &Access,
 ) -> io::Result<String> {
-    let favourites = state.directory_favourites_within(root)?;
+    let favourites = state
+        .directory_favourites_within(root)?
+        .into_iter()
+        .filter(|path| access.allows_request(root, path.strip_prefix(root).unwrap()))
+        .collect::<Vec<_>>();
     if favourites.is_empty() {
         return Ok(String::new());
     }
@@ -1826,17 +1993,22 @@ fn render_directory_favourites(
     for (index, path) in favourites.iter().enumerate() {
         let relative = path.strip_prefix(root).unwrap_or(Path::new(""));
         let href = url_for_path(relative, true);
-        let path_label = if relative.as_os_str().is_empty() {
+        let display_relative = access
+            .scope
+            .as_ref()
+            .and_then(|scope| relative.strip_prefix(&scope.relative).ok())
+            .unwrap_or(relative);
+        let path_label = if display_relative.as_os_str().is_empty() {
             "root".to_string()
         } else {
-            relative.to_string_lossy().into_owned()
+            display_relative.to_string_lossy().into_owned()
         };
         let custom_label = state.directory_favourite_label(path)?;
         let label = custom_label.as_deref().unwrap_or(&path_label);
         let label_html = if custom_label.is_some() {
             escape_html(label)
-        } else if let Some(name) = relative.file_name() {
-            let parent = relative.parent().unwrap_or(Path::new(""));
+        } else if let Some(name) = display_relative.file_name() {
+            let parent = display_relative.parent().unwrap_or(Path::new(""));
             if parent.as_os_str().is_empty() {
                 escape_html(&label)
             } else {
@@ -1879,6 +2051,7 @@ fn render_directory_page(root: &Path, directory: &Path, state: &StateStore) -> i
     render_directory_page_at(root, directory, relative, state, false)
 }
 
+#[cfg(test)]
 fn render_directory_page_at(
     root: &Path,
     directory: &Path,
@@ -1886,9 +2059,30 @@ fn render_directory_page_at(
     state: &StateStore,
     gallery_requested: bool,
 ) -> io::Result<String> {
+    render_directory_page_with_access(
+        root,
+        directory,
+        relative,
+        state,
+        gallery_requested,
+        &Access::default(),
+    )
+}
+
+fn render_directory_page_with_access(
+    root: &Path,
+    directory: &Path,
+    relative: &Path,
+    state: &StateStore,
+    gallery_requested: bool,
+    access: &Access,
+) -> io::Result<String> {
     let mut entries = Vec::new();
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
+        if !access.allows(&entry.path()) {
+            continue;
+        }
         if review::is_review_sidecar(&entry.path())
             || gallery_comments::is_comments_file(&entry.path())
         {
@@ -1955,9 +2149,10 @@ fn render_directory_page_at(
         .and_then(|name| name.to_str())
         .unwrap_or("根目录");
 
-    let breadcrumbs = render_breadcrumbs(relative);
+    let breadcrumbs = render_breadcrumbs_with_access(relative, access);
     let logical_directory = join_relative_path(root, relative);
-    let directory_favourites = render_directory_favourites(root, &logical_directory, state)?;
+    let directory_favourites =
+        render_directory_favourites_with_access(root, &logical_directory, state, access)?;
     let directory_favourite = state.is_directory_favourite(&logical_directory)?;
 
     let mut rows = String::new();
@@ -2069,6 +2264,10 @@ fn render_directory_page_at(
                 entry.modified,
                 entry.directory_favourite
             ));
+        } else if access.can_share {
+            rows.push_str(&format!(
+                "<div class=\"entry {class}\" data-modified=\"{}\"{preview}><a class=\"file-open\" href=\"{href}\">{glyph}<span class=\"entry-name\">{name}</span><span class=\"kind\">{kind}</span><span class=\"detail\">{detail}</span><span class=\"arrow\" aria-hidden=\"true\">→</span></a></div>", entry.modified
+            ));
         } else {
             rows.push_str(&format!(
                 "<a class=\"entry {class}\" href=\"{href}\" data-modified=\"{}\"{preview}>{glyph}<span class=\"entry-name\">{name}</span><span class=\"kind\">{kind}</span><span class=\"detail\">{detail}</span><span class=\"arrow\" aria-hidden=\"true\">→</span></a>",
@@ -2100,9 +2299,9 @@ fn render_directory_page_at(
     } else {
         "<button class=\"directory-favourite-toggle\" id=\"directory-favourite-toggle\" type=\"button\" aria-pressed=\"false\">添加到收藏夹</button>"
     };
-    Ok(format!(
+    Ok(access.page(format!(
         "<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">\n<title>{title} · 文件浏览</title>\n<style>{DIRECTORY_CSS}</style>\n</head>\n<body>\n<main><nav class=\"breadcrumbs\" aria-label=\"当前位置\">{breadcrumbs}</nav>{directory_favourites}<header><p class=\"eyebrow\">WEBDIR / DIRECTORY</p><h1>{title}</h1><p class=\"summary\">{directory_count} 个目录 · {file_count} 个文件</p>{directory_favourite_toggle}{gallery_toggle}<div class=\"directory-browser-tools\"><input class=\"directory-search\" id=\"directory-search\" type=\"search\" aria-label=\"搜索文件名\" placeholder=\"搜索当前目录的文件名…\" autocomplete=\"off\"><label class=\"directory-sort\">排序<select id=\"directory-sort\" aria-label=\"目录排序\"><option value=\"default\">默认</option><option value=\"modified\">按修改时间</option><option value=\"name\">按名称</option></select></label></div>{gallery_tools}<p class=\"directory-notice\" id=\"directory-notice\" role=\"status\" hidden></p></header><section class=\"listing\" aria-label=\"目录内容\">{rows}</section></main><nav class=\"scroll-jumps\" id=\"scroll-jumps\" aria-label=\"页面快速跳转\" hidden><button id=\"scroll-to-top\" type=\"button\" aria-label=\"回到顶部\" title=\"回到顶部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 14 6-6 6 6\"></path><path d=\"M6 19h12\"></path></svg></button><button id=\"scroll-to-bottom\" type=\"button\" aria-label=\"回到底部\" title=\"回到底部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 10 6 6 6-6\"></path><path d=\"M6 5h12\"></path></svg></button></nav><div class=\"image-lightbox\" id=\"image-lightbox\" role=\"dialog\" aria-modal=\"true\" aria-label=\"图片预览\" hidden><button class=\"lightbox-close\" type=\"button\" aria-label=\"关闭图片预览\">×</button><div class=\"lightbox-shell\"><div class=\"lightbox-position\" id=\"lightbox-position\" aria-live=\"polite\"></div><nav class=\"lightbox-filmstrip\" id=\"lightbox-filmstrip\" aria-label=\"图片缩略图导航\"></nav><figure><div class=\"lightbox-stage\"><img class=\"lightbox-image\" alt=\"\"><div class=\"favourite-burst\" id=\"favourite-burst\" aria-hidden=\"true\" hidden><svg viewBox=\"0 0 24 24\"><path d=\"M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21l7.7-7.5 1.1-1.1a5.5 5.5 0 0 0 0-7.8Z\"></path></svg></div></div><figcaption><span class=\"lightbox-name\"></span><span class=\"lightbox-controls\"><button class=\"preview-step\" id=\"preview-previous\" type=\"button\" aria-label=\"上一张\" title=\"上一张\">←</button><button class=\"favourite-toggle\" id=\"favourite-toggle\" type=\"button\" aria-label=\"点赞 (f)\" aria-pressed=\"false\" title=\"点赞 (f)\">♡</button><button class=\"preview-step\" id=\"preview-next\" type=\"button\" aria-label=\"下一张\" title=\"下一张\">→</button><button class=\"carousel-toggle\" id=\"carousel-toggle\" type=\"button\" aria-label=\"进入轮播 (p)\" aria-pressed=\"false\" title=\"进入轮播 (p)\">轮播</button></span></figcaption><p class=\"lightbox-error\" id=\"favourite-error\" role=\"status\" hidden></p><p class=\"lightbox-error\" id=\"image-tag-error\" role=\"status\" hidden></p></figure></div>{GALLERY_DELETE_DIALOG}</div>{GALLERY_BATCH_DELETE_DIALOG}\n<script>{FILE_SHORTCUT_JS}</script><script>{DIRECTORY_JS}</script>\n</body>\n</html>"
-    ))
+    )))
 }
 
 fn url_for_path(path: &Path, is_dir: bool) -> String {
@@ -4584,7 +4783,7 @@ if (galleryToggle) {
       : '<span aria-hidden="true">▦</span> Gallery';
     scheduleThumbnails();
     listing.querySelectorAll('.entry.image[data-gallery-href]').forEach(entry => {
-      entry.setAttribute('href', enabled ? entry.dataset.galleryHref : entry.dataset.listHref);
+      (entry.querySelector('.file-open') || entry).setAttribute('href', enabled ? entry.dataset.galleryHref : entry.dataset.listHref);
     });
     if (updateUrl) {
       const url = new URL(location.href);

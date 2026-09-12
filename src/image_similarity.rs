@@ -22,11 +22,23 @@ struct Feature {
     aspect_ratio: f32,
 }
 
+#[cfg(test)]
 pub(crate) fn order(directory: &Path, state: &StateStore) -> io::Result<Vec<String>> {
+    order_with_access(directory, state, &crate::sharing::Access::default())
+}
+
+pub(crate) fn order_with_access(
+    directory: &Path,
+    state: &StateStore,
+    access: &crate::sharing::Access,
+) -> io::Result<Vec<String>> {
     let mut images = Vec::new();
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
         let path = entry.path();
+        if !access.allows(&path) {
+            continue;
+        }
         let metadata = match entry.metadata() {
             Ok(metadata) if metadata.is_file() && super::is_image_file(&path) => metadata,
             _ => continue,
