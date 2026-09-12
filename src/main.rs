@@ -1656,6 +1656,7 @@ enum BatchImageAction {
 struct BatchImagesResult {
     affected: usize,
     errors: Vec<String>,
+    directory_removed: bool,
 }
 
 fn is_file_name(name: &str) -> bool {
@@ -1730,6 +1731,31 @@ fn batch_images(
         })();
         if let Err(error) = outcome {
             result.errors.push(format!("{name}：{error}"));
+        }
+    }
+    let organise_directory = directory
+        .file_name()
+        .and_then(OsStr::to_str)
+        .is_some_and(|name| {
+            matches!(name, "all" | "favourite")
+                || name.strip_prefix("tag").is_some_and(|number| {
+                    !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
+                })
+        });
+    if result.affected > 0
+        && organise_directory
+        && matches!(&action, BatchImageAction::Move { directory, .. } if directory == "..")
+    {
+        let cleanup = (|| -> io::Result<()> {
+            if fs::read_dir(directory)?.next().transpose()?.is_none() {
+                fs::remove_dir(directory)?;
+                result.directory_removed = true;
+                state.set_directory_favourite(directory, false)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = cleanup {
+            result.errors.push(format!("清理空目录失败：{error}"));
         }
     }
     result
@@ -3054,7 +3080,6 @@ const GALLERY_ORGANISE_TOOLS: &str = r#"
   <button id="move-images" type="button" disabled>移动到…</button>
   <button id="delete-images" type="button" disabled>批量删除</button>
   <button id="clear-image-marks" type="button" disabled>批量取消标记</button>
-  <span class="organise-label" id="image-filter-count"></span>
 </div>
 "#;
 
@@ -3784,7 +3809,6 @@ if (galleryToggle) {
     for (const button of [moveImagesButton, deleteImagesButton, clearImageMarksButton]) {
       button.disabled = count === 0 || moving || liking > 0 || marking > 0 || deleting;
     }
-    document.querySelector('#image-filter-count').textContent = `${count} 张图片`;
     updateLightboxState();
   };
   document.addEventListener('gallery-filter-change', updateImageControls);
@@ -4361,8 +4385,15 @@ if (galleryToggle) {
       if (!response.ok) throw new Error(await response.text());
       const result = await response.json();
       let notice = `已${description} ${result.affected} 张图片`;
+      if (result.directory_removed) notice += '，已删除空目录';
       if (result.errors.length) notice += `；未完成的操作：${result.errors.join('；')}`;
-      history.replaceState({...history.state, moveNotice: notice, previewImage: null}, '');
+      if (result.directory_removed) {
+        const parent = new URL('../', location.href);
+        parent.search = '?view=gallery';
+        history.replaceState({moveNotice: notice, previewImage: null}, '', parent);
+      } else {
+        history.replaceState({...history.state, moveNotice: notice, previewImage: null}, '');
+      }
       location.reload();
     } catch (error) {
       moving = false;
@@ -5303,7 +5334,6 @@ h1 { position:relative; z-index:1; margin:0; overflow-wrap:anywhere; font-family
 .image-filter-control svg { position:absolute; right:.55rem; width:.85rem; height:.85rem; fill:none; stroke:currentColor; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; pointer-events:none; }
 .move-dialog input { display:block; width:100%; box-sizing:border-box; margin-top:.5rem; padding:.65rem; border:1px solid var(--line); border-radius:.5rem; font:inherit; color:inherit; background:var(--surface); }
 .gallery-organise { position:relative; z-index:1; display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:.4rem; margin-top:.75rem; }
-.organise-label { margin-right:.25rem; color:var(--muted); font-size:.72rem; }
 .gallery-organise button { display:inline-flex; align-items:center; gap:.4rem; min-height:2rem; padding:.35rem .6rem; border:1px solid var(--line); border-radius:.45rem; color:var(--muted); background:var(--surface); font:500 .72rem/1.3 ui-sans-serif,-apple-system,sans-serif; cursor:pointer; transition:color .15s ease,border-color .15s ease,background .15s ease; }
 .gallery-organise button:hover:not(:disabled) { border-color:var(--accent); color:var(--ink); background:var(--accent-soft); }
 .gallery-organise button:disabled { opacity:.5; cursor:not-allowed; }
@@ -5409,8 +5439,8 @@ h1 { position:relative; z-index:1; margin:0; overflow-wrap:anywhere; font-family
 .lightbox-favourite-state path { fill:rgba(8,9,14,.28); stroke:currentColor; stroke-width:1.65; stroke-linejoin:round; }
 .lightbox-favourite-state.liked { display:block; color:#ff4f78; }
 .lightbox-favourite-state.liked path { fill:currentColor; stroke:rgba(255,255,255,.92); stroke-width:.75; }
-.image-tag[data-tag="1"],.lightbox-tag-state[data-tag="1"] { background:#b42336; }
-.image-tag[data-tag="2"],.lightbox-tag-state[data-tag="2"] { background:#15803d; }
+.image-tag[data-tag="1"],.lightbox-tag-state[data-tag="1"] { background:#15803d; }
+.image-tag[data-tag="2"],.lightbox-tag-state[data-tag="2"] { background:#b42336; }
 .image-tag[data-tag="3"],.lightbox-tag-state[data-tag="3"] { background:#facc15; color:#1c1917; }
 .image-tag[data-tag="4"],.lightbox-tag-state[data-tag="4"] { background:#2563eb; }
 .image-tag[data-tag="5"],.lightbox-tag-state[data-tag="5"] { background:#000; }
@@ -7685,7 +7715,7 @@ mod tests {
             "/?mode=batch-images",
             r#"{"action":"delete","files":["cat.svg"]}"#,
         );
-        assert!(response.ends_with(r#"{"affected":1,"errors":[]}"#));
+        assert!(response.ends_with(r#"{"affected":1,"errors":[],"directory_removed":false}"#));
         server.join().unwrap();
         assert!(!root.join("cat.svg").exists());
         assert_eq!(state.image_tag(&root.join("cat.svg")).unwrap(), None);
@@ -7825,6 +7855,62 @@ mod tests {
             );
             assert_eq!(result.affected, 1);
             assert!(root.join("new folder/other.svg").exists());
+        }
+    }
+
+    #[test]
+    fn batch_move_to_parent_removes_empty_organising_directories() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temporary.path()).unwrap();
+        let state = StateStore::new(None).unwrap();
+        for name in ["all", "favourite", "tag1", "tag12"] {
+            let directory = root.join(name);
+            fs::create_dir(&directory).unwrap();
+            fs::write(directory.join("photo.svg"), "<svg/>").unwrap();
+            state.set_directory_favourite(&directory, true).unwrap();
+            let result = batch_images(
+                &directory,
+                &state,
+                BatchImageAction::Move {
+                    files: vec!["photo.svg".into()],
+                    directory: "..".into(),
+                },
+            );
+            assert_eq!(result.affected, 1);
+            assert!(result.errors.is_empty(), "{:?}", result.errors);
+            assert!(result.directory_removed);
+            assert!(!directory.exists());
+            assert!(!state.is_directory_favourite(&directory).unwrap());
+        }
+        assert!(root.join("photo.svg").exists());
+        assert!(root.join("photo_4.svg").exists());
+    }
+
+    #[test]
+    fn batch_move_to_parent_keeps_directories_with_remaining_contents() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temporary.path()).unwrap();
+        let state = StateStore::new(None).unwrap();
+        for name in ["all", "favourite", "tag3"] {
+            let directory = root.join(name);
+            fs::create_dir(&directory).unwrap();
+            fs::write(directory.join("photo.svg"), "<svg/>").unwrap();
+            fs::write(directory.join("notes.txt"), "keep").unwrap();
+            let result = batch_images(
+                &directory,
+                &state,
+                BatchImageAction::Move {
+                    files: vec!["photo.svg".into()],
+                    directory: "..".into(),
+                },
+            );
+            assert_eq!(result.affected, 1);
+            assert!(result.errors.is_empty());
+            assert!(!result.directory_removed);
+            assert_eq!(
+                fs::read_to_string(directory.join("notes.txt")).unwrap(),
+                "keep"
+            );
         }
     }
 

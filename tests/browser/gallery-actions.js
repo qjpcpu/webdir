@@ -40,7 +40,7 @@ module.exports = () => test.describe('gallery image actions', () => {
     await page.goto(`${url}?view=gallery`);
     await entry(page, names[0]).click();
     const badge = page.locator('.lightbox-tag-state');
-    const colors = ['rgb(180, 35, 54)', 'rgb(21, 128, 61)', 'rgb(250, 204, 21)', 'rgb(37, 99, 235)', 'rgb(0, 0, 0)'];
+    const colors = ['rgb(21, 128, 61)', 'rgb(180, 35, 54)', 'rgb(250, 204, 21)', 'rgb(37, 99, 235)', 'rgb(0, 0, 0)'];
     for (let number = 1; number <= 5; number++) {
       await pressTag(page, String(number));
       await expect(badge).toHaveText(String(number));
@@ -138,6 +138,34 @@ module.exports = () => test.describe('gallery image actions', () => {
     await expect(entry(page, movedName)).toHaveAttribute('data-image-tag', '3');
     const parentComments = await (await page.request.get(`${imageUrl(movedName)}?mode=gallery-comments`)).json();
     expect(parentComments.comments).toMatchObject([{image: movedName, body: 'keep this comment'}]);
+  });
+
+  test('moving to the parent removes empty organising folders and returns to the parent gallery', async ({page}) => {
+    for (const folder of ['all', 'favourite', 'tag3']) {
+      const source = path.join(directory, folder);
+      const name = `from-${folder}.svg`;
+      fs.mkdirSync(source);
+      fs.copyFileSync(path.join(directory, names[0]), path.join(source, name));
+      await page.request.put(`${url}${folder}/${name}?mode=image-tag`, {data: {tag: 3}});
+      await page.request.put(`${url}${folder}/?mode=directory-favourite`);
+      await page.goto(`${url}${folder}/?view=gallery`);
+      await choose(page, 'tag3');
+      await page.locator('#directory-search').fill(`from-${folder}`);
+      await page.locator('#move-images').click();
+      await page.locator('.move-dialog input').fill('..');
+      await reloadAfter(page, () => page.locator('[data-move-confirm]').click());
+      await expect(page).toHaveURL(`${url}?view=gallery`);
+      await expect(page.locator('.listing')).toHaveClass(/gallery/);
+      await expect(page.locator('#directory-search')).toHaveValue('');
+      await expect(page.locator('#directory-notice')).toContainText('已移动 1 张图片，已删除空目录');
+      expect(fs.existsSync(source)).toBe(false);
+      expect(fs.existsSync(path.join(directory, name))).toBe(true);
+      await expect(entry(page, name)).toHaveAttribute('data-image-tag', '3');
+      await expect(entry(page, name)).toBeVisible();
+      await expect(page.locator(`[data-directory-favourite-path="${url}${folder}/"]`)).toHaveCount(0);
+      await page.reload();
+      await expect(page).toHaveURL(`${url}?view=gallery`);
+    }
   });
 
   test('batch clear removes only the selected kind, and all removes both kinds', async ({page}) => {
