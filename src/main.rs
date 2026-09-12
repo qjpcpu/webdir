@@ -481,7 +481,9 @@ fn handle_connection_with_auth(
             Ok(label) => label,
             Err(_) => return send_text(&mut stream, 400, "Bad Request", "无效的收藏名称\n", false),
         };
-        return match state.set_directory_favourite_label(&root.join(&relative), &label) {
+        return match state
+            .set_directory_favourite_label(&join_relative_path(root, &relative), &label)
+        {
             Ok(()) => send_empty(&mut stream, 204, "No Content"),
             Err(_) => send_text(
                 &mut stream,
@@ -519,7 +521,7 @@ fn handle_connection_with_auth(
         {
             Some(paths) => paths
                 .into_iter()
-                .map(|path| root.join(path))
+                .map(|path| join_relative_path(root, &path))
                 .collect::<Vec<_>>(),
             None => return send_text(&mut stream, 400, "Bad Request", "无效的收藏夹路径\n", false),
         };
@@ -544,7 +546,9 @@ fn handle_connection_with_auth(
                 head_only,
             );
         }
-        return match state.set_directory_favourite(&root.join(&relative), method == "PUT") {
+        return match state
+            .set_directory_favourite(&join_relative_path(root, &relative), method == "PUT")
+        {
             Ok(()) => send_empty(&mut stream, 204, "No Content"),
             Err(_) => send_text(
                 &mut stream,
@@ -1972,7 +1976,7 @@ fn render_directory_page_at(
         .unwrap_or("根目录");
 
     let breadcrumbs = render_breadcrumbs(relative);
-    let logical_directory = root.join(relative);
+    let logical_directory = join_relative_path(root, relative);
     let directory_favourites = render_directory_favourites(root, &logical_directory, state)?;
     let directory_favourite = state.is_directory_favourite(&logical_directory)?;
 
@@ -6762,6 +6766,14 @@ fn safe_relative_path(path: &str) -> Option<PathBuf> {
     Some(result)
 }
 
+fn join_relative_path(root: &Path, relative: &Path) -> PathBuf {
+    if relative.as_os_str().is_empty() {
+        root.to_owned()
+    } else {
+        root.join(relative)
+    }
+}
+
 fn traverses_directory_symlink(root: &Path, relative: &Path) -> bool {
     let mut path = root.to_owned();
     for component in relative.components() {
@@ -8031,6 +8043,49 @@ mod tests {
             listed.contains("data-directory-favourite-toggle=\"/nested/\" aria-pressed=\"true\"")
         );
         assert!(request("DELETE", "/nested/?mode=directory-favourite").starts_with("HTTP/1.1 204"));
+        let removed = request("GET", "/");
+        assert!(!removed.contains("class=\"directory-favourites\""));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn root_directory_favourite_request_removes_its_shortcut() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(directory.path()).unwrap();
+        let state = StateStore::new(None).unwrap();
+        state.set_directory_favourite(&root, true).unwrap();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            for _ in 0..3 {
+                let (stream, _) = listener.accept().unwrap();
+                handle_connection(
+                    stream,
+                    &root,
+                    &CollaborationHub::default(),
+                    &ReviewHub::default(),
+                    false,
+                    None,
+                    &state,
+                )
+                .unwrap();
+            }
+        });
+        let request = |method: &str, target: &str| {
+            let mut client = TcpStream::connect(address).unwrap();
+            write!(
+                client,
+                "{method} {target} HTTP/1.1\r\nHost: localhost\r\n\r\n"
+            )
+            .unwrap();
+            let mut response = String::new();
+            client.read_to_string(&mut response).unwrap();
+            response
+        };
+
+        let listed = request("GET", "/");
+        assert!(listed.contains("data-directory-favourite-remove=\"/\""));
+        assert!(request("DELETE", "/?mode=directory-favourite").starts_with("HTTP/1.1 204"));
         let removed = request("GET", "/");
         assert!(!removed.contains("class=\"directory-favourites\""));
         server.join().unwrap();
