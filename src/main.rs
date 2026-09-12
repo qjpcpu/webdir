@@ -5136,6 +5136,28 @@ if (galleryToggle) {
     event.preventDefault();
     appendPastedGalleryComment(body);
   });
+  let galleryJumpTimer = null;
+  const resetGalleryJump = () => {
+    clearTimeout(galleryJumpTimer);
+    galleryJumpTimer = null;
+  };
+  window.addEventListener('blur', resetGalleryJump);
+  document.addEventListener('keydown', event => {
+    const pendingJump = galleryJumpTimer !== null;
+    resetGalleryJump();
+    if (!listing.classList.contains('gallery') || !lightbox.hidden ||
+        event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey ||
+        event.isComposing || event.repeat || document.querySelector('dialog[open]') ||
+        event.target.closest('input, textarea, select') || event.target.isContentEditable) return;
+    if (event.key === 'G') {
+      event.preventDefault();
+      jumpScroll(document.documentElement.scrollHeight);
+    } else if (event.key === 'g') {
+      event.preventDefault();
+      if (pendingJump) jumpScroll(0);
+      else galleryJumpTimer = setTimeout(resetGalleryJump, 500);
+    }
+  });
   document.addEventListener('keydown', event => {
     if (deleting || deleteDialog.open) return;
     const commentEditorActive = !commentsDrawer.hidden
