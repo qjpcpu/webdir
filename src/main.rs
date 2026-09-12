@@ -2129,11 +2129,9 @@ fn render_directory_page_with_access(
         });
     }
     entries.sort_by(|left, right| {
-        right
-            .favourite
-            .cmp(&left.favourite)
-            .then_with(|| right.is_dir.cmp(&left.is_dir))
-            .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+        left.name
+            .to_lowercase()
+            .cmp(&right.name.to_lowercase())
             .then_with(|| left.name.cmp(&right.name))
     });
 
@@ -2300,7 +2298,7 @@ fn render_directory_page_with_access(
         "<button class=\"directory-favourite-toggle\" id=\"directory-favourite-toggle\" type=\"button\" aria-pressed=\"false\">添加到收藏夹</button>"
     };
     Ok(access.page(format!(
-        "<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">\n<title>{title} · 文件浏览</title>\n<style>{DIRECTORY_CSS}</style>\n</head>\n<body>\n<main><nav class=\"breadcrumbs\" aria-label=\"当前位置\">{breadcrumbs}</nav>{directory_favourites}<header><p class=\"eyebrow\">WEBDIR / DIRECTORY</p><h1>{title}</h1><p class=\"summary\">{directory_count} 个目录 · {file_count} 个文件</p>{directory_favourite_toggle}{gallery_toggle}<div class=\"directory-browser-tools\"><input class=\"directory-search\" id=\"directory-search\" type=\"search\" aria-label=\"搜索文件名\" placeholder=\"搜索当前目录的文件名…\" autocomplete=\"off\"><label class=\"directory-sort\">排序<select id=\"directory-sort\" aria-label=\"目录排序\"><option value=\"default\">默认</option><option value=\"modified\">按修改时间</option><option value=\"name\">按名称</option></select></label></div>{gallery_tools}<p class=\"directory-notice\" id=\"directory-notice\" role=\"status\" hidden></p></header><section class=\"listing\" aria-label=\"目录内容\">{rows}</section></main><nav class=\"scroll-jumps\" id=\"scroll-jumps\" aria-label=\"页面快速跳转\" hidden><button id=\"scroll-to-top\" type=\"button\" aria-label=\"回到顶部\" title=\"回到顶部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 14 6-6 6 6\"></path><path d=\"M6 19h12\"></path></svg></button><button id=\"scroll-to-bottom\" type=\"button\" aria-label=\"回到底部\" title=\"回到底部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 10 6 6 6-6\"></path><path d=\"M6 5h12\"></path></svg></button></nav><div class=\"image-lightbox\" id=\"image-lightbox\" role=\"dialog\" aria-modal=\"true\" aria-label=\"图片预览\" hidden><button class=\"lightbox-close\" type=\"button\" aria-label=\"关闭图片预览\">×</button><div class=\"lightbox-shell\"><div class=\"lightbox-position\" id=\"lightbox-position\" aria-live=\"polite\"></div><nav class=\"lightbox-filmstrip\" id=\"lightbox-filmstrip\" aria-label=\"图片缩略图导航\"></nav><figure><div class=\"lightbox-stage\"><img class=\"lightbox-image\" alt=\"\"><div class=\"favourite-burst\" id=\"favourite-burst\" aria-hidden=\"true\" hidden><svg viewBox=\"0 0 24 24\"><path d=\"M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21l7.7-7.5 1.1-1.1a5.5 5.5 0 0 0 0-7.8Z\"></path></svg></div></div><figcaption><span class=\"lightbox-name\"></span><span class=\"lightbox-controls\"><button class=\"preview-step\" id=\"preview-previous\" type=\"button\" aria-label=\"上一张\" title=\"上一张\">←</button><button class=\"favourite-toggle\" id=\"favourite-toggle\" type=\"button\" aria-label=\"点赞 (f)\" aria-pressed=\"false\" title=\"点赞 (f)\">♡</button><button class=\"preview-step\" id=\"preview-next\" type=\"button\" aria-label=\"下一张\" title=\"下一张\">→</button><button class=\"carousel-toggle\" id=\"carousel-toggle\" type=\"button\" aria-label=\"进入轮播 (p)\" aria-pressed=\"false\" title=\"进入轮播 (p)\">轮播</button></span></figcaption><p class=\"lightbox-error\" id=\"favourite-error\" role=\"status\" hidden></p><p class=\"lightbox-error\" id=\"image-tag-error\" role=\"status\" hidden></p></figure></div>{GALLERY_DELETE_DIALOG}</div>{GALLERY_BATCH_DELETE_DIALOG}\n<script>{FILE_SHORTCUT_JS}</script><script>{DIRECTORY_JS}</script>\n</body>\n</html>"
+        "<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">\n<title>{title} · 文件浏览</title>\n<style>{DIRECTORY_CSS}</style>\n</head>\n<body>\n<main><nav class=\"breadcrumbs\" aria-label=\"当前位置\">{breadcrumbs}</nav>{directory_favourites}<header><p class=\"eyebrow\">WEBDIR / DIRECTORY</p><h1>{title}</h1><p class=\"summary\">{directory_count} 个目录 · {file_count} 个文件</p>{directory_favourite_toggle}{gallery_toggle}<div class=\"directory-browser-tools\"><input class=\"directory-search\" id=\"directory-search\" type=\"search\" aria-label=\"搜索文件名\" placeholder=\"搜索当前目录的文件名…\" autocomplete=\"off\"><label class=\"directory-sort\">排序<select id=\"directory-sort\" aria-label=\"目录排序\"><option value=\"name\">按名称</option><option value=\"modified\">按修改时间</option></select></label></div>{gallery_tools}<p class=\"directory-notice\" id=\"directory-notice\" role=\"status\" hidden></p></header><section class=\"listing\" aria-label=\"目录内容\">{rows}</section></main><nav class=\"scroll-jumps\" id=\"scroll-jumps\" aria-label=\"页面快速跳转\" hidden><button id=\"scroll-to-top\" type=\"button\" aria-label=\"回到顶部\" title=\"回到顶部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 14 6-6 6 6\"></path><path d=\"M6 19h12\"></path></svg></button><button id=\"scroll-to-bottom\" type=\"button\" aria-label=\"回到底部\" title=\"回到底部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 10 6 6 6-6\"></path><path d=\"M6 5h12\"></path></svg></button></nav><div class=\"image-lightbox\" id=\"image-lightbox\" role=\"dialog\" aria-modal=\"true\" aria-label=\"图片预览\" hidden><button class=\"lightbox-close\" type=\"button\" aria-label=\"关闭图片预览\">×</button><div class=\"lightbox-shell\"><div class=\"lightbox-position\" id=\"lightbox-position\" aria-live=\"polite\"></div><nav class=\"lightbox-filmstrip\" id=\"lightbox-filmstrip\" aria-label=\"图片缩略图导航\"></nav><figure><div class=\"lightbox-stage\"><img class=\"lightbox-image\" alt=\"\"><div class=\"favourite-burst\" id=\"favourite-burst\" aria-hidden=\"true\" hidden><svg viewBox=\"0 0 24 24\"><path d=\"M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21l7.7-7.5 1.1-1.1a5.5 5.5 0 0 0 0-7.8Z\"></path></svg></div></div><figcaption><span class=\"lightbox-name\"></span><span class=\"lightbox-controls\"><button class=\"preview-step\" id=\"preview-previous\" type=\"button\" aria-label=\"上一张\" title=\"上一张\">←</button><button class=\"favourite-toggle\" id=\"favourite-toggle\" type=\"button\" aria-label=\"点赞 (f)\" aria-pressed=\"false\" title=\"点赞 (f)\">♡</button><button class=\"preview-step\" id=\"preview-next\" type=\"button\" aria-label=\"下一张\" title=\"下一张\">→</button><button class=\"carousel-toggle\" id=\"carousel-toggle\" type=\"button\" aria-label=\"进入轮播 (p)\" aria-pressed=\"false\" title=\"进入轮播 (p)\">轮播</button></span></figcaption><p class=\"lightbox-error\" id=\"favourite-error\" role=\"status\" hidden></p><p class=\"lightbox-error\" id=\"image-tag-error\" role=\"status\" hidden></p></figure></div>{GALLERY_DELETE_DIALOG}</div>{GALLERY_BATCH_DELETE_DIALOG}\n<script>{FILE_SHORTCUT_JS}</script><script>{DIRECTORY_JS}</script>\n</body>\n</html>"
     )))
 }
 
@@ -3676,7 +3674,6 @@ if (savedDirectorySort && Array.from(directorySort.options).some(option => optio
   directorySort.value = savedDirectorySort;
 }
 const sortableEntries = Array.from(listing.querySelectorAll('.entry'));
-sortableEntries.forEach((entry, index) => { entry.dataset.defaultOrder = String(index); });
 const entryName = entry => entry.querySelector('.entry-name').textContent;
 const compareEntryNames = (left, right) => entryName(left).localeCompare(entryName(right), undefined, {
   numeric: true,
@@ -3710,15 +3707,13 @@ const sortDirectory = async () => {
         const categoryOrder = category(left) - category(right);
         if (categoryOrder) return categoryOrder;
         if (category(left) === 1) return ranks.get(entryName(left)) - ranks.get(entryName(right));
-        return Number(left.dataset.defaultOrder) - Number(right.dataset.defaultOrder);
+        return compareEntryNames(left, right);
       });
     } catch (error) {
       directoryNotice.textContent = error.message;
       directoryNotice.hidden = false;
       return;
     }
-  } else {
-    entries.sort((left, right) => Number(left.dataset.defaultOrder) - Number(right.dataset.defaultOrder));
   }
   entries.forEach(entry => listing.insertBefore(entry, directoryEmpty));
 };
@@ -3999,7 +3994,6 @@ if (galleryToggle) {
     favouriteToggle.setAttribute('aria-pressed', String(liked));
     favouriteToggle.title = liked ? '取消点赞 (f)' : '点赞 (f)';
     favouriteToggle.setAttribute('aria-label', favouriteToggle.title);
-    favouriteToggle.disabled = previewTrigger ? pendingFavourites.has(previewTrigger) : false;
     updateLightboxState();
   };
 
@@ -4011,24 +4005,6 @@ if (galleryToggle) {
     updateLightboxState();
   };
   document.addEventListener('gallery-filter-change', updateImageControls);
-
-  const reconcileImageFilter = (entry, previousEntries) => {
-    refreshImageFilters();
-    filterDirectory();
-    scheduleThumbnails();
-    if (!lightbox.hidden && previewTrigger === entry && entry.hidden) {
-      const index = previousEntries.indexOf(entry);
-      const next = previousEntries.slice(index + 1).find(item => !item.hidden)
-        || previousEntries.slice(0, index).reverse().find(item => !item.hidden);
-      if (next) switchPreview(next, 1);
-      else closeLightbox();
-    }
-    if (!lightbox.hidden) {
-      updatePreviewButtons();
-      renderFilmstrip();
-      preloadAdjacentImages();
-    }
-  };
 
   const updatePreviewButtons = () => {
     const entries = visibleImages();
@@ -4481,26 +4457,35 @@ if (galleryToggle) {
   const toggleFavourite = async origin => {
     if (!previewTrigger || lightbox.hidden || deleting || moving || deleteDialog.open) return;
     const entry = previewTrigger;
-    if (pendingFavourites.has(entry)) return;
+    let saved = entry.dataset.favourite;
     const liked = entry.dataset.favourite !== 'true';
-    const previousEntries = visibleImages();
-    liking++;
-    pendingFavourites.add(entry);
     favouriteError.hidden = true;
     entry.dataset.favourite = String(liked);
     entry.querySelector('.favourite-mark').hidden = !liked;
     updateFavouriteButton();
     animateFavouriteFeedback(liked, origin);
+    if (pendingFavourites.has(entry)) return;
+    liking++;
+    pendingFavourites.add(entry);
+    updateImageControls();
     try {
-      const response = await fetch(`${entry.dataset.listHref}?mode=favourite`, {method: liked ? 'PUT' : 'DELETE'});
-      if (!response.ok) throw new Error('保存点赞状态失败，请重试。');
-      reconcileImageFilter(entry, previousEntries);
-    } catch (error) {
-      entry.dataset.favourite = String(!liked);
-      entry.querySelector('.favourite-mark').hidden = liked;
-      if (previewTrigger === entry) {
-        favouriteError.textContent = error.message;
-        favouriteError.hidden = false;
+      while (entry.dataset.favourite !== saved) {
+        const desired = entry.dataset.favourite;
+        try {
+          const response = await fetch(`${entry.dataset.listHref}?mode=favourite`, {method: desired === 'true' ? 'PUT' : 'DELETE'});
+          if (!response.ok) throw new Error('保存点赞状态失败，请重试。');
+          saved = desired;
+          refreshImageFilters();
+        } catch (error) {
+          if (entry.dataset.favourite !== desired) continue;
+          entry.dataset.favourite = saved;
+          entry.querySelector('.favourite-mark').hidden = saved !== 'true';
+          if (lightbox.hidden) filterDirectory();
+          if (previewTrigger === entry) {
+            favouriteError.textContent = error.message;
+            favouriteError.hidden = false;
+          }
+        }
       }
     } finally {
       liking--;
@@ -4514,9 +4499,8 @@ if (galleryToggle) {
   const toggleImageTag = async number => {
     if (!previewTrigger || lightbox.hidden || deleting || moving || deleteDialog.open) return;
     const entry = previewTrigger;
-    if (pendingImageTags.has(entry)) return;
-    const previousEntries = visibleImages();
-    const previous = entry.dataset.imageTag;
+    let saved = entry.dataset.imageTag;
+    const previous = saved;
     const tag = previous === number ? '' : number;
     const setTag = value => {
       entry.dataset.imageTag = value;
@@ -4525,24 +4509,34 @@ if (galleryToggle) {
       badge.textContent = badge.dataset.tag = value;
       badge.title = `标记${value}`;
     };
-    marking++;
-    pendingImageTags.add(entry);
     imageTagError.hidden = true;
     setTag(tag);
     updateImageControls();
+    if (pendingImageTags.has(entry)) return;
+    marking++;
+    pendingImageTags.add(entry);
+    updateImageControls();
     try {
-      const response = await fetch(`${entry.dataset.listHref}?mode=image-tag`, {
-        method: tag ? 'PUT' : 'DELETE',
-        headers: {'Content-Type': 'application/json'},
-        ...(tag ? {body: JSON.stringify({tag: Number(tag)})} : {})
-      });
-      if (!response.ok) throw new Error('保存图片标记失败，请重试。');
-      reconcileImageFilter(entry, previousEntries);
-    } catch (error) {
-      setTag(previous);
-      if (previewTrigger === entry) {
-        imageTagError.textContent = error.message;
-        imageTagError.hidden = false;
+      while (entry.dataset.imageTag !== saved) {
+        const desired = entry.dataset.imageTag;
+        try {
+          const response = await fetch(`${entry.dataset.listHref}?mode=image-tag`, {
+            method: desired ? 'PUT' : 'DELETE',
+            headers: {'Content-Type': 'application/json'},
+            ...(desired ? {body: JSON.stringify({tag: Number(desired)})} : {})
+          });
+          if (!response.ok) throw new Error('保存图片标记失败，请重试。');
+          saved = desired;
+          refreshImageFilters();
+        } catch (error) {
+          if (entry.dataset.imageTag !== desired) continue;
+          setTag(saved);
+          if (lightbox.hidden) filterDirectory();
+          if (previewTrigger === entry) {
+            imageTagError.textContent = error.message;
+            imageTagError.hidden = false;
+          }
+        }
       }
     } finally {
       marking--;
@@ -4873,10 +4867,11 @@ if (galleryToggle) {
     document.body.classList.remove('lightbox-open');
     document.querySelector('main').inert = false;
     scrollJumps.inert = false;
-    (previewTrigger || galleryToggle).focus({preventScroll: mobileTouch.matches});
+    filterDirectory();
+    scheduleThumbnails();
+    (previewTrigger && !previewTrigger.hidden ? previewTrigger : galleryToggle).focus({preventScroll: mobileTouch.matches});
     previewTrigger = null;
     history.replaceState({...history.state, previewImage: null}, '');
-    filterDirectory();
   };
 
   const animatePreview = (outgoing, outgoingBackdrop, direction, effect, gestureOffset = null, gestureIncoming = null) => {
@@ -8292,7 +8287,7 @@ mod tests {
     }
 
     #[test]
-    fn favourite_requests_update_directory_order_and_preserve_the_image() {
+    fn favourite_requests_update_marks_in_name_sorted_directory_and_preserve_the_image() {
         let directory = tempfile::tempdir().unwrap();
         let root = fs::canonicalize(directory.path()).unwrap();
         fs::write(root.join("a.svg"), "<svg></svg>").unwrap();
@@ -8328,7 +8323,7 @@ mod tests {
         };
         assert!(request("PUT", "/z.svg?mode=favourite").starts_with("HTTP/1.1 204"));
         let liked = request("GET", "/?view=gallery");
-        assert!(liked.find("href=\"/z.svg\"").unwrap() < liked.find("href=\"/a.svg\"").unwrap());
+        assert!(liked.find("href=\"/a.svg\"").unwrap() < liked.find("href=\"/z.svg\"").unwrap());
         assert!(liked.contains("data-favourite=\"true\""));
         assert!(liked.contains("class=\"favourite-mark\" title=\"已点赞\"><svg"));
         assert!(request("DELETE", "/z.svg?mode=favourite").starts_with("HTTP/1.1 204"));
@@ -8623,7 +8618,6 @@ mod tests {
         assert!(page.contains("class=\"entry folder\" data-modified=\""));
         assert!(page.contains("<a class=\"folder-open\" href=\"/docs/\""));
         assert!(page.contains("id=\"directory-sort\" aria-label=\"目录排序\""));
-        assert!(page.contains("<option value=\"default\">默认</option>"));
         assert!(page.contains("<option value=\"modified\">按修改时间</option>"));
         assert!(page.contains("<option value=\"name\">按名称</option>"));
         assert!(page.contains("option.value = 'similarity'"));

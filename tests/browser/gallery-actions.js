@@ -64,7 +64,55 @@ module.exports = () => test.describe('gallery image actions', () => {
     await expect(badge).toBeHidden();
   });
 
-  test('filters persist and removing a tag advances through the remaining images', async ({page}) => {
+  test('consecutive likes and tags update while saving and persist the final choice', async ({page}) => {
+    await page.goto(`${url}?view=gallery`);
+    await entry(page, names[0]).click();
+    for (const mode of ['favourite', 'image-tag']) {
+      let release;
+      const gate = new Promise(resolve => { release = resolve; });
+      const methods = [];
+      await page.route(`**/*?mode=${mode}`, async route => {
+        methods.push(route.request().method());
+        await gate;
+        await route.continue();
+      });
+      const toggle = () => mode === 'favourite'
+        ? page.keyboard.press('f')
+        : page.keyboard.press('2');
+      try {
+        await Promise.all([
+          page.waitForRequest(request => request.url().includes(`mode=${mode}`)),
+          toggle()
+        ]);
+        await expect(page.locator('#favourite-toggle')).toBeEnabled();
+        await toggle();
+        if (mode === 'favourite') {
+          await expect(page.locator('#favourite-toggle')).toHaveAttribute('aria-pressed', 'false');
+        } else {
+          await expect(page.locator('.lightbox-tag-state')).toBeHidden();
+          await page.keyboard.press('3');
+          await expect(page.locator('.lightbox-tag-state')).toHaveText('3');
+        }
+        expect(methods).toEqual(['PUT']);
+      } finally {
+        release();
+      }
+      await expect.poll(() => methods.length).toBe(2);
+      await expect(page.locator('#move-images')).toBeEnabled();
+      await page.unroute(`**/*?mode=${mode}`);
+    }
+    await page.reload();
+    await expect(entry(page, names[0])).toHaveAttribute('data-favourite', 'false');
+    await expect(entry(page, names[0])).toHaveAttribute('data-image-tag', '3');
+  });
+
+  test('filtered galleries stay stable during mark changes and update when the preview closes', async ({page}) => {
+    const pressFavourite = async () => {
+      await Promise.all([
+        page.waitForResponse(response => response.url().includes('mode=favourite')),
+        page.keyboard.press('f')
+      ]);
+    };
     await tag(page, names[0], 1);
     await tag(page, names[1], 1);
     await like(page, names[0]);
@@ -76,22 +124,80 @@ module.exports = () => test.describe('gallery image actions', () => {
     await expect(visible(page)).toHaveCount(2);
     await entry(page, names[0]).click();
     await pressTag(page, '3');
-    await expect(page.locator('.lightbox-name')).toHaveText(names[1]);
-    await expect(page.locator('.lightbox-position')).toHaveText('1 / 1');
+    await expect(page.locator('.lightbox-name')).toHaveText(names[0]);
+    await expect(page.locator('.lightbox-position')).toHaveText('1 / 2');
+    await expect(visible(page)).toHaveCount(2);
+    await pressTag(page, '3');
+    await expect(page.locator('.lightbox-tag-state')).toBeHidden();
+    await pressFavourite();
+    await expect(page.locator('.lightbox-favourite-state')).toBeHidden();
+    await pressFavourite();
+    await expect(page.locator('.lightbox-favourite-state')).toBeVisible();
     await pressTag(page, '1');
+    await expect(visible(page)).toHaveCount(2);
+    await pressTag(page, '1');
+    await expect(visible(page)).toHaveCount(2);
+    await expect(page.locator('.lightbox-name')).toHaveText(names[0]);
+    await page.keyboard.press('ArrowRight');
+    await expect(page.locator('.lightbox-name')).toHaveText(names[1]);
+    await expect(page.locator('.lightbox-position')).toHaveText('2 / 2');
+    await pressTag(page, '1');
+    await expect(page.locator('.lightbox-name')).toHaveText(names[1]);
+    await expect(page.locator('#image-lightbox')).toBeVisible();
+    await expect(visible(page)).toHaveCount(2);
+    await page.locator('.lightbox-close').click();
+    await expect(page.locator('#image-lightbox')).toBeHidden();
+    await expect(visible(page)).toHaveCount(0);
+    await choose(page, 'favourite');
+    await expect(visible(page)).toHaveCount(1);
+    await page.reload();
+    await expect(page.locator('#image-filter')).toHaveValue('favourite');
+    await expect(visible(page)).toHaveCount(1);
+    await choose(page, 'all');
+    await expect(page.locator('#image-filter option')).toHaveText(['全部', '喜欢']);
+    await choose(page, 'favourite');
+    await entry(page, names[0]).click();
+    await pressFavourite();
+    await expect(page.locator('.lightbox-name')).toHaveText(names[0]);
+    await expect(visible(page)).toHaveCount(1);
+    await pressFavourite();
+    await expect(visible(page)).toHaveCount(1);
+    await expect(page.locator('.lightbox-favourite-state')).toBeVisible();
+    await pressFavourite();
+    await page.locator('.lightbox-close').click();
     await expect(page.locator('#image-lightbox')).toBeHidden();
     await expect(visible(page)).toHaveCount(0);
     await page.reload();
-    await expect(page.locator('#image-filter')).toHaveValue('tag1');
+    await expect(page.locator('#image-filter')).toHaveValue('favourite');
     await expect(visible(page)).toHaveCount(0);
     await expect(page.locator('#move-images')).toBeDisabled();
-    await choose(page, 'all');
-    await expect(page.locator('#image-filter option')).toHaveText(['全部', '喜欢', '标记3']);
+  });
+
+  test('closing during a pending favourite save filters the wall and restores a failed change', async ({page}) => {
+    await like(page, names[0]);
+    await page.goto(`${url}?view=gallery`);
     await choose(page, 'favourite');
     await entry(page, names[0]).click();
-    await page.keyboard.press('f');
-    await expect(page.locator('#image-lightbox')).toBeHidden();
-    await expect(visible(page)).toHaveCount(0);
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    await page.route('**/*?mode=favourite', async route => {
+      await gate;
+      await route.fulfill({status: 500});
+    });
+    try {
+      await Promise.all([
+        page.waitForRequest(request => request.url().includes('mode=favourite')),
+        page.keyboard.press('f')
+      ]);
+      await expect(visible(page)).toHaveCount(1);
+      await page.keyboard.press('Escape');
+      await expect(page.locator('#image-lightbox')).toBeHidden();
+      await expect(visible(page)).toHaveCount(0);
+    } finally {
+      release();
+    }
+    await expect(visible(page)).toHaveCount(1);
+    await expect(entry(page, names[0])).toHaveAttribute('data-favourite', 'true');
   });
 
   test('batch move uses the search intersection and carries comments and tags to a renamed destination', async ({page}) => {

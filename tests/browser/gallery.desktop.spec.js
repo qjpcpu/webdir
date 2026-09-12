@@ -4,7 +4,8 @@ const { openGalleryImage } = require('./helpers');
 test('sorting works in gallery and list views and drives preview order', async ({page}) => {
   await page.goto('/?view=gallery');
   const imageNames = () => page.locator('.listing > .entry.image .entry-name').allTextContents();
-  const defaultNames = await imageNames();
+  await expect(page.locator('#directory-sort')).toHaveValue('name');
+  await expect.poll(imageNames).toEqual(['01-portrait.svg', '02-landscape.svg', '03-square.svg']);
   await page.evaluate(() => {
     const modified = {'01-portrait.svg': 100, '02-landscape.svg': 300, '03-square.svg': 200};
     document.querySelectorAll('.entry.image').forEach(entry => {
@@ -24,8 +25,6 @@ test('sorting works in gallery and list views and drives preview order', async (
   await expect(page.locator('.listing')).not.toHaveClass(/gallery/);
   await page.locator('#directory-sort').selectOption('name');
   await expect.poll(imageNames).toEqual(['01-portrait.svg', '02-landscape.svg', '03-square.svg']);
-  await page.locator('#directory-sort').selectOption('default');
-  await expect.poll(imageNames).toEqual(defaultNames);
 
   await page.locator('#gallery-toggle').click();
   await page.locator('#directory-sort').selectOption('similarity');
