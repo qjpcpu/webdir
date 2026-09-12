@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -155,6 +156,13 @@ pub(crate) fn move_for_image(source: &Path, target: &Path) -> io::Result<()> {
 }
 
 pub(crate) fn remove_for_image(image_path: &Path) -> io::Result<()> {
+    remove_for_images(&[image_path.to_path_buf()])
+}
+
+pub(crate) fn remove_for_images(image_paths: &[PathBuf]) -> io::Result<()> {
+    let Some(image_path) = image_paths.first() else {
+        return Ok(());
+    };
     let _operation = OPERATIONS.lock().unwrap();
     let path = comments_path(image_path);
     let source = match fs::read_to_string(&path) {
@@ -168,12 +176,15 @@ pub(crate) fn remove_for_image(image_path: &Path) -> io::Result<()> {
             format!("无法解析 {}：{error}", path.display()),
         )
     })?;
-    let image = image_path
-        .file_name()
+    let images: HashSet<_> = image_paths
+        .iter()
+        .filter_map(|path| path.file_name())
         .map(|name| name.to_string_lossy())
-        .unwrap_or_default();
+        .collect();
     let original_len = document.comments.len();
-    document.comments.retain(|comment| comment.image != image);
+    document
+        .comments
+        .retain(|comment| !images.contains(comment.image.as_str()));
     if document.comments.len() != original_len {
         write(image_path, &document)?;
     }

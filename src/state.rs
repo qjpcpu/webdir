@@ -207,26 +207,38 @@ impl StateStore {
     }
 
     pub(crate) fn clear_image_state(&self, path: &Path) -> io::Result<()> {
+        self.clear_images(&[path.to_path_buf()], true, true, true)
+    }
+
+    pub(crate) fn clear_images(
+        &self,
+        paths: &[PathBuf],
+        favourites: bool,
+        tags: bool,
+        features: bool,
+    ) -> io::Result<()> {
+        if paths.is_empty() {
+            return Ok(());
+        }
         let mut connection = self.connection.lock().unwrap();
         let transaction = connection.transaction().map_err(sqlite_error)?;
-        transaction
-            .execute(
-                "DELETE FROM favourites WHERE path = ?1",
-                params![path_bytes(path)],
-            )
-            .map_err(sqlite_error)?;
-        transaction
-            .execute(
-                "DELETE FROM image_tags WHERE path = ?1",
-                params![path_bytes(path)],
-            )
-            .map_err(sqlite_error)?;
-        transaction
-            .execute(
+        for (enabled, sql) in [
+            (favourites, "DELETE FROM favourites WHERE path = ?1"),
+            (tags, "DELETE FROM image_tags WHERE path = ?1"),
+            (
+                features,
                 "DELETE FROM image_similarity_features WHERE path = ?1",
-                params![path_bytes(path)],
-            )
-            .map_err(sqlite_error)?;
+            ),
+        ] {
+            if enabled {
+                let mut statement = transaction.prepare(sql).map_err(sqlite_error)?;
+                for path in paths {
+                    statement
+                        .execute(params![path_bytes(path)])
+                        .map_err(sqlite_error)?;
+                }
+            }
+        }
         transaction.commit().map_err(sqlite_error)
     }
 
@@ -332,6 +344,24 @@ fn sqlite_error(error: rusqlite::Error) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clearing_images_rolls_back_all_marks_on_database_failure() {
+        let state = StateStore::new(None).unwrap();
+        let paths = vec![PathBuf::from("a.svg"), PathBuf::from("b.svg")];
+        for path in &paths {
+            state.set_favourite(path, true).unwrap();
+            state.set_image_tag(path, Some(2)).unwrap();
+        }
+        state.connection.lock().unwrap().execute_batch(
+            "CREATE TRIGGER fail_clear BEFORE DELETE ON image_tags BEGIN SELECT RAISE(ABORT, 'failed'); END;"
+        ).unwrap();
+        assert!(state.clear_images(&paths, true, true, false).is_err());
+        for path in &paths {
+            assert!(state.is_favourite(path).unwrap());
+            assert_eq!(state.image_tag(path).unwrap(), Some(2));
+        }
+    }
 
     #[test]
     fn memory_database_is_shared_by_clones_and_isolated_by_instance() {

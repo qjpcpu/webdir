@@ -1828,6 +1828,7 @@ fn batch_images_with_access(
         | BatchImageAction::ClearMark { files, .. } => files,
     };
     let mut result = BatchImagesResult::default();
+    let mut changed_paths = Vec::new();
     for name in files {
         let outcome = (|| -> io::Result<()> {
             if !is_file_name(name) {
@@ -1875,20 +1876,10 @@ fn batch_images_with_access(
                 BatchImageAction::Delete { .. } => {
                     fs::remove_file(&source)?;
                     result.affected += 1;
-                    let comments = gallery_comments::remove_for_image(&source_key);
-                    let image_state = state.clear_image_state(&source_key);
-                    comments.and(image_state).map_err(|error| {
-                        io::Error::other(format!("图片已删除，但清理关联数据失败：{error}"))
-                    })?;
+                    changed_paths.push(source_key);
                 }
-                BatchImageAction::ClearMark { filter, .. } => {
-                    if matches!(filter, ImageFilter::All | ImageFilter::Favourite) {
-                        state.set_favourite(&source_key, false)?;
-                    }
-                    if !matches!(filter, ImageFilter::Favourite) {
-                        state.set_image_tag(&source_key, None)?;
-                    }
-                    result.affected += 1;
+                BatchImageAction::ClearMark { .. } => {
+                    changed_paths.push(source_key);
                 }
             }
             Ok(())
@@ -1896,6 +1887,42 @@ fn batch_images_with_access(
         if let Err(error) = outcome {
             result.errors.push(format!("{name}：{error}"));
         }
+    }
+    match &action {
+        BatchImageAction::ClearMark { filter, .. } => {
+            match state.clear_images(
+                &changed_paths,
+                matches!(filter, ImageFilter::All | ImageFilter::Favourite),
+                !matches!(filter, ImageFilter::Favourite),
+                false,
+            ) {
+                Ok(()) => result.affected = changed_paths.len(),
+                Err(error) => result.errors.push(format!("批量取消标记失败：{error}")),
+            }
+        }
+        BatchImageAction::Delete { .. } => {
+            if let Err(error) = state.clear_images(&changed_paths, true, true, true) {
+                result
+                    .errors
+                    .push(format!("图片已删除，但清理标记失败：{error}"));
+            }
+            let mut comment_groups = std::collections::BTreeMap::<_, Vec<_>>::new();
+            for path in changed_paths {
+                comment_groups
+                    .entry(gallery_comments::comments_path(&path))
+                    .or_default()
+                    .push(path);
+            }
+            for (comments_path, paths) in comment_groups {
+                if let Err(error) = gallery_comments::remove_for_images(&paths) {
+                    result.errors.push(format!(
+                        "图片已删除，但清理评论 {} 失败：{error}",
+                        comments_path.display()
+                    ));
+                }
+            }
+        }
+        BatchImageAction::Move { .. } => {}
     }
     let organise_directory = directory
         .file_name()
@@ -7965,8 +7992,8 @@ mod tests {
         for filter in [ImageFilter::All, ImageFilter::Favourite, ImageFilter::Tag3] {
             let directory = tempfile::tempdir().unwrap();
             let root = fs::canonicalize(directory.path()).unwrap();
-            let state = StateStore::new(None).unwrap();
-            for name in ["cat.svg", "dog.svg"] {
+            let state = StateStore::new(Some(directory.path().join("cache").as_path())).unwrap();
+            for name in ["cat.svg", "second.svg", "dog.svg"] {
                 fs::write(root.join(name), "<svg/>").unwrap();
                 state.set_favourite(&root.join(name), true).unwrap();
                 state.set_image_tag(&root.join(name), Some(3)).unwrap();
@@ -7977,12 +8004,20 @@ mod tests {
                 &root,
                 &state,
                 BatchImageAction::ClearMark {
-                    files: vec!["cat.svg".into()],
+                    files: vec!["cat.svg".into(), "second.svg".into(), "missing.svg".into()],
                     filter,
                 },
             );
-            assert_eq!(result.affected, 1);
-            assert!(result.errors.is_empty());
+            assert_eq!(result.affected, 2);
+            assert_eq!(result.errors.len(), 1);
+            assert_eq!(
+                state.is_favourite(&root.join("second.svg")).unwrap(),
+                keeps_like
+            );
+            assert_eq!(
+                state.image_tag(&root.join("second.svg")).unwrap(),
+                keeps_tag.then_some(3)
+            );
             assert_eq!(
                 state.is_favourite(&root.join("cat.svg")).unwrap(),
                 keeps_like
@@ -8157,20 +8192,22 @@ mod tests {
     fn batch_delete_reports_partial_failure_and_cleans_image_data() {
         let directory = tempfile::tempdir().unwrap();
         let root = fs::canonicalize(directory.path()).unwrap();
-        let state = StateStore::new(None).unwrap();
+        let state = StateStore::new(Some(directory.path().join("cache").as_path())).unwrap();
         fs::write(root.join("cat.svg"), "<svg/>").unwrap();
+        fs::write(root.join("second.svg"), "<svg/>").unwrap();
         fs::write(root.join("dog.svg"), "<svg/>").unwrap();
-        fs::write(root.join("gallery-comments.json"), r#"{"comments":[{"id":"c1","image":"cat.svg","author":"Alice","body":"cat","created_at":"now"},{"id":"c2","image":"dog.svg","author":"Bob","body":"dog","created_at":"now"}]}"#).unwrap();
+        fs::write(root.join("gallery-comments.json"), r#"{"comments":[{"id":"c3","image":"second.svg","author":"Alice","body":"second","created_at":"now"},{"id":"c1","image":"cat.svg","author":"Alice","body":"cat","created_at":"now"},{"id":"c2","image":"dog.svg","author":"Bob","body":"dog","created_at":"now"}]}"#).unwrap();
         state.set_favourite(&root.join("cat.svg"), true).unwrap();
         state.set_image_tag(&root.join("cat.svg"), Some(2)).unwrap();
         let result = batch_images(
             &root,
             &state,
             BatchImageAction::Delete {
-                files: vec!["missing.svg".into(), "cat.svg".into()],
+                files: vec!["missing.svg".into(), "cat.svg".into(), "second.svg".into()],
             },
         );
-        assert_eq!(result.affected, 1);
+        assert_eq!(result.affected, 2);
+        assert!(!root.join("second.svg").exists());
         assert_eq!(result.errors.len(), 1);
         assert!(root.join("dog.svg").exists());
         assert!(!root.join("cat.svg").exists());
