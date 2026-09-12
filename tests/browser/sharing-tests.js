@@ -57,6 +57,11 @@ async function getShareUrl(page) {
   const url = await page.locator('#share-url').inputValue();
   await page.locator('[data-share-copy]').click();
   await expect(page.locator('.share-status')).toHaveText(/链接已复制|请选中上方链接手动复制/);
+  if (await page.locator('.share-status').textContent() === '链接已复制') {
+    await expect(page.locator('.share-dialog')).not.toBeVisible();
+  } else {
+    await page.locator('[data-share-close]').click();
+  }
   return url;
 }
 
@@ -66,8 +71,8 @@ module.exports = () => {
     await page.goto(`${origin}/docs/project/?view=gallery`);
     const file = page.locator('.entry.file').filter({hasText:'note.md'});
     await file.getByRole('button', {name:'复制分享链接'}).click();
-    const url = await getShareUrl(page);
     await page.screenshot({path:test.info().outputPath('share-dialog.png')});
+    const url = await getShareUrl(page);
     const recipient = await browser.newContext({viewport:page.viewportSize()});
     try {
       const shared = await recipient.newPage();
@@ -91,15 +96,12 @@ module.exports = () => {
       expect((await recipient.request.post(`${origin}/docs/project/?mode=share`)).status()).toBe(403);
       expect(errors).toEqual([]);
     } finally { await recipient.close(); }
-    await page.locator('[data-share-close]').click();
     await page.locator('main > header').getByRole('button', {name:'复制分享链接'}).click();
     expect(await getShareUrl(page)).toContain('/docs/project/?share=');
-    await page.locator('[data-share-close]').click();
     await page.locator('#gallery-toggle').click();
     const image = page.locator('.entry.image');
     await image.getByRole('button', {name:'复制分享链接'}).click();
     expect(await getShareUrl(page)).toContain('/docs/project/cat.svg?share=');
-    await page.locator('[data-share-close]').click();
     await page.locator('#gallery-toggle').click();
     await image.locator('.glyph').click();
     await expect(page.locator('#image-lightbox')).toBeVisible();
@@ -110,7 +112,6 @@ module.exports = () => {
     await page.goto(`${origin}/docs/project/note.md`);
     await page.getByRole('button', {name:'复制分享链接'}).click();
     const url = await getShareUrl(page);
-    await page.locator('[data-share-close]').click();
     const recipient = await browser.newContext({viewport:page.viewportSize()});
     try {
       await recipient.addInitScript(() => localStorage.setItem('webdir-review-identity', 'Guest'));

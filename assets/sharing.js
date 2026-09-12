@@ -35,14 +35,19 @@
   const status = dialog.querySelector('.share-status');
   const copy = dialog.querySelector('[data-share-copy]');
   dialog.querySelector('[data-share-close]').addEventListener('click', () => dialog.close());
+  let closeTimer;
+  dialog.addEventListener('close', () => clearTimeout(closeTimer));
   copy.addEventListener('click', () => {
+    clearTimeout(closeTimer);
     field.select();
     let copied = false;
     try { copied = document.execCommand('copy'); } catch (_) {}
     status.textContent = copied ? '链接已复制' : '请选中上方链接手动复制';
+    if (copied) closeTimer = setTimeout(() => dialog.close(), 500);
   });
   let generation = 0;
   const openShare = async (path, directory) => {
+    clearTimeout(closeTimer);
     const current = ++generation;
     const target = new URL(path, location.href);
     const scope = directory ? target.pathname : target.pathname.slice(0, target.pathname.lastIndexOf('/') + 1);

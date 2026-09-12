@@ -360,6 +360,19 @@ fn handle_connection_with_auth(
                         .zip(relative.as_ref())
                         .is_some_and(|(scope, relative)| scope.allows_request(root, relative))
                 {
+                    if matches!(method, "GET" | "HEAD") {
+                        if let Some(scope) = &scope {
+                            let share_url =
+                                format!("{}?share={token}", url_for_path(&scope.relative, true));
+                            return send_html_status(
+                                &mut stream,
+                                403,
+                                "Forbidden",
+                                &sharing::denied_page(&share_url),
+                                head_only,
+                            );
+                        }
+                    }
                     return send_text(
                         &mut stream,
                         403,
@@ -485,6 +498,16 @@ fn handle_connection_with_auth(
     };
 
     if !access.allows_request(root, &relative) {
+        if matches!(method, "GET" | "HEAD") && mode.is_none() {
+            let scope = access.scope.as_ref().unwrap();
+            return send_html_status(
+                &mut stream,
+                403,
+                "Forbidden",
+                &sharing::denied_page(&url_for_path(&scope.relative, true)),
+                head_only,
+            );
+        }
         return send_text(&mut stream, 403, "Forbidden", "超出分享范围\n", head_only);
     }
 

@@ -8,6 +8,11 @@ use serde::{Deserialize, Serialize};
 pub(crate) const COOKIE_NAME: &str = "webdir_share";
 pub(crate) const SCRIPT: &str = include_str!("../assets/sharing.js");
 
+pub(crate) fn denied_page(share_url: &str) -> String {
+    include_str!("../assets/share-denied.html")
+        .replace("{{share_url}}", &super::escape_html(share_url))
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 struct Claims {
     scope: String,
@@ -210,6 +215,31 @@ mod tests {
 
     fn body(response: &str) -> &str {
         response.split_once("\r\n\r\n").unwrap().1
+    }
+
+    #[test]
+    fn denied_page_returns_to_the_shared_directory() {
+        let server = Server::new();
+        let (url, cookie) = server.share();
+        let response = server.request("GET", "/docs/", &cookie, "");
+        assert!(response.starts_with("HTTP/1.1 403"));
+        assert!(response.contains("Content-Type: text/html; charset=utf-8"));
+        assert!(body(&response).contains("超出分享范围"));
+        assert!(body(&response).contains("href=\"/docs/project/\""));
+        assert!(server
+            .request("GET", "/docs/project/", &cookie, "")
+            .starts_with("HTTP/1.1 200"));
+        let head = server.request("HEAD", "/docs/", &cookie, "");
+        assert!(head.starts_with("HTTP/1.1 403"));
+        assert!(body(&head).is_empty());
+
+        let query = url.split_once('?').unwrap().1;
+        let response = server.request("GET", &format!("/docs/?{query}"), "", "");
+        let destination = format!("/docs/project/?{query}");
+        assert!(body(&response).contains(&format!("href=\"{destination}\"")));
+        assert!(server
+            .request("GET", &destination, "", "")
+            .starts_with("HTTP/1.1 303"));
     }
 
     #[test]
