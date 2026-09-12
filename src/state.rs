@@ -26,8 +26,9 @@ impl StateStore {
                 "CREATE TABLE IF NOT EXISTS favourites (
                     path BLOB PRIMARY KEY NOT NULL
                 );
-                CREATE TABLE IF NOT EXISTS deletion_marks (
-                    path BLOB PRIMARY KEY NOT NULL
+                CREATE TABLE IF NOT EXISTS image_tags (
+                    path BLOB PRIMARY KEY NOT NULL,
+                    tag INTEGER NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS directory_favourites (
                     path BLOB PRIMARY KEY NOT NULL,
@@ -62,12 +63,33 @@ impl StateStore {
         self.set("favourites", path, value)
     }
 
-    pub(crate) fn is_deletion_marked(&self, path: &Path) -> io::Result<bool> {
-        self.contains("deletion_marks", path)
+    pub(crate) fn image_tag(&self, path: &Path) -> io::Result<Option<u8>> {
+        self.connection
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT tag FROM image_tags WHERE path = ?1",
+                params![path_bytes(path)],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sqlite_error)
     }
 
-    pub(crate) fn set_deletion_mark(&self, path: &Path, value: bool) -> io::Result<()> {
-        self.set("deletion_marks", path, value)
+    pub(crate) fn set_image_tag(&self, path: &Path, tag: Option<u8>) -> io::Result<()> {
+        let connection = self.connection.lock().unwrap();
+        match tag {
+            Some(tag) => connection.execute(
+                "INSERT OR REPLACE INTO image_tags (path, tag) VALUES (?1, ?2)",
+                params![path_bytes(path), tag],
+            ),
+            None => connection.execute(
+                "DELETE FROM image_tags WHERE path = ?1",
+                params![path_bytes(path)],
+            ),
+        }
+        .map(|_| ())
+        .map_err(sqlite_error)
     }
 
     pub(crate) fn is_directory_favourite(&self, path: &Path) -> io::Result<bool> {
@@ -195,7 +217,7 @@ impl StateStore {
             .map_err(sqlite_error)?;
         transaction
             .execute(
-                "DELETE FROM deletion_marks WHERE path = ?1",
+                "DELETE FROM image_tags WHERE path = ?1",
                 params![path_bytes(path)],
             )
             .map_err(sqlite_error)?;
@@ -316,15 +338,17 @@ mod tests {
         let state = StateStore::new(None).unwrap();
         let path = Path::new("/photos/cat.png");
         state.set_favourite(path, true).unwrap();
-        state.set_deletion_mark(path, true).unwrap();
+        state.set_image_tag(path, Some(1)).unwrap();
 
         assert!(state.clone().is_favourite(path).unwrap());
-        assert!(state.clone().is_deletion_marked(path).unwrap());
+        assert_eq!(state.clone().image_tag(path).unwrap(), Some(1));
+        state.set_image_tag(path, Some(5)).unwrap();
+        assert_eq!(state.image_tag(path).unwrap(), Some(5));
         assert!(!StateStore::new(None).unwrap().is_favourite(path).unwrap());
 
         state.clear_image_state(path).unwrap();
         assert!(!state.is_favourite(path).unwrap());
-        assert!(!state.is_deletion_marked(path).unwrap());
+        assert_eq!(state.image_tag(path).unwrap(), None);
     }
 
     #[test]
@@ -334,7 +358,7 @@ mod tests {
         let second = Path::new("/other/猫.png");
         let state = StateStore::new(Some(cache.path())).unwrap();
         state.set_favourite(first, true).unwrap();
-        state.set_deletion_mark(second, true).unwrap();
+        state.set_image_tag(second, Some(3)).unwrap();
         state
             .set_image_similarity_feature(first, "v1", &[1, 2, 3])
             .unwrap();
@@ -345,7 +369,7 @@ mod tests {
 
         let reopened = StateStore::new(Some(cache.path())).unwrap();
         assert!(reopened.is_favourite(first).unwrap());
-        assert!(reopened.is_deletion_marked(second).unwrap());
+        assert_eq!(reopened.image_tag(second).unwrap(), Some(3));
         assert_eq!(
             reopened.image_similarity_feature(first, "v1").unwrap(),
             Some(vec![1, 2, 3])
@@ -363,7 +387,6 @@ mod tests {
         );
         assert!(cache.path().join("webdir.sqlite").is_file());
         assert!(!cache.path().join("favourites").exists());
-        assert!(!cache.path().join("deletion-marks").exists());
     }
 
     #[test]

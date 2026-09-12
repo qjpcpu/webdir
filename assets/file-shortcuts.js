@@ -38,14 +38,14 @@
     });
   }
 
-  let pendingPath = null;
+  let pendingCopy = null;
   let keyTimer;
   let toastTimer;
   let toast;
 
   const reset = () => {
     clearTimeout(keyTimer);
-    pendingPath = null;
+    pendingCopy = null;
   };
 
   const notify = message => {
@@ -62,12 +62,12 @@
     toastTimer = setTimeout(() => { toast.hidden = true; }, 2200);
   };
 
-  const copyPath = path => {
+  const copyText = (text, message) => {
     const focused = document.activeElement;
     const selection = window.getSelection();
     const ranges = Array.from({length: selection.rangeCount}, (_, index) => selection.getRangeAt(index).cloneRange());
     const field = document.createElement('textarea');
-    field.value = path;
+    field.value = text;
     field.readOnly = true;
     field.style.cssText = 'position:fixed;left:-9999px;top:0';
     document.body.append(field);
@@ -83,8 +83,9 @@
       selection.removeAllRanges();
       ranges.forEach(range => selection.addRange(range));
     }
-    notify(copied ? `复制文件路径 ${path}` : '复制失败，请检查浏览器剪贴板权限');
+    notify(copied ? message : '复制失败，请检查浏览器剪贴板权限');
   };
+  const copyPath = path => copyText(path, `复制文件路径 ${path}`);
 
   const openReviewFile = document.querySelector('#open-review-file');
   if (openReviewFile) openReviewFile.href = `${location.pathname}.review.json`;
@@ -103,21 +104,36 @@
       reset();
       return;
     }
+    if (event.key !== 'y') {
+      reset();
+      return;
+    }
     const lightbox = document.querySelector('#image-lightbox:not([hidden])');
     const path = lightbox ? lightbox.dataset.filePath : document.body.dataset.filePath;
-    if (event.key !== 'y' || !path) {
+    const gallery = document.querySelector('.listing.gallery');
+    const filter = document.querySelector('#image-filter')?.value;
+    const copyGallery = !lightbox && gallery && filter && filter !== 'all';
+    const names = copyGallery ? Array.from(gallery.querySelectorAll('.entry.image:not([hidden])'))
+      .map(entry => entry.querySelector('.entry-name').textContent) : [];
+    const key = copyGallery ? JSON.stringify([filter, names]) : path;
+    if (!key) {
       reset();
       return;
     }
     event.preventDefault();
-    if (pendingPath === path) {
+    if (pendingCopy === key) {
       reset();
-      copyPath(path);
+      if (copyGallery) {
+        if (names.length) copyText(names.join(','), `已复制 ${names.length} 个文件名`);
+        else notify('没有可复制的图片');
+      } else copyPath(path);
     } else {
       reset();
-      pendingPath = path;
+      pendingCopy = key;
       keyTimer = setTimeout(reset, 500);
     }
   });
   window.addEventListener('blur', reset);
+  document.addEventListener('gallery-filter-change', reset);
+  document.querySelector('#gallery-toggle')?.addEventListener('click', reset);
 })();

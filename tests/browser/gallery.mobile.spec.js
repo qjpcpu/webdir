@@ -120,7 +120,7 @@ test('screen-wide vertical swipe hands off without snapping back', async ({page}
   await expect(page.locator('.lightbox-close')).toBeVisible();
   await expect(page.locator('.lightbox-state')).toHaveCSS('opacity', '1');
   await expect(page.locator('.lightbox-favourite-state')).not.toHaveClass(/liked/);
-  await expect(page.locator('.lightbox-deletion-state')).toBeHidden();
+  await expect(page.locator('.lightbox-tag-state')).toBeHidden();
   const singleViewerSurface = await page.locator('#image-lightbox').evaluate(element => {
     const style = getComputedStyle(element);
     return {
@@ -171,13 +171,13 @@ test('screen-wide vertical swipe hands off without snapping back', async ({page}
   await expect(page.locator('#image-lightbox')).toHaveClass(/chrome-hidden/);
   await expect(page.locator('.lightbox-state')).toHaveCSS('opacity', '1');
 
-  await page.keyboard.press('d');
-  await expect(page.locator('#deletion-toggle')).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.locator('.lightbox-deletion-state')).toBeVisible();
+  await page.keyboard.press('1');
+  await expect(page.locator('.lightbox-tag-state')).toHaveText('1');
+  await expect(page.locator('.lightbox-tag-state')).toBeVisible();
   await expect(page.locator('#delete-dialog')).toBeHidden();
   await page.waitForTimeout(450);
-  await page.keyboard.press('d');
-  await expect(page.locator('#deletion-toggle')).toHaveAttribute('aria-pressed', 'false');
+  await page.keyboard.press('1');
+  await expect(page.locator('.lightbox-tag-state')).toBeHidden();
   await expect(page.locator('#delete-dialog')).toBeHidden();
 });
 
@@ -205,18 +205,6 @@ test('double-tapping the image toggles favourite state', async ({page}) => {
   await expect(page.locator('#favourite-toggle')).toHaveAttribute('aria-pressed', 'true');
   await expect(page.locator('.lightbox-favourite-state')).toBeVisible();
   await page.request.delete('/03-square.svg?mode=favourite');
-});
-
-test('mobile favourites organiser reports when there are no images to move', async ({page}) => {
-  await Promise.all(['01-portrait.svg', '02-landscape.svg', '03-square.svg'].map(name =>
-    page.request.delete(`/${name}?mode=favourite`)
-  ));
-  await page.goto('/?view=gallery');
-
-  await page.locator('[data-move-images="favourites"]').click();
-  await expect(page.locator('#directory-notice')).toHaveText('没有图片需要移动');
-  await expect(page.locator('#directory-notice')).toBeVisible();
-  await expect(page.locator('.move-dialog')).toBeHidden();
 });
 
 test('mobile comments open as a bottom drawer and keep typing isolated from shortcuts', async ({page}) => {
@@ -309,3 +297,5 @@ test('mobile slideshow replaces viewer chrome with the image backdrop', async ({
   await expect(page.locator('#image-lightbox')).not.toHaveClass(/carousel-mode/);
   await expect(page.locator('.carousel-backdrop')).toBeHidden();
 });
+
+require('./gallery-actions')();

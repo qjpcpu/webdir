@@ -226,18 +226,18 @@ test('secondary viewer tools stay hidden until More is opened', async ({page}) =
   await expect(page.locator('#image-lightbox')).toBeVisible();
 });
 
-test('hidden viewer controls expose live favourite and deletion state on the image', async ({page}) => {
+test('hidden viewer controls expose live favourite and numeric tag state on the image', async ({page}) => {
   await page.request.delete('/01-portrait.svg?mode=favourite');
-  await page.request.delete('/01-portrait.svg?mode=deletion-mark');
+  await page.request.delete('/01-portrait.svg?mode=image-tag');
   await openGalleryImage(page);
   const state = page.locator('.lightbox-state');
   const heart = state.locator('.lightbox-favourite-state');
-  const deletion = state.locator('.lightbox-deletion-state');
+  const tagBadge = state.locator('.lightbox-tag-state');
 
   await expect(state).toHaveCSS('opacity', '1');
   await expect(heart).not.toHaveClass(/liked/);
   await expect(heart).toBeHidden();
-  await expect(deletion).toBeHidden();
+  await expect(tagBadge).toBeHidden();
   await expect.poll(() => page.locator('.lightbox-image').evaluate(image => image.naturalWidth)).toBe(600);
   const placement = await page.evaluate(() => {
     const stage = document.querySelector('.lightbox-stage').getBoundingClientRect();
@@ -257,9 +257,9 @@ test('hidden viewer controls expose live favourite and deletion state on the ima
   await expect(page.locator('#favourite-toggle')).toHaveAttribute('aria-pressed', 'true');
   await expect(heart).toHaveClass(/liked/);
   await expect(heart).toBeVisible();
-  await page.keyboard.press('d');
-  await expect(page.locator('#deletion-toggle')).toHaveAttribute('aria-pressed', 'true');
-  await expect(deletion).toBeVisible();
+  await page.keyboard.press('1');
+  await expect(page.locator('.lightbox-tag-state')).toHaveText('1');
+  await expect(tagBadge).toBeVisible();
   await expect(state).toHaveCSS('opacity', '1');
 
   await page.locator('.lightbox-image').click({position: {x: 300, y: 300}});
@@ -268,93 +268,22 @@ test('hidden viewer controls expose live favourite and deletion state on the ima
   await expect(state).toHaveCSS('opacity', '1');
 
   await page.request.delete('/01-portrait.svg?mode=favourite');
-  await page.request.delete('/01-portrait.svg?mode=deletion-mark');
+  await page.request.delete('/01-portrait.svg?mode=image-tag');
 });
 
-test('d toggles the deletion mark without a dialog while Ctrl+K deletes directly', async ({page}) => {
-  await page.request.delete('/03-square.svg?mode=deletion-mark');
+test('Ctrl+K deletes the current image directly and advances the viewer', async ({page}) => {
   let directDeletes = 0;
-  await page.route('**/03-square.svg*', async route => {
-    const request = route.request();
-    const url = new URL(request.url());
-    if (request.method() === 'DELETE' && !url.searchParams.has('mode')) {
-      directDeletes += 1;
+  await page.route('**/03-square.svg', async route => {
+    if (route.request().method() === 'DELETE') {
+      directDeletes++;
       await route.fulfill({status: 204});
-      return;
-    }
-    await route.continue();
+    } else await route.continue();
   });
   await openGalleryImage(page, '03-square.svg');
-
-  await page.keyboard.press('d');
-  await expect(page.locator('#deletion-toggle')).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.locator('.lightbox-deletion-state')).toBeVisible();
-  await expect(page.locator('#delete-dialog')).toBeHidden();
-  await page.waitForTimeout(450);
-  await expect(page.locator('#image-lightbox')).toBeVisible();
-  expect(directDeletes).toBe(0);
-
-  await page.keyboard.press('Shift+d');
-  await expect(page.locator('#deletion-toggle')).toHaveAttribute('aria-pressed', 'false');
-  expect(directDeletes).toBe(0);
-
-  await page.keyboard.press('d');
-  await page.keyboard.press('d');
-  await page.waitForTimeout(100);
-  expect(directDeletes).toBe(0);
-
-  const deletedPath = await page.locator('#image-lightbox').getAttribute('data-file-path');
   await page.keyboard.press('Control+k');
   await expect.poll(() => directDeletes).toBe(1);
   await expect(page.locator('#delete-dialog')).toBeHidden();
-  await expect(page.locator('#image-lightbox')).not.toHaveAttribute('data-file-path', deletedPath);
-  await page.request.delete('/03-square.svg?mode=deletion-mark');
-});
-
-test('marked-image view swaps organising actions and exposes batch actions', async ({page}) => {
-  await page.request.put('/01-portrait.svg?mode=favourite');
-  await page.request.put('/02-landscape.svg?mode=deletion-mark');
-  await page.goto('/?view=gallery');
-
-  const moveFavourite = page.locator('[data-move-images="favourites"]');
-  await expect(moveFavourite).toBeVisible();
-  await moveFavourite.click();
-  await expect(page.locator('.move-description')).toHaveText('将 1 张已点赞图片移入 favourites/。同名文件会自动重命名。');
-  await page.locator('[data-move-cancel]').click();
-  await expect(page.locator('#delete-marked-images')).toBeHidden();
-  await expect(page.locator('#clear-deletion-marks')).toBeHidden();
-
-  await page.locator('#deletion-filter').click();
-  await expect(page.locator('#deletion-filter')).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.locator('#deletion-filter-label')).toHaveText('查看全部图片');
-  await expect(page.locator('[data-move-images="favourites"]')).toBeHidden();
-  await expect(page.locator('#delete-marked-images')).toBeVisible();
-  await expect(page.locator('#clear-deletion-marks')).toBeVisible();
-  await expect(page.locator('.entry.image:visible')).toHaveCount(1);
-
-  await page.locator('#delete-marked-images').click();
-  await expect(page.locator('#delete-marked-dialog')).toBeVisible();
-  await page.locator('#delete-marked-cancel').click();
-  await page.locator('#deletion-filter').click();
-  await expect(page.locator('#deletion-filter-label')).toHaveText('查看待删除列表');
-  await expect(page.locator('[data-move-images="favourites"]')).toBeVisible();
-  await expect(page.locator('#delete-marked-images')).toBeHidden();
-  await expect(page.locator('#clear-deletion-marks')).toBeHidden();
-
-  await page.request.delete('/02-landscape.svg?mode=deletion-mark');
-  await page.request.delete('/01-portrait.svg?mode=favourite');
-});
-
-test('favourites organiser reports when there are no images to move', async ({page}) => {
-  await Promise.all(['01-portrait.svg', '02-landscape.svg', '03-square.svg'].map(name =>
-    page.request.delete(`/${name}?mode=favourite`)
-  ));
-  await page.goto('/?view=gallery');
-
-  await page.locator('[data-move-images="favourites"]').click();
-  await expect(page.locator('#directory-notice')).toHaveText('没有图片需要移动');
-  await expect(page.locator('#directory-notice')).toBeVisible();
-  await expect(page.locator('.move-dialog')).toBeHidden();
+  await expect(page.locator('#image-lightbox')).not.toHaveAttribute('data-file-path', '03-square.svg');
 });
 
 test('comments own keyboard input and reuse the Markdown review identity', async ({page}) => {
@@ -572,3 +501,5 @@ test('slideshow fills the viewport and favourite particles are not stage-clipped
   await expect(favouriteMark).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
   await page.request.delete('/01-portrait.svg?mode=favourite');
 });
+
+require('./gallery-actions')();

@@ -124,6 +124,36 @@ pub(crate) fn apply(
     Ok(document)
 }
 
+pub(crate) fn move_for_image(source: &Path, target: &Path) -> io::Result<()> {
+    let _operation = OPERATIONS.lock().unwrap();
+    let mut original = read(source)?;
+    let source_name = source.file_name().unwrap().to_string_lossy();
+    let target_name = target.file_name().unwrap().to_string_lossy();
+    let mut moved = original
+        .comments
+        .iter()
+        .filter(|comment| comment.image == source_name)
+        .cloned()
+        .collect::<Vec<_>>();
+    if moved.is_empty() {
+        return Ok(());
+    }
+    for comment in &mut moved {
+        comment.image = target_name.to_string();
+    }
+    original
+        .comments
+        .retain(|comment| comment.image != source_name);
+    if comments_path(source) == comments_path(target) {
+        original.comments.extend(moved);
+    } else {
+        let mut destination = read(target)?;
+        destination.comments.extend(moved);
+        write(target, &destination)?;
+    }
+    write(source, &original)
+}
+
 pub(crate) fn remove_for_image(image_path: &Path) -> io::Result<()> {
     let _operation = OPERATIONS.lock().unwrap();
     let path = comments_path(image_path);

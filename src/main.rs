@@ -559,32 +559,6 @@ fn handle_connection_with_auth(
             ),
         };
     }
-    if mode.as_deref() == Some("move-favourites") {
-        if method != "POST" || !metadata.is_dir() {
-            return send_text(
-                &mut stream,
-                405,
-                "Method Not Allowed",
-                "请从目录页整理图片\n",
-                head_only,
-            );
-        }
-        return match move_favourite_images(&canonical, state) {
-            Ok(result) => send_content(
-                &mut stream,
-                &serde_json::to_vec(&result)?,
-                "application/json; charset=utf-8",
-                false,
-            ),
-            Err(error) => send_text(
-                &mut stream,
-                500,
-                "Internal Server Error",
-                &format!("整理图片失败：{error}"),
-                false,
-            ),
-        };
-    }
     if mode.as_deref() == Some("favourite") {
         if !matches!(method, "PUT" | "DELETE") || !metadata.is_file() || !is_image_file(&canonical)
         {
@@ -607,69 +581,73 @@ fn handle_connection_with_auth(
             ),
         };
     }
-    if mode.as_deref() == Some("deletion-mark") {
+    if mode.as_deref() == Some("image-tag") {
         if !matches!(method, "PUT" | "DELETE") || !metadata.is_file() || !is_image_file(&canonical)
         {
             return send_text(
                 &mut stream,
                 405,
                 "Method Not Allowed",
-                "仅支持标记或取消标记待删除图片\n",
+                "仅支持设置或取消图片数字标记\n",
                 head_only,
             );
         }
-        return match state.set_deletion_mark(&canonical, method == "PUT") {
+        let tag = if method == "PUT" {
+            let body = match read_request_body(&mut reader, headers.content_length) {
+                Ok(body) => body,
+                Err(error) => return send_text(&mut stream, 400, "Bad Request", &error, false),
+            };
+            #[derive(serde::Deserialize)]
+            struct ImageTag {
+                tag: u8,
+            }
+            match serde_json::from_str::<ImageTag>(&body) {
+                Ok(value) if (1..=5).contains(&value.tag) => Some(value.tag),
+                _ => {
+                    return send_text(&mut stream, 400, "Bad Request", "图片标记应为 1–5\n", false)
+                }
+            }
+        } else {
+            None
+        };
+        return match state.set_image_tag(&canonical, tag) {
             Ok(()) => send_empty(&mut stream, 204, "No Content"),
             Err(_) => send_text(
                 &mut stream,
                 500,
                 "Internal Server Error",
-                "保存待删除标记失败，请重试。\n",
+                "保存图片标记失败，请重试。\n",
                 false,
             ),
         };
     }
-    if mode.as_deref() == Some("delete-marked") {
+    if mode.as_deref() == Some("batch-images") {
         if method != "POST" || !metadata.is_dir() {
             return send_text(
                 &mut stream,
                 405,
                 "Method Not Allowed",
-                "请从目录页删除已标记图片\n",
+                "请从目录页批量操作图片\n",
                 head_only,
             );
         }
-        return match delete_marked_images(&canonical, state) {
-            Ok(result) => send_json(&mut stream, &result, false),
-            Err(error) => send_text(
-                &mut stream,
-                500,
-                "Internal Server Error",
-                &format!("删除已标记图片失败：{error}"),
-                false,
-            ),
+        let body = match read_request_body(&mut reader, headers.content_length) {
+            Ok(body) => body,
+            Err(error) => return send_text(&mut stream, 400, "Bad Request", &error, false),
         };
-    }
-    if mode.as_deref() == Some("clear-deletion-marks") {
-        if method != "POST" || !metadata.is_dir() {
-            return send_text(
-                &mut stream,
-                405,
-                "Method Not Allowed",
-                "请从目录页取消待删除标记\n",
-                head_only,
-            );
-        }
-        return match clear_directory_deletion_marks(&canonical, state) {
-            Ok(result) => send_json(&mut stream, &result, false),
-            Err(error) => send_text(
-                &mut stream,
-                500,
-                "Internal Server Error",
-                &format!("取消待删除标记失败：{error}"),
-                false,
-            ),
+        let action = match serde_json::from_str::<BatchImageAction>(&body) {
+            Ok(action) => action,
+            Err(error) => {
+                return send_text(
+                    &mut stream,
+                    400,
+                    "Bad Request",
+                    &format!("无效的批量操作：{error}"),
+                    false,
+                )
+            }
         };
+        return send_json(&mut stream, &batch_images(&canonical, state, action), false);
     }
     if method == "DELETE" {
         if !metadata.is_file() || !is_image_file(&canonical) {
@@ -698,7 +676,7 @@ fn handle_connection_with_auth(
                         &mut stream,
                         500,
                         "Internal Server Error",
-                        "图片已删除，但清除待删除标记失败。\n",
+                        "图片已删除，但清除图片状态失败。\n",
                         false,
                     ),
                 }
@@ -721,7 +699,13 @@ fn handle_connection_with_auth(
             };
             return send_redirect(&mut stream, &location);
         }
-        let body = render_directory_page_at(root, &canonical, &relative, state)?;
+        let body = render_directory_page_at(
+            root,
+            &canonical,
+            &relative,
+            state,
+            query_parameter(query, "view").as_deref() == Some("gallery"),
+        )?;
         return send_html(&mut stream, &body, head_only);
     }
     if !metadata.is_file() {
@@ -1609,14 +1593,8 @@ struct DirectoryEntry {
     modified: u128,
     image_version: Option<String>,
     favourite: bool,
-    deletion_marked: bool,
+    image_tag: Option<u8>,
     directory_favourite: bool,
-}
-
-#[derive(Default, serde::Serialize)]
-struct MoveImagesResult {
-    moved: usize,
-    errors: Vec<String>,
 }
 
 fn available_destination_path(directory: &Path, file_name: &OsStr) -> io::Result<PathBuf> {
@@ -1646,140 +1624,115 @@ fn available_destination_path(directory: &Path, file_name: &OsStr) -> io::Result
     unreachable!()
 }
 
-fn move_favourite_images(directory: &Path, state: &StateStore) -> io::Result<MoveImagesResult> {
-    let mut result = MoveImagesResult::default();
-    for entry in fs::read_dir(directory)? {
-        let entry = entry?;
-        let source = entry.path();
-        if !source.is_file() || !is_image_file(&source) {
-            continue;
-        }
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ImageFilter {
+    All,
+    Favourite,
+    Tag1,
+    Tag2,
+    Tag3,
+    Tag4,
+    Tag5,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(tag = "action", rename_all = "kebab-case")]
+enum BatchImageAction {
+    Move {
+        files: Vec<String>,
+        directory: String,
+    },
+    Delete {
+        files: Vec<String>,
+    },
+    ClearMark {
+        files: Vec<String>,
+        filter: ImageFilter,
+    },
+}
+
+#[derive(Default, serde::Serialize)]
+struct BatchImagesResult {
+    affected: usize,
+    errors: Vec<String>,
+}
+
+fn is_file_name(name: &str) -> bool {
+    let mut components = Path::new(name).components();
+    matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none()
+}
+
+fn batch_images(
+    directory: &Path,
+    state: &StateStore,
+    action: BatchImageAction,
+) -> BatchImagesResult {
+    let files = match &action {
+        BatchImageAction::Move { files, .. }
+        | BatchImageAction::Delete { files }
+        | BatchImageAction::ClearMark { files, .. } => files,
+    };
+    let mut result = BatchImagesResult::default();
+    for name in files {
         let outcome = (|| -> io::Result<()> {
-            let source_key = fs::canonicalize(&source)?;
-            if !state.is_favourite(&source_key)? {
-                return Ok(());
+            if !is_file_name(name) {
+                return Err(io::Error::other("请选择当前目录的图片"));
             }
-            let deletion_marked = state.is_deletion_marked(&source_key)?;
-            let target_directory = directory.join("favourites");
-            fs::create_dir_all(&target_directory)?;
-            let target_directory = fs::canonicalize(target_directory)?;
-            let target = available_destination_path(&target_directory, &entry.file_name())?;
-            fs::rename(&source, &target)?;
-            result.moved += 1;
-            state.set_favourite(&target, true)?;
-            state.set_favourite(&source_key, false)?;
-            if deletion_marked {
-                state.set_deletion_mark(&target, true)?;
-                state.set_deletion_mark(&source_key, false)?;
+            let source = directory.join(name);
+            if !source.is_file() || !is_image_file(&source) {
+                return Err(io::Error::other("图片文件不存在"));
+            }
+            let source_key = fs::canonicalize(&source)?;
+            match &action {
+                BatchImageAction::Move {
+                    directory: destination,
+                    ..
+                } => {
+                    if destination != ".." && !is_file_name(destination) {
+                        return Err(io::Error::other("请输入目标文件夹名或 .."));
+                    }
+                    let target_directory = directory.join(destination);
+                    fs::create_dir_all(&target_directory)?;
+                    let target_directory = fs::canonicalize(target_directory)?;
+                    let target = available_destination_path(&target_directory, OsStr::new(name))?;
+                    let liked = state.is_favourite(&source_key)?;
+                    let tag = state.image_tag(&source_key)?;
+                    fs::rename(&source, &target)?;
+                    result.affected += 1;
+                    state.set_favourite(&target, liked)?;
+                    state.set_image_tag(&target, tag)?;
+                    state.clear_image_state(&source_key)?;
+                    gallery_comments::move_for_image(&source_key, &target).map_err(|error| {
+                        io::Error::other(format!("图片已移动，但转移评论失败：{error}"))
+                    })?;
+                }
+                BatchImageAction::Delete { .. } => {
+                    fs::remove_file(&source)?;
+                    result.affected += 1;
+                    let comments = gallery_comments::remove_for_image(&source_key);
+                    let image_state = state.clear_image_state(&source_key);
+                    comments.and(image_state).map_err(|error| {
+                        io::Error::other(format!("图片已删除，但清理关联数据失败：{error}"))
+                    })?;
+                }
+                BatchImageAction::ClearMark { filter, .. } => {
+                    if matches!(filter, ImageFilter::All | ImageFilter::Favourite) {
+                        state.set_favourite(&source_key, false)?;
+                    }
+                    if !matches!(filter, ImageFilter::Favourite) {
+                        state.set_image_tag(&source_key, None)?;
+                    }
+                    result.affected += 1;
+                }
             }
             Ok(())
         })();
         if let Err(error) = outcome {
-            result
-                .errors
-                .push(format!("{}：{error}", entry.file_name().to_string_lossy()));
+            result.errors.push(format!("{name}：{error}"));
         }
     }
-    Ok(result)
-}
-
-#[derive(Default, serde::Serialize)]
-struct DeleteMarkedImagesResult {
-    deleted: usize,
-    errors: Vec<String>,
-}
-
-#[derive(Default, serde::Serialize)]
-struct ClearDeletionMarksResult {
-    cleared: usize,
-    errors: Vec<String>,
-}
-
-fn clear_directory_deletion_marks(
-    directory: &Path,
-    state: &StateStore,
-) -> io::Result<ClearDeletionMarksResult> {
-    let mut result = ClearDeletionMarksResult::default();
-    for entry in fs::read_dir(directory)? {
-        let entry = entry?;
-        let path = entry.path();
-        if !path.is_file() || !is_image_file(&path) {
-            continue;
-        }
-        let canonical = fs::canonicalize(&path)?;
-        if !state.is_deletion_marked(&canonical)? {
-            continue;
-        }
-        match state.set_deletion_mark(&canonical, false) {
-            Ok(()) => result.cleared += 1,
-            Err(error) => result
-                .errors
-                .push(format!("{}：{error}", entry.file_name().to_string_lossy())),
-        }
-    }
-    Ok(result)
-}
-
-fn delete_marked_images(
-    directory: &Path,
-    state: &StateStore,
-) -> io::Result<DeleteMarkedImagesResult> {
-    let mut result = DeleteMarkedImagesResult::default();
-    let mut targets = Vec::new();
-    for entry in fs::read_dir(directory)? {
-        let entry = entry?;
-        let path = entry.path();
-        if !path.is_file() || !is_image_file(&path) {
-            continue;
-        }
-        let canonical = match fs::canonicalize(&path) {
-            Ok(path) => path,
-            Err(error) => {
-                result
-                    .errors
-                    .push(format!("{}：{error}", entry.file_name().to_string_lossy()));
-                continue;
-            }
-        };
-        if !state.is_deletion_marked(&canonical)? {
-            continue;
-        }
-        targets.push((path, canonical, entry.file_name()));
-    }
-
-    std::thread::scope(|scope| {
-        let handles = targets
-            .into_iter()
-            .map(|(path, canonical, name)| {
-                scope.spawn(move || {
-                    let mut errors = Vec::new();
-                    if let Err(error) = fs::remove_file(&path) {
-                        errors.push(format!("{}：{error}", name.to_string_lossy()));
-                        return (false, errors);
-                    }
-                    if let Err(error) = gallery_comments::remove_for_image(&canonical) {
-                        errors.push(format!(
-                            "{} 已删除，但清理评论失败：{error}",
-                            name.to_string_lossy()
-                        ));
-                    }
-                    if let Err(error) = state.clear_image_state(&canonical) {
-                        errors.push(format!(
-                            "{} 已删除，但清理缓存失败：{error}",
-                            name.to_string_lossy()
-                        ));
-                    }
-                    (true, errors)
-                })
-            })
-            .collect::<Vec<_>>();
-        for handle in handles {
-            let (deleted, errors) = handle.join().unwrap();
-            result.deleted += usize::from(deleted);
-            result.errors.extend(errors);
-        }
-    });
-    Ok(result)
+    result
 }
 
 fn render_site_icon(root: &Path) -> String {
@@ -1897,7 +1850,7 @@ fn render_directory_favourites(
 #[cfg(test)]
 fn render_directory_page(root: &Path, directory: &Path, state: &StateStore) -> io::Result<String> {
     let relative = directory.strip_prefix(root).unwrap_or(Path::new(""));
-    render_directory_page_at(root, directory, relative, state)
+    render_directory_page_at(root, directory, relative, state, false)
 }
 
 fn render_directory_page_at(
@@ -1905,6 +1858,7 @@ fn render_directory_page_at(
     directory: &Path,
     relative: &Path,
     state: &StateStore,
+    gallery_requested: bool,
 ) -> io::Result<String> {
     let mut entries = Vec::new();
     for entry in fs::read_dir(directory)? {
@@ -1928,9 +1882,9 @@ fn render_directory_page_at(
             Some(path) => state.is_favourite(path)?,
             None => false,
         };
-        let deletion_marked = match canonical.as_deref() {
-            Some(path) => state.is_deletion_marked(path)?,
-            None => false,
+        let image_tag = match canonical.as_deref() {
+            Some(path) => state.image_tag(path)?,
+            None => None,
         };
         let directory_favourite =
             is_dir && state.is_directory_favourite(&root.join(relative).join(entry.file_name()))?;
@@ -1950,7 +1904,7 @@ fn render_directory_page_at(
                 .map_or(0, |duration| duration.as_millis()),
             image_version,
             favourite,
-            deletion_marked,
+            image_tag,
             directory_favourite,
         });
     }
@@ -1969,7 +1923,7 @@ fn render_directory_page_at(
         .iter()
         .filter(|entry| !entry.is_dir && is_image_file(&entry.path))
         .count();
-    let gallery_available = should_use_gallery(image_count, file_count);
+    let gallery_available = gallery_requested || should_use_gallery(image_count, file_count);
     let title = relative
         .file_name()
         .and_then(|name| name.to_str())
@@ -2041,10 +1995,18 @@ fn render_directory_page_at(
         };
         let glyph = if is_image {
             let favourite_hidden = if entry.favourite { "" } else { " hidden" };
-            let deletion_hidden = if entry.deletion_marked { "" } else { " hidden" };
+            let tag_hidden = if entry.image_tag.is_some() {
+                ""
+            } else {
+                " hidden"
+            };
+            let tag = entry
+                .image_tag
+                .map(|tag| tag.to_string())
+                .unwrap_or_default();
             glyph.replacen(
                 "</span>",
-                &format!("<span class=\"favourite-mark\" title=\"已点赞\"{favourite_hidden}><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M12 21c-.45 0-.85-.18-1.2-.5l-6.7-6.2C1.35 11.75 1.2 7.75 3.7 5.2 6.05 2.8 10 2.85 12 5.45c2-2.6 5.95-2.65 8.3-.25 2.5 2.55 2.35 6.55-.4 9.1l-6.7 6.2c-.35.32-.75.5-1.2.5Z\"></path></svg></span><span class=\"deletion-mark\" title=\"待删除\"{deletion_hidden}>待删除</span></span>"),
+                &format!("<span class=\"favourite-mark\" title=\"已点赞\"{favourite_hidden}><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M12 21c-.45 0-.85-.18-1.2-.5l-6.7-6.2C1.35 11.75 1.2 7.75 3.7 5.2 6.05 2.8 10 2.85 12 5.45c2-2.6 5.95-2.65 8.3-.25 2.5 2.55 2.35 6.55-.4 9.1l-6.7 6.2c-.35.32-.75.5-1.2.5Z\"></path></svg></span><span class=\"image-tag\" data-tag=\"{tag}\" title=\"标记{tag}\"{tag_hidden}>{tag}</span></span>"),
                 1,
             )
         } else {
@@ -2061,9 +2023,9 @@ fn render_directory_page_at(
             )
             .unwrap_or_else(|| original_src.clone());
             format!(
-                " data-favourite=\"{}\" data-deletion-marked=\"{}\" data-file-path=\"{}\" data-file-size=\"{}\" data-preview-src=\"{preview_src}\" data-original-src=\"{original_src}\" data-list-href=\"{href}\" data-gallery-href=\"{href}?view=gallery\"",
+                " data-favourite=\"{}\" data-image-tag=\"{}\" data-file-path=\"{}\" data-file-size=\"{}\" data-preview-src=\"{preview_src}\" data-original-src=\"{original_src}\" data-list-href=\"{href}\" data-gallery-href=\"{href}?view=gallery\"",
                 entry.favourite,
-                entry.deletion_marked,
+                entry.image_tag.map(|tag| tag.to_string()).unwrap_or_default(),
                 escape_html(&entry_relative.to_string_lossy()),
                 escape_html(&detail)
             )
@@ -2113,7 +2075,7 @@ fn render_directory_page_at(
         "<button class=\"directory-favourite-toggle\" id=\"directory-favourite-toggle\" type=\"button\" aria-pressed=\"false\">添加到收藏夹</button>"
     };
     Ok(format!(
-        "<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">\n<title>{title} · 文件浏览</title>\n<style>{DIRECTORY_CSS}</style>\n</head>\n<body>\n<main><nav class=\"breadcrumbs\" aria-label=\"当前位置\">{breadcrumbs}</nav>{directory_favourites}<header><p class=\"eyebrow\">WEBDIR / DIRECTORY</p><h1>{title}</h1><p class=\"summary\">{directory_count} 个目录 · {file_count} 个文件</p>{directory_favourite_toggle}{gallery_toggle}<div class=\"directory-browser-tools\"><input class=\"directory-search\" id=\"directory-search\" type=\"search\" aria-label=\"搜索文件名\" placeholder=\"搜索当前目录的文件名…\" autocomplete=\"off\"><label class=\"directory-sort\">排序<select id=\"directory-sort\" aria-label=\"目录排序\"><option value=\"default\">默认</option><option value=\"modified\">按修改时间</option><option value=\"name\">按名称</option></select></label></div>{gallery_tools}<p class=\"directory-notice\" id=\"directory-notice\" role=\"status\" hidden></p></header><section class=\"listing\" aria-label=\"目录内容\">{rows}</section></main><nav class=\"scroll-jumps\" id=\"scroll-jumps\" aria-label=\"页面快速跳转\" hidden><button id=\"scroll-to-top\" type=\"button\" aria-label=\"回到顶部\" title=\"回到顶部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 14 6-6 6 6\"></path><path d=\"M6 19h12\"></path></svg></button><button id=\"scroll-to-bottom\" type=\"button\" aria-label=\"回到底部\" title=\"回到底部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 10 6 6 6-6\"></path><path d=\"M6 5h12\"></path></svg></button></nav><div class=\"image-lightbox\" id=\"image-lightbox\" role=\"dialog\" aria-modal=\"true\" aria-label=\"图片预览\" hidden><button class=\"lightbox-close\" type=\"button\" aria-label=\"关闭图片预览\">×</button><div class=\"lightbox-shell\"><div class=\"lightbox-position\" id=\"lightbox-position\" aria-live=\"polite\"></div><nav class=\"lightbox-filmstrip\" id=\"lightbox-filmstrip\" aria-label=\"图片缩略图导航\"></nav><figure><div class=\"lightbox-stage\"><img class=\"lightbox-image\" alt=\"\"><div class=\"favourite-burst\" id=\"favourite-burst\" aria-hidden=\"true\" hidden><svg viewBox=\"0 0 24 24\"><path d=\"M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21l7.7-7.5 1.1-1.1a5.5 5.5 0 0 0 0-7.8Z\"></path></svg></div></div><figcaption><span class=\"lightbox-name\"></span><span class=\"lightbox-controls\"><button class=\"preview-step\" id=\"preview-previous\" type=\"button\" aria-label=\"上一张\" title=\"上一张\">←</button><button class=\"favourite-toggle\" id=\"favourite-toggle\" type=\"button\" aria-label=\"点赞 (f)\" aria-pressed=\"false\" title=\"点赞 (f)\">♡</button><button class=\"preview-step\" id=\"preview-next\" type=\"button\" aria-label=\"下一张\" title=\"下一张\">→</button><button class=\"deletion-toggle\" id=\"deletion-toggle\" type=\"button\" aria-label=\"标记待删除 (d)\" aria-pressed=\"false\" title=\"标记待删除 (d)\">标记删除</button><button class=\"carousel-toggle\" id=\"carousel-toggle\" type=\"button\" aria-label=\"进入轮播 (p)\" aria-pressed=\"false\" title=\"进入轮播 (p)\">轮播</button></span></figcaption><p class=\"lightbox-error\" id=\"favourite-error\" role=\"status\" hidden></p><p class=\"lightbox-error\" id=\"deletion-mark-error\" role=\"status\" hidden></p></figure></div>{GALLERY_DELETE_DIALOG}</div>{GALLERY_MARKED_DELETE_DIALOG}\n<script>{FILE_SHORTCUT_JS}</script><script>{DIRECTORY_JS}</script>\n</body>\n</html>"
+        "<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">\n<title>{title} · 文件浏览</title>\n<style>{DIRECTORY_CSS}</style>\n</head>\n<body>\n<main><nav class=\"breadcrumbs\" aria-label=\"当前位置\">{breadcrumbs}</nav>{directory_favourites}<header><p class=\"eyebrow\">WEBDIR / DIRECTORY</p><h1>{title}</h1><p class=\"summary\">{directory_count} 个目录 · {file_count} 个文件</p>{directory_favourite_toggle}{gallery_toggle}<div class=\"directory-browser-tools\"><input class=\"directory-search\" id=\"directory-search\" type=\"search\" aria-label=\"搜索文件名\" placeholder=\"搜索当前目录的文件名…\" autocomplete=\"off\"><label class=\"directory-sort\">排序<select id=\"directory-sort\" aria-label=\"目录排序\"><option value=\"default\">默认</option><option value=\"modified\">按修改时间</option><option value=\"name\">按名称</option></select></label></div>{gallery_tools}<p class=\"directory-notice\" id=\"directory-notice\" role=\"status\" hidden></p></header><section class=\"listing\" aria-label=\"目录内容\">{rows}</section></main><nav class=\"scroll-jumps\" id=\"scroll-jumps\" aria-label=\"页面快速跳转\" hidden><button id=\"scroll-to-top\" type=\"button\" aria-label=\"回到顶部\" title=\"回到顶部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 14 6-6 6 6\"></path><path d=\"M6 19h12\"></path></svg></button><button id=\"scroll-to-bottom\" type=\"button\" aria-label=\"回到底部\" title=\"回到底部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 10 6 6 6-6\"></path><path d=\"M6 5h12\"></path></svg></button></nav><div class=\"image-lightbox\" id=\"image-lightbox\" role=\"dialog\" aria-modal=\"true\" aria-label=\"图片预览\" hidden><button class=\"lightbox-close\" type=\"button\" aria-label=\"关闭图片预览\">×</button><div class=\"lightbox-shell\"><div class=\"lightbox-position\" id=\"lightbox-position\" aria-live=\"polite\"></div><nav class=\"lightbox-filmstrip\" id=\"lightbox-filmstrip\" aria-label=\"图片缩略图导航\"></nav><figure><div class=\"lightbox-stage\"><img class=\"lightbox-image\" alt=\"\"><div class=\"favourite-burst\" id=\"favourite-burst\" aria-hidden=\"true\" hidden><svg viewBox=\"0 0 24 24\"><path d=\"M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21l7.7-7.5 1.1-1.1a5.5 5.5 0 0 0 0-7.8Z\"></path></svg></div></div><figcaption><span class=\"lightbox-name\"></span><span class=\"lightbox-controls\"><button class=\"preview-step\" id=\"preview-previous\" type=\"button\" aria-label=\"上一张\" title=\"上一张\">←</button><button class=\"favourite-toggle\" id=\"favourite-toggle\" type=\"button\" aria-label=\"点赞 (f)\" aria-pressed=\"false\" title=\"点赞 (f)\">♡</button><button class=\"preview-step\" id=\"preview-next\" type=\"button\" aria-label=\"下一张\" title=\"下一张\">→</button><button class=\"carousel-toggle\" id=\"carousel-toggle\" type=\"button\" aria-label=\"进入轮播 (p)\" aria-pressed=\"false\" title=\"进入轮播 (p)\">轮播</button></span></figcaption><p class=\"lightbox-error\" id=\"favourite-error\" role=\"status\" hidden></p><p class=\"lightbox-error\" id=\"image-tag-error\" role=\"status\" hidden></p></figure></div>{GALLERY_DELETE_DIALOG}</div>{GALLERY_BATCH_DELETE_DIALOG}\n<script>{FILE_SHORTCUT_JS}</script><script>{DIRECTORY_JS}</script>\n</body>\n</html>"
     ))
 }
 
@@ -3087,12 +3049,12 @@ window.onDrawioViewerLoad = () => {
 "#;
 
 const GALLERY_ORGANISE_TOOLS: &str = r#"
-<div class="gallery-organise" id="gallery-organise" role="group" aria-label="整理当前目录的已点赞图片">
-  <span class="organise-label">整理到</span>
-  <button type="button" data-move-images="favourites" title="将当前目录全部已点赞图片移入 favourites/" aria-label="将全部已点赞图片移入 favourites 目录"><span class="organise-heart" aria-hidden="true">♥</span> favourites <span class="organise-arrow" aria-hidden="true">↗</span></button>
-  <button id="deletion-filter" type="button" aria-pressed="false"><span id="deletion-filter-label">查看待删除列表</span> <span id="deletion-count">0</span></button>
-  <button id="delete-marked-images" class="delete-marked-images" type="button" hidden>删除所有已标记图片</button>
-  <button id="clear-deletion-marks" type="button" hidden>取消所有删除标记</button>
+<div class="gallery-organise" id="gallery-organise" role="group" aria-label="筛选和批量操作图片">
+  <span class="image-filter-control"><select id="image-filter" aria-label="图片标记筛选"><option value="all">全部</option></select><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m5 6.5 3 3 3-3"/></svg></span>
+  <button id="move-images" type="button" disabled>移动到…</button>
+  <button id="delete-images" type="button" disabled>批量删除</button>
+  <button id="clear-image-marks" type="button" disabled>批量取消标记</button>
+  <span class="organise-label" id="image-filter-count"></span>
 </div>
 "#;
 
@@ -3106,12 +3068,12 @@ const GALLERY_DELETE_DIALOG: &str = r#"
 </dialog>
 "#;
 
-const GALLERY_MARKED_DELETE_DIALOG: &str = r#"
-<dialog class="delete-dialog" id="delete-marked-dialog" aria-labelledby="delete-marked-title" aria-describedby="delete-marked-description">
-  <h2 id="delete-marked-title">删除所有已标记图片？</h2>
-  <p id="delete-marked-description">当前文件夹中所有标记为待删除的图片都将从磁盘中删除，此操作无法撤销。</p>
-  <p class="delete-error" id="delete-marked-error" role="alert" hidden></p>
-  <div class="delete-actions"><button id="delete-marked-cancel" type="button" autofocus>取消</button><button id="delete-marked-confirm" type="button">全部删除</button></div>
+const GALLERY_BATCH_DELETE_DIALOG: &str = r#"
+<dialog class="delete-dialog" id="batch-delete-dialog" aria-labelledby="batch-delete-title" aria-describedby="batch-delete-description">
+  <h2 id="batch-delete-title">删除这些图片？</h2>
+  <p id="batch-delete-description">所选图片将从磁盘中删除，此操作无法撤销。</p>
+  <p class="delete-error" id="batch-delete-error" role="alert" hidden></p>
+  <div class="delete-actions"><button id="batch-delete-cancel" type="button" autofocus>取消</button><button id="batch-delete-confirm" type="button">全部删除</button></div>
 </dialog>
 "#;
 
@@ -3456,7 +3418,25 @@ const listing = document.querySelector('.listing');
 const directorySearch = document.querySelector('#directory-search');
 const directorySort = document.querySelector('#directory-sort');
 const directoryEmpty = document.querySelector('#directory-empty');
-const deletionFilter = document.querySelector('#deletion-filter');
+const imageFilter = document.querySelector('#image-filter');
+const IMAGE_FILTER_KEY = `webdir-image-filter:${location.pathname}`;
+const filterLabels = {all: '全部', favourite: '喜欢', tag1: '标记1', tag2: '标记2', tag3: '标记3', tag4: '标记4', tag5: '标记5'};
+let selectedImageFilter = localStorage.getItem(IMAGE_FILTER_KEY) || 'all';
+if (!filterLabels[selectedImageFilter]) selectedImageFilter = 'all';
+const refreshImageFilters = () => {
+  if (!imageFilter) return;
+  const entries = Array.from(listing.querySelectorAll('.entry.image'));
+  const available = new Set(['all', selectedImageFilter]);
+  entries.forEach(entry => {
+    if (entry.dataset.favourite === 'true') available.add('favourite');
+    if (entry.dataset.imageTag) available.add(`tag${entry.dataset.imageTag}`);
+  });
+  imageFilter.replaceChildren(...Object.entries(filterLabels)
+    .filter(([value]) => available.has(value))
+    .map(([value, label]) => new Option(label, value)));
+  imageFilter.value = selectedImageFilter;
+};
+refreshImageFilters();
 if (typeof history.state?.directorySearch === 'string') {
   directorySearch.value = history.state.directorySearch;
 }
@@ -3520,12 +3500,14 @@ const sortDirectory = async () => {
 };
 const filterDirectory = () => {
   const query = directorySearch.value.trim().toLowerCase();
-  const markedOnly = deletionFilter?.getAttribute('aria-pressed') === 'true';
+  const markedOnly = !!imageFilter && selectedImageFilter !== 'all';
   let directoryCount = 0;
   let fileCount = 0;
   listing.querySelectorAll('.entry').forEach(entry => {
     const matchesName = entry.querySelector('.entry-name').textContent.toLowerCase().includes(query);
-    entry.hidden = !matchesName || (markedOnly && entry.dataset.deletionMarked !== 'true');
+    const matchesMark = !markedOnly || (selectedImageFilter === 'favourite'
+      ? entry.dataset.favourite === 'true' : `tag${entry.dataset.imageTag}` === selectedImageFilter);
+    entry.hidden = !matchesName || !matchesMark;
     if (entry.hidden) return;
     if (entry.classList.contains('folder')) directoryCount++;
     else fileCount++;
@@ -3535,8 +3517,9 @@ const filterDirectory = () => {
   const otherHeading = listing.querySelector('.gallery-other-heading');
   if (otherHeading) otherHeading.hidden = !Array.from(listing.querySelectorAll('.entry.file:not(.image)')).some(entry => !entry.hidden);
   directoryEmpty.querySelector('p').textContent = markedOnly
-    ? '当前文件夹没有待删除图片'
+    ? '没有符合筛选条件的图片'
     : query ? '没有匹配的文件或目录' : '这个目录是空的';
+  document.dispatchEvent(new Event('gallery-filter-change'));
 };
 directorySearch.addEventListener('input', () => {
   history.replaceState({...history.state, directorySearch: directorySearch.value}, '');
@@ -3589,7 +3572,7 @@ updateScrollJumps();
 const galleryToggle = document.querySelector('#gallery-toggle');
 if (galleryToggle) {
   const organise = document.querySelector('#gallery-organise');
-  const moveFavouriteButton = organise.querySelector('[data-move-images="favourites"]');
+  const moveImagesButton = organise.querySelector('#move-images');
   const thumbnails = listing.querySelectorAll('img[data-list-src]');
   const lightbox = document.querySelector('#image-lightbox');
   const lightboxImage = lightbox.querySelector('.lightbox-image');
@@ -3630,8 +3613,7 @@ if (galleryToggle) {
   const favouriteToggle = lightbox.querySelector('#favourite-toggle');
   const favouriteBurst = lightbox.querySelector('#favourite-burst');
   const favouriteError = lightbox.querySelector('#favourite-error');
-  const deletionToggle = lightbox.querySelector('#deletion-toggle');
-  const deletionMarkError = lightbox.querySelector('#deletion-mark-error');
+  const imageTagError = lightbox.querySelector('#image-tag-error');
   const previewPrevious = lightbox.querySelector('#preview-previous');
   const previewNext = lightbox.querySelector('#preview-next');
   const carouselToggle = lightbox.querySelector('#carousel-toggle');
@@ -3650,7 +3632,7 @@ if (galleryToggle) {
   commentToggle.setAttribute('aria-label', commentToggle.title);
   commentToggle.setAttribute('aria-expanded', 'false');
   commentToggle.innerHTML = `${svgIcon(strokePath('M6.5 5.5h11a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H11l-4.5 3v-3a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2Z') + strokePath('M8 9.5h8M8 12.5h5'))}<b hidden>0</b>`;
-  viewerControls.insertBefore(commentToggle, deletionToggle);
+  viewerControls.insertBefore(commentToggle, viewerControls.querySelector('#carousel-toggle'));
   const moreToggle = document.createElement('button');
   moreToggle.type = 'button';
   moreToggle.className = 'viewer-more-toggle';
@@ -3679,19 +3661,18 @@ if (galleryToggle) {
   const shortcutHelp = document.createElement('aside');
   shortcutHelp.className = 'shortcut-help';
   shortcutHelp.hidden = true;
-  shortcutHelp.innerHTML = '<span>← / J 上一张 · → / K 下一张</span><span>F 点赞 · C 评论 · 粘贴文本追加评论 · D 标记删除 · Ctrl K 直接删除</span><span>P 轮播 · 空格暂停</span><span>Esc 退出</span>';
+  shortcutHelp.innerHTML = '<span>← / J 上一张 · → / K 下一张</span><span>F 点赞 · C 评论 · 粘贴文本追加评论 · 1–5 数字标记 · Ctrl K 直接删除</span><span>P 轮播 · 空格暂停</span><span>Esc 退出</span>';
   const figure = lightbox.querySelector('figure');
   figure.append(imageInfo, shortcutHelp);
   previewPrevious.innerHTML = svgIcon(strokePath('m15 6-6 6 6 6'));
   previewNext.innerHTML = svgIcon(strokePath('m9 6 6 6-6 6'));
   favouriteToggle.innerHTML = svgIcon(strokePath('M12 20.2 4.8 13a4.7 4.7 0 0 1 6.7-6.6l.5.5.5-.5a4.7 4.7 0 0 1 6.7 6.6L12 20.2Z') + strokePath('m17.2 4.2.45-1.3.45 1.3 1.3.45-1.3.45-.45 1.3-.45-1.3-1.3-.45 1.3-.45Z'));
-  deletionToggle.innerHTML = svgIcon(strokePath('m7 7 10 10M17 7 7 17'));
   carouselToggle.innerHTML = svgIcon('<path class="icon-fill" d="m9 7 8 5-8 5Z"></path>' + strokePath('M5 5v14'));
   lightboxClose.innerHTML = svgIcon(strokePath('m6 6 12 12M18 6 6 18'));
   const lightboxState = document.createElement('div');
   lightboxState.className = 'lightbox-state';
   lightboxState.setAttribute('role', 'status');
-  lightboxState.innerHTML = `<span class="lightbox-favourite-state">${svgIcon('<path d="M12 21c-.45 0-.85-.18-1.2-.5l-6.7-6.2C1.35 11.75 1.2 7.75 3.7 5.2 6.05 2.8 10 2.85 12 5.45c2-2.6 5.95-2.65 8.3-.25 2.5 2.55 2.35 6.55-.4 9.1l-6.7 6.2c-.35.32-.75.5-1.2.5Z"></path>')}</span><span class="lightbox-deletion-state" hidden>待删除</span>`;
+  lightboxState.innerHTML = `<span class="lightbox-favourite-state">${svgIcon('<path d="M12 21c-.45 0-.85-.18-1.2-.5l-6.7-6.2C1.35 11.75 1.2 7.75 3.7 5.2 6.05 2.8 10 2.85 12 5.45c2-2.6 5.95-2.65 8.3-.25 2.5 2.55 2.35 6.55-.4 9.1l-6.7 6.2c-.35.32-.75.5-1.2.5Z"></path>')}</span><span class="lightbox-tag-state" hidden></span>`;
   lightboxStage.append(lightboxState);
   const commentsDrawer = document.createElement('aside');
   commentsDrawer.className = 'gallery-comments';
@@ -3710,14 +3691,12 @@ if (galleryToggle) {
   const deleteError = deleteDialog.querySelector('#delete-error');
   const deleteCancel = deleteDialog.querySelector('#delete-cancel');
   const deleteConfirm = deleteDialog.querySelector('#delete-confirm');
-  const deletionCount = document.querySelector('#deletion-count');
-  const deletionFilterLabel = document.querySelector('#deletion-filter-label');
-  const deleteMarkedButton = document.querySelector('#delete-marked-images');
-  const clearDeletionMarksButton = document.querySelector('#clear-deletion-marks');
-  const deleteMarkedDialog = document.querySelector('#delete-marked-dialog');
-  const deleteMarkedError = deleteMarkedDialog.querySelector('#delete-marked-error');
-  const deleteMarkedCancel = deleteMarkedDialog.querySelector('#delete-marked-cancel');
-  const deleteMarkedConfirm = deleteMarkedDialog.querySelector('#delete-marked-confirm');
+  const deleteImagesButton = document.querySelector('#delete-images');
+  const clearImageMarksButton = document.querySelector('#clear-image-marks');
+  const batchDeleteDialog = document.querySelector('#batch-delete-dialog');
+  const batchDeleteError = batchDeleteDialog.querySelector('#batch-delete-error');
+  const batchDeleteCancel = batchDeleteDialog.querySelector('#batch-delete-cancel');
+  const batchDeleteConfirm = batchDeleteDialog.querySelector('#batch-delete-confirm');
   const mobileTouch = matchMedia('(hover: none) and (pointer: coarse)');
   const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
   const REVIEW_IDENTITY_KEY = 'webdir-review-identity';
@@ -3746,7 +3725,7 @@ if (galleryToggle) {
   let editingCommentId = null;
   let deleteAllCommentsTimer = null;
   const pendingFavourites = new WeakSet();
-  const pendingDeletionMarks = new WeakSet();
+  const pendingImageTags = new WeakSet();
   const galleryCommentList = commentsDrawer.querySelector('.gallery-comment-list');
   const galleryCommentEmpty = commentsDrawer.querySelector('.gallery-comment-empty');
   const galleryCommentComposer = commentsDrawer.querySelector('.gallery-comment-composer');
@@ -3782,10 +3761,13 @@ if (galleryToggle) {
 
   const updateLightboxState = () => {
     const liked = previewTrigger?.dataset.favourite === 'true';
-    const marked = previewTrigger?.dataset.deletionMarked === 'true';
+    const tag = previewTrigger?.dataset.imageTag || '';
     lightboxState.querySelector('.lightbox-favourite-state').classList.toggle('liked', liked);
-    lightboxState.querySelector('.lightbox-deletion-state').hidden = !marked;
-    lightboxState.setAttribute('aria-label', `${liked ? '已点赞' : '未点赞'}${marked ? '，待删除' : ''}`);
+    const badge = lightboxState.querySelector('.lightbox-tag-state');
+    badge.hidden = !tag;
+    badge.textContent = tag;
+    badge.dataset.tag = tag;
+    lightboxState.setAttribute('aria-label', `${liked ? '已点赞' : '未点赞'}${tag ? `，标记${tag}` : ''}`);
   };
 
   const updateFavouriteButton = () => {
@@ -3797,21 +3779,32 @@ if (galleryToggle) {
     updateLightboxState();
   };
 
-  const markedEntries = () => Array.from(
-    listing.querySelectorAll('.entry.image[data-deletion-marked="true"]')
-  );
-
-  const updateDeletionControls = () => {
-    const marked = previewTrigger?.dataset.deletionMarked === 'true';
-    deletionToggle.setAttribute('aria-pressed', String(marked));
-    deletionToggle.title = marked ? '取消标记 (d)' : '标记删除 (d)';
-    deletionToggle.setAttribute('aria-label', deletionToggle.title);
-    deletionToggle.disabled = previewTrigger ? pendingDeletionMarks.has(previewTrigger) : false;
-    const count = markedEntries().length;
-    deletionCount.textContent = String(count);
-    deleteMarkedButton.disabled = count === 0 || moving;
-    clearDeletionMarksButton.disabled = count === 0 || moving;
+  const updateImageControls = () => {
+    const count = visibleImages().length;
+    for (const button of [moveImagesButton, deleteImagesButton, clearImageMarksButton]) {
+      button.disabled = count === 0 || moving || liking > 0 || marking > 0 || deleting;
+    }
+    document.querySelector('#image-filter-count').textContent = `${count} 张图片`;
     updateLightboxState();
+  };
+  document.addEventListener('gallery-filter-change', updateImageControls);
+
+  const reconcileImageFilter = (entry, previousEntries) => {
+    refreshImageFilters();
+    filterDirectory();
+    scheduleThumbnails();
+    if (!lightbox.hidden && previewTrigger === entry && entry.hidden) {
+      const index = previousEntries.indexOf(entry);
+      const next = previousEntries.slice(index + 1).find(item => !item.hidden)
+        || previousEntries.slice(0, index).reverse().find(item => !item.hidden);
+      if (next) switchPreview(next, 1);
+      else closeLightbox();
+    }
+    if (!lightbox.hidden) {
+      updatePreviewButtons();
+      renderFilmstrip();
+      preloadAdjacentImages();
+    }
   };
 
   const updatePreviewButtons = () => {
@@ -4267,6 +4260,7 @@ if (galleryToggle) {
     const entry = previewTrigger;
     if (pendingFavourites.has(entry)) return;
     const liked = entry.dataset.favourite !== 'true';
+    const previousEntries = visibleImages();
     liking++;
     pendingFavourites.add(entry);
     favouriteError.hidden = true;
@@ -4277,6 +4271,7 @@ if (galleryToggle) {
     try {
       const response = await fetch(`${entry.dataset.listHref}?mode=favourite`, {method: liked ? 'PUT' : 'DELETE'});
       if (!response.ok) throw new Error('保存点赞状态失败，请重试。');
+      reconcileImageFilter(entry, previousEntries);
     } catch (error) {
       entry.dataset.favourite = String(!liked);
       entry.querySelector('.favourite-mark').hidden = liked;
@@ -4288,154 +4283,139 @@ if (galleryToggle) {
       liking--;
       pendingFavourites.delete(entry);
       updateFavouriteButton();
+      updateImageControls();
     }
   };
   favouriteToggle.addEventListener('click', toggleFavourite);
 
-  const toggleDeletionMark = async () => {
+  const toggleImageTag = async number => {
     if (!previewTrigger || lightbox.hidden || deleting || moving || deleteDialog.open) return;
     const entry = previewTrigger;
-    if (pendingDeletionMarks.has(entry)) return;
-    const marked = entry.dataset.deletionMarked !== 'true';
+    if (pendingImageTags.has(entry)) return;
+    const previousEntries = visibleImages();
+    const previous = entry.dataset.imageTag;
+    const tag = previous === number ? '' : number;
+    const setTag = value => {
+      entry.dataset.imageTag = value;
+      const badge = entry.querySelector('.image-tag');
+      badge.hidden = !value;
+      badge.textContent = badge.dataset.tag = value;
+      badge.title = `标记${value}`;
+    };
     marking++;
-    pendingDeletionMarks.add(entry);
-    deletionMarkError.hidden = true;
-    entry.dataset.deletionMarked = String(marked);
-    entry.querySelector('.deletion-mark').hidden = !marked;
-    updateDeletionControls();
+    pendingImageTags.add(entry);
+    imageTagError.hidden = true;
+    setTag(tag);
+    updateImageControls();
     try {
-      const response = await fetch(`${entry.dataset.listHref}?mode=deletion-mark`, {method: marked ? 'PUT' : 'DELETE'});
-      if (!response.ok) throw new Error('保存待删除标记失败，请重试。');
+      const response = await fetch(`${entry.dataset.listHref}?mode=image-tag`, {
+        method: tag ? 'PUT' : 'DELETE',
+        headers: {'Content-Type': 'application/json'},
+        ...(tag ? {body: JSON.stringify({tag: Number(tag)})} : {})
+      });
+      if (!response.ok) throw new Error('保存图片标记失败，请重试。');
+      reconcileImageFilter(entry, previousEntries);
     } catch (error) {
-      entry.dataset.deletionMarked = String(!marked);
-      entry.querySelector('.deletion-mark').hidden = marked;
+      setTag(previous);
       if (previewTrigger === entry) {
-        deletionMarkError.textContent = error.message;
-        deletionMarkError.hidden = false;
+        imageTagError.textContent = error.message;
+        imageTagError.hidden = false;
       }
     } finally {
       marking--;
-      pendingDeletionMarks.delete(entry);
-      updateDeletionControls();
+      pendingImageTags.delete(entry);
+      updateImageControls();
     }
   };
-  deletionToggle.addEventListener('click', toggleDeletionMark);
   previewPrevious.addEventListener('click', () => stepPreview(-1));
   previewNext.addEventListener('click', () => stepPreview(1));
 
   const moveDialog = document.createElement('dialog');
   moveDialog.className = 'delete-dialog move-dialog';
-  moveDialog.innerHTML = '<h2>整理这些图片？</h2><p class="move-description"></p><div class="delete-actions"><button type="button" data-move-cancel autofocus>取消</button><button type="button" data-move-confirm>确认移动</button></div>';
+  moveDialog.innerHTML = '<form><h2>移动这些图片</h2><p class="move-description"></p><label>目标文件夹名<input name="directory" required autocomplete="off"></label><p>同名文件会自动重命名。</p><div class="delete-actions"><button type="button" data-move-cancel>取消</button><button type="submit" data-move-confirm>确认移动</button></div></form>';
   document.body.append(moveDialog);
-  const moveFavouriteImages = async () => {
-    if (moving || liking || marking || deleting) return;
+  const clearMarksDialog = document.createElement('dialog');
+  clearMarksDialog.className = 'delete-dialog';
+  clearMarksDialog.id = 'clear-marks-dialog';
+  clearMarksDialog.setAttribute('aria-labelledby', 'clear-marks-title');
+  clearMarksDialog.setAttribute('aria-describedby', 'clear-marks-description');
+  clearMarksDialog.innerHTML = '<h2 id="clear-marks-title">取消这些图片的标记？</h2><p id="clear-marks-description"></p><div class="delete-actions"><button type="button" id="clear-marks-cancel" autofocus>取消</button><button type="button" id="clear-marks-confirm">确认取消标记</button></div>';
+  document.body.append(clearMarksDialog);
+  let batchFiles = [];
+  let batchFilter = 'all';
+  const captureBatchFiles = () => visibleImages().map(entryName);
+  const runBatch = async action => {
+    if (!action.files.length || moving || liking || marking || deleting) return;
     moving = true;
-    moveFavouriteButton.disabled = true;
-    directoryNotice.textContent = '正在移入 favourites/…';
+    updateImageControls();
+    const descriptions = {move: '移动', delete: '删除', 'clear-mark': '取消标记'};
+    const description = descriptions[action.action];
+    directoryNotice.textContent = `正在${description} ${action.files.length} 张图片…`;
     directoryNotice.hidden = false;
     try {
       const url = new URL(location.href);
-      url.search = '?mode=move-favourites';
-      const response = await fetch(url, {method: 'POST'});
+      url.search = '?mode=batch-images';
+      const response = await fetch(url, {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(action)
+      });
       if (!response.ok) throw new Error(await response.text());
       const result = await response.json();
-      let notice = `已将 ${result.moved} 张图片移入 favourites/`;
+      let notice = `已${description} ${result.affected} 张图片`;
       if (result.errors.length) notice += `；未完成的操作：${result.errors.join('；')}`;
       history.replaceState({...history.state, moveNotice: notice, previewImage: null}, '');
       location.reload();
     } catch (error) {
-      directoryNotice.textContent = error.message || '整理图片失败，请重试。';
       moving = false;
-      moveFavouriteButton.disabled = false;
+      directoryNotice.textContent = error.message || `${description}失败，请重试。`;
+      updateImageControls();
     }
   };
-  moveFavouriteButton.addEventListener('click', () => {
-    if (moving) return;
-    const count = imageModel().filter(entry => entry.dataset.favourite === 'true').length;
-    if (count === 0) {
-      directoryNotice.textContent = '没有图片需要移动';
-      directoryNotice.hidden = false;
-      return;
-    }
-    moveDialog.querySelector('.move-description').textContent = `将 ${count} 张已点赞图片移入 favourites/。同名文件会自动重命名。`;
+  moveImagesButton.addEventListener('click', () => {
+    batchFiles = captureBatchFiles();
+    if (!batchFiles.length || moving) return;
+    moveDialog.querySelector('.move-description').textContent = `移动当前筛选的 ${batchFiles.length} 张图片`;
+    moveDialog.querySelector('input').value = selectedImageFilter;
     moveDialog.showModal();
+    moveDialog.querySelector('input').select();
   });
   moveDialog.querySelector('[data-move-cancel]').addEventListener('click', () => moveDialog.close());
-  moveDialog.querySelector('[data-move-confirm]').addEventListener('click', () => {
+  moveDialog.querySelector('form').addEventListener('submit', event => {
+    event.preventDefault();
+    const directory = moveDialog.querySelector('input').value;
     moveDialog.close();
-    moveFavouriteImages();
+    runBatch({action: 'move', files: batchFiles, directory});
   });
-
-  deletionFilter.addEventListener('click', () => {
-    const enabled = deletionFilter.getAttribute('aria-pressed') !== 'true';
-    deletionFilter.setAttribute('aria-pressed', String(enabled));
-    deletionFilterLabel.textContent = enabled ? '查看全部图片' : '查看待删除列表';
-    moveFavouriteButton.hidden = enabled;
-    deleteMarkedButton.hidden = !enabled;
-    clearDeletionMarksButton.hidden = !enabled;
+  imageFilter.addEventListener('change', () => {
+    selectedImageFilter = imageFilter.value;
+    localStorage.setItem(IMAGE_FILTER_KEY, selectedImageFilter);
+    refreshImageFilters();
     filterDirectory();
     scheduleThumbnails();
   });
-
-  deleteMarkedButton.addEventListener('click', () => {
-    if (moving || markedEntries().length === 0) return;
-    deleteMarkedError.hidden = true;
-    deleteMarkedDialog.showModal();
+  deleteImagesButton.addEventListener('click', () => {
+    batchFiles = captureBatchFiles();
+    if (!batchFiles.length || moving) return;
+    batchDeleteError.hidden = true;
+    batchDeleteDialog.querySelector('#batch-delete-description').textContent = `当前筛选的 ${batchFiles.length} 张图片将从磁盘中删除，此操作无法撤销。`;
+    batchDeleteDialog.showModal();
   });
-  deleteMarkedCancel.addEventListener('click', () => deleteMarkedDialog.close());
-  deleteMarkedDialog.addEventListener('cancel', event => {
-    if (moving) event.preventDefault();
+  batchDeleteCancel.addEventListener('click', () => batchDeleteDialog.close());
+  batchDeleteConfirm.addEventListener('click', () => {
+    batchDeleteDialog.close();
+    runBatch({action: 'delete', files: batchFiles});
   });
-  clearDeletionMarksButton.addEventListener('click', async () => {
-    if (moving || markedEntries().length === 0) return;
-    moving = true;
-    clearDeletionMarksButton.textContent = '正在取消…';
-    moveFavouriteButton.disabled = true;
-    updateDeletionControls();
-    try {
-      const url = new URL(location.href);
-      url.search = '?mode=clear-deletion-marks';
-      const response = await fetch(url, {method: 'POST'});
-      if (!response.ok) throw new Error(await response.text());
-      const result = await response.json();
-      let notice = `已取消 ${result.cleared} 张图片的删除标记`;
-      if (result.errors.length) notice += `；未完成的操作：${result.errors.join('；')}`;
-      history.replaceState({...history.state, moveNotice: notice, previewImage: null}, '');
-      location.reload();
-    } catch (error) {
-      moving = false;
-      clearDeletionMarksButton.textContent = '取消所有删除标记';
-      moveFavouriteButton.disabled = false;
-      directoryNotice.textContent = error.message || '取消删除标记失败，请重试。';
-      directoryNotice.hidden = false;
-      updateDeletionControls();
-    }
+  clearImageMarksButton.addEventListener('click', () => {
+    batchFiles = captureBatchFiles();
+    if (!batchFiles.length || moving) return;
+    batchFilter = selectedImageFilter;
+    const marks = batchFilter === 'all' ? '喜欢和数字标记' : batchFilter === 'favourite' ? '喜欢标记' : '数字标记';
+    clearMarksDialog.querySelector('#clear-marks-description').textContent = `将取消当前筛选的 ${batchFiles.length} 张图片的${marks}，图片文件会保留。`;
+    clearMarksDialog.showModal();
   });
-  deleteMarkedConfirm.addEventListener('click', async () => {
-    if (moving) return;
-    moving = true;
-    deleteMarkedConfirm.disabled = deleteMarkedCancel.disabled = true;
-    deleteMarkedConfirm.textContent = '正在删除…';
-    deleteMarkedError.hidden = true;
-    updateDeletionControls();
-    try {
-      const url = new URL(location.href);
-      url.search = '?mode=delete-marked';
-      const response = await fetch(url, {method: 'POST'});
-      if (!response.ok) throw new Error(await response.text());
-      const result = await response.json();
-      let notice = `已删除 ${result.deleted} 张标记图片`;
-      if (result.errors.length) notice += `；未完成的操作：${result.errors.join('；')}`;
-      history.replaceState({...history.state, moveNotice: notice, previewImage: null}, '');
-      location.reload();
-    } catch (error) {
-      moving = false;
-      deleteMarkedConfirm.disabled = deleteMarkedCancel.disabled = false;
-      deleteMarkedConfirm.textContent = '全部删除';
-      deleteMarkedError.textContent = error.message || '删除已标记图片失败，请重试。';
-      deleteMarkedError.hidden = false;
-      updateDeletionControls();
-    }
+  clearMarksDialog.querySelector('#clear-marks-cancel').addEventListener('click', () => clearMarksDialog.close());
+  clearMarksDialog.querySelector('#clear-marks-confirm').addEventListener('click', () => {
+    clearMarksDialog.close();
+    runBatch({action: 'clear-mark', files: batchFiles, filter: batchFilter});
   });
 
   const visibleThumbnails = new Set();
@@ -4869,9 +4849,9 @@ if (galleryToggle) {
     applyZoom();
     loadPreviewImage(entry);
     favouriteError.hidden = true;
-    deletionMarkError.hidden = true;
+    imageTagError.hidden = true;
     updateFavouriteButton();
-    updateDeletionControls();
+    updateImageControls();
     resetCommentComposer();
     renderGalleryComments();
     loadGalleryComments();
@@ -4916,9 +4896,10 @@ if (galleryToggle) {
       const nextEntry = entries[index + 1] || entries[index - 1];
       if (deleteDialog.open) deleteDialog.close();
       entry.remove();
+      refreshImageFilters();
       filterDirectory();
-      updateDeletionControls();
       deleting = false;
+      updateImageControls();
       if (nextEntry) openLightbox(nextEntry);
       else {
         previewTrigger = null;
@@ -5178,10 +5159,10 @@ if (galleryToggle) {
     if (event.ctrlKey || event.metaKey || event.altKey || event.isComposing) {
       return;
     }
-    if (event.key.toLowerCase() === 'd') {
+    if (/^[1-5]$/.test(event.key)) {
+      if (event.repeat || event.target.closest('input, textarea, select') || event.target.isContentEditable) return;
       event.preventDefault();
-      if (event.repeat) return;
-      toggleDeletionMark();
+      toggleImageTag(event.key);
       return;
     }
     if (event.key === ' ' && lightbox.classList.contains('carousel-mode')) {
@@ -5231,7 +5212,7 @@ if (galleryToggle) {
   });
 
   setGallery(new URLSearchParams(location.search).get('view') === 'gallery', false);
-  updateDeletionControls();
+  updateImageControls();
   window.addEventListener('popstate', () => {
     if (!mobileTouch.matches) return;
     if (history.state?.galleryPreview) {
@@ -5315,16 +5296,18 @@ h1 { position:relative; z-index:1; margin:0; overflow-wrap:anywhere; font-family
 .directory-sort { display:flex; align-items:center; gap:.45rem; padding:.35rem .4rem .35rem .7rem; border:1px solid var(--line); border-radius:.65rem; color:var(--muted); background:var(--paper); font:650 .72rem/1 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans-serif; white-space:nowrap; }
 .directory-sort:focus-within { border-color:var(--accent); box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 18%,transparent); }
 .directory-sort select { min-height:2rem; padding:0 1.7rem 0 .55rem; border:0; border-left:1px solid var(--line); color:var(--ink); background:transparent; font:inherit; cursor:pointer; outline:0; }
+.image-filter-control { position:relative; display:inline-flex; align-items:center; color:var(--ink); }
+.image-filter-control select { appearance:none; min-height:2rem; padding:.35rem 1.8rem .35rem .7rem; border:1px solid var(--line); border-radius:.45rem; color:inherit; background:var(--surface); font:600 .72rem/1.3 ui-sans-serif,-apple-system,sans-serif; cursor:pointer; transition:border-color .15s ease,background .15s ease; }
+.image-filter-control select:hover { border-color:var(--accent); background:var(--accent-soft); }
+.image-filter-control select:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.image-filter-control svg { position:absolute; right:.55rem; width:.85rem; height:.85rem; fill:none; stroke:currentColor; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; pointer-events:none; }
+.move-dialog input { display:block; width:100%; box-sizing:border-box; margin-top:.5rem; padding:.65rem; border:1px solid var(--line); border-radius:.5rem; font:inherit; color:inherit; background:var(--surface); }
 .gallery-organise { position:relative; z-index:1; display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:.4rem; margin-top:.75rem; }
 .organise-label { margin-right:.25rem; color:var(--muted); font-size:.72rem; }
 .gallery-organise button { display:inline-flex; align-items:center; gap:.4rem; min-height:2rem; padding:.35rem .6rem; border:1px solid var(--line); border-radius:.45rem; color:var(--muted); background:var(--surface); font:500 .72rem/1.3 ui-sans-serif,-apple-system,sans-serif; cursor:pointer; transition:color .15s ease,border-color .15s ease,background .15s ease; }
-.gallery-organise button:hover { border-color:var(--accent); color:var(--ink); background:var(--accent-soft); }
-.gallery-organise button:disabled { opacity:.5; cursor:wait; }
-.gallery-organise button[aria-pressed="true"] { border-color:var(--accent); color:var(--accent); background:var(--accent-soft); }
-.gallery-organise .delete-marked-images:not(:disabled) { border-color:color-mix(in srgb,#b42336 55%,var(--line)); color:light-dark(#a51d31,#ff9ba9); }
-.gallery-organise #deletion-count { display:grid; place-items:center; min-width:1.2rem; height:1.2rem; padding:0 .25rem; border-radius:.6rem; color:var(--surface); background:var(--muted); font-size:.65rem; }
-.organise-heart { color:light-dark(#bb5268,#dc899b); }
-.organise-arrow { opacity:.6; }
+.gallery-organise button:hover:not(:disabled) { border-color:var(--accent); color:var(--ink); background:var(--accent-soft); }
+.gallery-organise button:disabled { opacity:.5; cursor:not-allowed; }
+.gallery-organise #delete-images:not(:disabled) { border-color:color-mix(in srgb,#b42336 55%,var(--line)); color:light-dark(#a51d31,#ff9ba9); }
 .directory-notice { position:relative; z-index:1; margin:.75rem 0 0; color:var(--muted); font-size:.78rem; line-height:1.6; overflow-wrap:anywhere; }
 .listing { overflow:hidden; border:1px solid var(--line); border-top:0; border-radius:0 0 1.1rem 1.1rem; background:var(--surface); box-shadow:0 25px 70px rgba(54,59,92,.09); }
 .entry { display:grid; grid-template-columns:2.55rem minmax(0,1fr) 5rem 6rem 1.5rem; align-items:center; gap:.85rem; min-height:4.25rem; padding:.7rem 1.2rem; border-top:1px solid var(--line); color:var(--ink); text-decoration:none; transition:background .15s ease,transform .18s cubic-bezier(.16,1,.3,1); }
@@ -5357,8 +5340,8 @@ h1 { position:relative; z-index:1; margin:0; overflow-wrap:anywhere; font-family
 .favourite-mark svg { display:block; width:100%; height:100%; overflow:visible; }
 .favourite-mark path { fill:currentColor; stroke:rgba(255,255,255,.9); stroke-width:.75; stroke-linejoin:round; }
 .gallery .favourite-mark { right:.45rem; bottom:.45rem; width:1.35rem; height:1.35rem; }
-.deletion-mark { position:absolute; left:.15rem; top:.15rem; padding:.15rem .3rem; border-radius:.3rem; color:#fff; background:#b42336; box-shadow:0 2px 7px rgba(0,0,0,.25); font:700 .52rem/1.2 ui-sans-serif,-apple-system,sans-serif; white-space:nowrap; pointer-events:none; }
-.gallery .deletion-mark { left:.4rem; top:.4rem; padding:.25rem .4rem; font-size:.65rem; }
+.image-tag { position:absolute; left:.15rem; top:.15rem; padding:.15rem .3rem; border-radius:.3rem; color:#fff; background:#b42336; box-shadow:0 2px 7px rgba(0,0,0,.25); font:700 .52rem/1.2 ui-sans-serif,-apple-system,sans-serif; white-space:nowrap; pointer-events:none; }
+.gallery .image-tag { left:.4rem; top:.4rem; padding:.25rem .4rem; font-size:.65rem; }
 .entry.image .glyph img { width:100%; height:100%; object-fit:cover; object-position:center; display:block; pointer-events:none; transition:transform .2s ease; }
 .entry.image .glyph img:not([src]) { visibility:hidden; }
 .entry.image .glyph.thumbnail-error::before { position:absolute; inset:0; display:grid; place-items:center; padding:.5rem; color:var(--muted); content:"预览不可用"; font:600 .62rem/1.35 ui-sans-serif,-apple-system,sans-serif; text-align:center; }
@@ -5426,7 +5409,12 @@ h1 { position:relative; z-index:1; margin:0; overflow-wrap:anywhere; font-family
 .lightbox-favourite-state path { fill:rgba(8,9,14,.28); stroke:currentColor; stroke-width:1.65; stroke-linejoin:round; }
 .lightbox-favourite-state.liked { display:block; color:#ff4f78; }
 .lightbox-favourite-state.liked path { fill:currentColor; stroke:rgba(255,255,255,.92); stroke-width:.75; }
-.lightbox-deletion-state { padding:.15rem .3rem; border-radius:.3rem; color:#fff; background:#b42336; box-shadow:0 2px 7px rgba(0,0,0,.3); font:700 .52rem/1.2 ui-sans-serif,-apple-system,sans-serif; white-space:nowrap; }
+.image-tag[data-tag="1"],.lightbox-tag-state[data-tag="1"] { background:#b42336; }
+.image-tag[data-tag="2"],.lightbox-tag-state[data-tag="2"] { background:#15803d; }
+.image-tag[data-tag="3"],.lightbox-tag-state[data-tag="3"] { background:#facc15; color:#1c1917; }
+.image-tag[data-tag="4"],.lightbox-tag-state[data-tag="4"] { background:#2563eb; }
+.image-tag[data-tag="5"],.lightbox-tag-state[data-tag="5"] { background:#000; }
+.lightbox-tag-state { padding:.15rem .3rem; border-radius:.3rem; color:#fff; background:#b42336; box-shadow:0 2px 7px rgba(0,0,0,.3); font:700 .52rem/1.2 ui-sans-serif,-apple-system,sans-serif; white-space:nowrap; }
 .image-loading,.image-load-error { position:absolute; z-index:5; left:50%; bottom:1.25rem; display:flex; align-items:center; gap:.65rem; min-height:2.4rem; padding:.55rem .8rem; border-radius:.7rem; color:rgba(255,255,255,.9); background:rgba(16,18,25,.82); font-size:.75rem; transform:translateX(-50%); backdrop-filter:blur(12px); }
 .image-loading i { width:.9rem; height:.9rem; border:2px solid rgba(255,255,255,.25); border-top-color:#fff; border-radius:50%; animation:image-spin .7s linear infinite; }
 .image-load-error button { min-height:2rem; padding:.35rem .65rem; border:0; border-radius:.45rem; color:#11131a; background:#fff; font:650 .72rem/1 sans-serif; cursor:pointer; }
@@ -5446,13 +5434,12 @@ h1 { position:relative; z-index:1; margin:0; overflow-wrap:anywhere; font-family
 .image-lightbox figcaption { display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:.65rem .75rem; min-width:0; padding:0 .25rem .15rem; font-size:.82rem; transition:opacity .22s ease,transform .3s cubic-bezier(.16,1,.3,1); }
 .lightbox-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .lightbox-controls { display:flex; flex-shrink:0; align-items:center; gap:.4rem; transition:opacity .22s ease,transform .3s cubic-bezier(.16,1,.3,1); }
-.preview-step,.deletion-toggle,.carousel-toggle,.comment-toggle,.viewer-more-toggle,.viewer-tools button,.shortcut-help-toggle { position:relative; display:grid; place-items:center; min-width:2.75rem; height:2.75rem; padding:0 .7rem; border:1px solid rgba(255,255,255,.26); border-radius:.8rem; color:#fff; background:rgba(255,255,255,.045); font:650 .72rem/1 sans-serif; cursor:pointer; transition:background .18s ease,border-color .18s ease,transform .18s cubic-bezier(.16,1,.3,1); }
-.preview-step,.deletion-toggle,.carousel-toggle,.comment-toggle,.viewer-more-toggle { width:2.75rem; padding:0; }
-.preview-step svg,.deletion-toggle svg,.carousel-toggle svg,.comment-toggle svg,.viewer-more-toggle svg,.viewer-tools svg,.shortcut-help-toggle svg,.lightbox-close svg,.gallery-comments button svg { width:1.15rem; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+.preview-step,.carousel-toggle,.comment-toggle,.viewer-more-toggle,.viewer-tools button,.shortcut-help-toggle { position:relative; display:grid; place-items:center; min-width:2.75rem; height:2.75rem; padding:0 .7rem; border:1px solid rgba(255,255,255,.26); border-radius:.8rem; color:#fff; background:rgba(255,255,255,.045); font:650 .72rem/1 sans-serif; cursor:pointer; transition:background .18s ease,border-color .18s ease,transform .18s cubic-bezier(.16,1,.3,1); }
+.preview-step,.carousel-toggle,.comment-toggle,.viewer-more-toggle { width:2.75rem; padding:0; }
+.preview-step svg,.carousel-toggle svg,.comment-toggle svg,.viewer-more-toggle svg,.viewer-tools svg,.shortcut-help-toggle svg,.lightbox-close svg,.gallery-comments button svg { width:1.15rem; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
 .carousel-toggle .icon-fill { fill:currentColor; stroke:none; }
-.preview-step:hover,.deletion-toggle:hover,.carousel-toggle:hover,.comment-toggle:hover,.viewer-more-toggle:hover,.viewer-tools button:hover,.shortcut-help-toggle:hover { background:rgba(255,255,255,.12); transform:translateY(-1px); }
-.preview-step:disabled,.deletion-toggle:disabled,.carousel-toggle:disabled { opacity:.35; cursor:default; }
-.deletion-toggle[aria-pressed="true"] { border-color:#ff9ba9; color:#fff; background:#b42336; }
+.preview-step:hover,.carousel-toggle:hover,.comment-toggle:hover,.viewer-more-toggle:hover,.viewer-tools button:hover,.shortcut-help-toggle:hover { background:rgba(255,255,255,.12); transform:translateY(-1px); }
+.preview-step:disabled,.carousel-toggle:disabled { opacity:.35; cursor:default; }
 .carousel-toggle[aria-pressed="true"] { border-color:rgba(255,255,255,.82); background:rgba(255,255,255,.16); }
 .comment-toggle[aria-expanded="true"] { border-color:#b9b5ff; color:#d5d2ff; background:rgba(91,91,214,.25); }
 .comment-toggle b { position:absolute; top:-.35rem; right:-.35rem; display:grid; place-items:center; min-width:1.15rem; height:1.15rem; padding:0 .25rem; border:2px solid #11131a; border-radius:999px; color:#11131a; background:#d5d2ff; font:750 .6rem/1 ui-monospace,SFMono-Regular,Consolas,monospace; }
@@ -5541,9 +5528,9 @@ h1 { position:relative; z-index:1; margin:0; overflow-wrap:anywhere; font-family
 .empty span { font:300 3rem/1 ui-monospace,SFMono-Regular,Consolas,monospace; }
 .empty p { margin:.8rem 0 0; }
 :focus-visible { outline:3px solid color-mix(in srgb,var(--accent) 55%,transparent); outline-offset:-3px; }
-@media (max-width:650px) { main,.gallery-mode main { width:100%; padding:1rem; } main>header { padding:1.5rem 1.1rem; } .view-toggle { position:relative; right:auto; top:auto; width:max-content; margin-top:1rem; } .directory-browser-tools { grid-template-columns:1fr; } .directory-sort { justify-self:end; } .entry { grid-template-columns:2.4rem minmax(0,1fr) auto; padding-inline:1rem; } .kind,.arrow { display:none; } .detail { grid-column:3; } .folder .detail { display:none; } .folder-favourite-toggle { position:static; grid-column:3; justify-self:end; } .entry.image .glyph { width:2.4rem; height:2.4rem; } .listing.gallery { grid-template-columns:repeat(auto-fill,minmax(145px,1fr)); gap:.65rem; padding:.65rem; } .gallery .entry { grid-template-columns:minmax(0,1fr); grid-template-rows:8.5rem auto auto; padding:.6rem; } .gallery .entry:hover { padding:.6rem; } .gallery .entry.image .glyph { width:100%; height:100%; } .gallery .detail { grid-column:1; grid-row:3; justify-self:start; } .scroll-jumps { right:max(.4rem,env(safe-area-inset-right)); } .scroll-jumps button { width:2.8rem; height:2.8rem; } .image-lightbox { padding:max(.7rem,env(safe-area-inset-top)) max(.7rem,env(safe-area-inset-right)) max(.7rem,env(safe-area-inset-bottom)) max(.7rem,env(safe-area-inset-left)); } .lightbox-shell { gap:.45rem; } .lightbox-filmstrip { grid-template-columns:repeat(5,3.35rem); gap:.25rem; } .filmstrip-slot { width:3.35rem; } .filmstrip-slot[data-distance="3"] { display:none; } .image-lightbox figcaption { flex-wrap:wrap; } .lightbox-name { width:100%; text-align:center; } .lightbox-controls { gap:.25rem; } .preview-step,.deletion-toggle,.carousel-toggle,.comment-toggle,.viewer-more-toggle { min-width:2.8rem; width:2.8rem; height:2.8rem; } .favourite-toggle { width:2.9rem; height:2.9rem; } .gallery-comments { inset:auto max(.45rem,env(safe-area-inset-right)) max(.45rem,env(safe-area-inset-bottom)) max(.45rem,env(safe-area-inset-left)); width:auto; height:min(92dvh,42rem); border-radius:1.15rem; animation-name:gallery-comments-mobile-in; } @keyframes gallery-comments-mobile-in { from { opacity:0; transform:translateY(1.5rem) scale(.985); } } .gallery-comment-composer textarea { min-height:4.8rem; } }
+@media (max-width:650px) { main,.gallery-mode main { width:100%; padding:1rem; } main>header { padding:1.5rem 1.1rem; } .view-toggle { position:relative; right:auto; top:auto; width:max-content; margin-top:1rem; } .directory-browser-tools { grid-template-columns:1fr; } .directory-sort { justify-self:end; } .entry { grid-template-columns:2.4rem minmax(0,1fr) auto; padding-inline:1rem; } .kind,.arrow { display:none; } .detail { grid-column:3; } .folder .detail { display:none; } .folder-favourite-toggle { position:static; grid-column:3; justify-self:end; } .entry.image .glyph { width:2.4rem; height:2.4rem; } .listing.gallery { grid-template-columns:repeat(auto-fill,minmax(145px,1fr)); gap:.65rem; padding:.65rem; } .gallery .entry { grid-template-columns:minmax(0,1fr); grid-template-rows:8.5rem auto auto; padding:.6rem; } .gallery .entry:hover { padding:.6rem; } .gallery .entry.image .glyph { width:100%; height:100%; } .gallery .detail { grid-column:1; grid-row:3; justify-self:start; } .scroll-jumps { right:max(.4rem,env(safe-area-inset-right)); } .scroll-jumps button { width:2.8rem; height:2.8rem; } .image-lightbox { padding:max(.7rem,env(safe-area-inset-top)) max(.7rem,env(safe-area-inset-right)) max(.7rem,env(safe-area-inset-bottom)) max(.7rem,env(safe-area-inset-left)); } .lightbox-shell { gap:.45rem; } .lightbox-filmstrip { grid-template-columns:repeat(5,3.35rem); gap:.25rem; } .filmstrip-slot { width:3.35rem; } .filmstrip-slot[data-distance="3"] { display:none; } .image-lightbox figcaption { flex-wrap:wrap; } .lightbox-name { width:100%; text-align:center; } .lightbox-controls { gap:.25rem; } .preview-step,.carousel-toggle,.comment-toggle,.viewer-more-toggle { min-width:2.8rem; width:2.8rem; height:2.8rem; } .favourite-toggle { width:2.9rem; height:2.9rem; } .gallery-comments { inset:auto max(.45rem,env(safe-area-inset-right)) max(.45rem,env(safe-area-inset-bottom)) max(.45rem,env(safe-area-inset-left)); width:auto; height:min(92dvh,42rem); border-radius:1.15rem; animation-name:gallery-comments-mobile-in; } @keyframes gallery-comments-mobile-in { from { opacity:0; transform:translateY(1.5rem) scale(.985); } } .gallery-comment-composer textarea { min-height:4.8rem; } }
 @media (max-height:620px) { .gallery-comments>header { padding:.7rem .9rem .6rem; } .gallery-comments>header button { width:2.15rem; height:2.15rem; } .gallery-comments-image { grid-template-columns:2.7rem minmax(0,1fr) auto; gap:.65rem; padding:.55rem .9rem; } .gallery-comments-image img { width:2.7rem; height:2.7rem; } .gallery-comment-empty { gap:.25rem; padding:.75rem; } .gallery-comment-composer { max-height:58dvh; gap:.5rem; padding:.7rem .9rem; } .gallery-comment-composer textarea { min-height:4rem; } .gallery-comments>footer { display:none; } }
-@media (max-width:1024px),(hover:none) and (pointer:coarse) { .preview-step,.deletion-toggle,.carousel-toggle,.comment-toggle,.viewer-more-toggle,.viewer-tools button,.shortcut-help-toggle { min-width:3rem; height:3rem; } .lightbox-controls { width:100%; min-width:0; flex-shrink:1; justify-content:center; flex-wrap:wrap; } .viewer-extras,.viewer-tools { width:100%; justify-content:center; border:0; } .image-info,.shortcut-help { left:50%; right:auto; bottom:8.7rem; width:max-content; max-width:calc(100vw - 2rem); transform:translateX(-50%); } }
+@media (max-width:1024px),(hover:none) and (pointer:coarse) { .preview-step,.carousel-toggle,.comment-toggle,.viewer-more-toggle,.viewer-tools button,.shortcut-help-toggle { min-width:3rem; height:3rem; } .lightbox-controls { width:100%; min-width:0; flex-shrink:1; justify-content:center; flex-wrap:wrap; } .viewer-extras,.viewer-tools { width:100%; justify-content:center; border:0; } .image-info,.shortcut-help { left:50%; right:auto; bottom:8.7rem; width:max-content; max-width:calc(100vw - 2rem); transform:translateX(-50%); } }
 @media (hover:none) and (pointer:coarse) { .listing.gallery .entry.image,.listing.gallery .entry.image:hover { display:block; padding:0; } .listing.gallery .entry.image::after,.listing.gallery .entry.image .entry-name,.listing.gallery .entry.image .detail { opacity:1; transform:none; } .image-lightbox figcaption { padding-bottom:max(.2rem,env(safe-area-inset-bottom)); } }
 @media (prefers-color-scheme:dark) { :root { --paper:#11131b; --surface:#191c27; --ink:#edf0f7; --muted:#a7adbd; --line:#303545; --accent:#a9a5ff; --accent-soft:#292943; --folder:#8e8af5; --grid:#262b38; } body { background-image:radial-gradient(circle at 50% -20%,#252943 0,transparent 38rem); } .listing { box-shadow:0 25px 70px rgba(0,0,0,.25); } }
 @media (prefers-reduced-motion:reduce) { .entry,.arrow,.entry.image .glyph img,.filmstrip-thumb { transition:none; } .entry.image:hover .glyph img,.gallery .entry:hover,.filmstrip-thumb { transform:none; } }
@@ -7646,23 +7633,21 @@ mod tests {
     }
 
     #[test]
-    fn marks_gallery_images_and_deletes_all_marked_images_in_the_directory() {
+    fn image_tag_endpoint_sets_replaces_clears_and_renders_tags() {
         let directory = tempfile::tempdir().unwrap();
-        fs::write(directory.path().join("cat.svg"), "<svg>cat</svg>").unwrap();
-        fs::write(directory.path().join("dog.svg"), "<svg>dog</svg>").unwrap();
-        fs::write(directory.path().join("notes.txt"), "keep").unwrap();
+        fs::write(directory.path().join("cat.svg"), "<svg/>").unwrap();
         let root = fs::canonicalize(directory.path()).unwrap();
-        let marked_path = root.join("cat.svg");
         let state = StateStore::new(None).unwrap();
         let server_state = state.clone();
+        let server_root = root.clone();
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let address = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
-            for _ in 0..3 {
+            for _ in 0..8 {
                 let (stream, _) = listener.accept().unwrap();
                 handle_connection(
                     stream,
-                    &root,
+                    &server_root,
                     &CollaborationHub::default(),
                     &ReviewHub::default(),
                     false,
@@ -7672,151 +7657,203 @@ mod tests {
                 .unwrap();
             }
         });
-        let request = |method: &str, target: &str| {
+        let request = |method: &str, target: &str, body: &str| {
             let mut client = TcpStream::connect(address).unwrap();
-            write!(
-                client,
-                "{method} {target} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n"
-            )
-            .unwrap();
+            write!(client, "{method} {target} HTTP/1.1\r\nHost: {address}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
             let mut response = String::new();
             client.read_to_string(&mut response).unwrap();
             response
         };
-
-        assert!(request("PUT", "/cat.svg?mode=deletion-mark").starts_with("HTTP/1.1 204"));
-        let listing = request("GET", "/");
-        assert!(listing.contains("data-deletion-marked=\"true\""));
-        assert!(listing.contains("class=\"deletion-mark\" title=\"待删除\">待删除</span>"));
-        let response = request("POST", "/?mode=delete-marked");
-        assert!(response.starts_with("HTTP/1.1 200 OK"));
-        assert!(response.ends_with(r#"{"deleted":1,"errors":[]}"#));
+        assert!(
+            request("PUT", "/cat.svg?mode=image-tag", r#"{"tag":1}"#).starts_with("HTTP/1.1 204")
+        );
+        assert!(request("GET", "/", "").contains("data-image-tag=\"1\""));
+        assert!(request(
+            "PUT",
+            "/cat.svg?mode=image-tag",
+            r#"{"tag":3,"extra":true}"#
+        )
+        .starts_with("HTTP/1.1 204"));
+        assert!(request("GET", "/", "").contains("data-image-tag=\"3\""));
+        assert!(request("DELETE", "/cat.svg?mode=image-tag", "").starts_with("HTTP/1.1 204"));
+        assert!(request("GET", "/", "").contains("data-image-tag=\"\""));
+        assert!(
+            request("PUT", "/cat.svg?mode=image-tag", r#"{"tag":5}"#).starts_with("HTTP/1.1 204")
+        );
+        let response = request(
+            "POST",
+            "/?mode=batch-images",
+            r#"{"action":"delete","files":["cat.svg"]}"#,
+        );
+        assert!(response.ends_with(r#"{"affected":1,"errors":[]}"#));
         server.join().unwrap();
-
-        assert!(!directory.path().join("cat.svg").exists());
-        assert!(directory.path().join("dog.svg").exists());
-        assert!(directory.path().join("notes.txt").exists());
-        assert!(!state.is_deletion_marked(&marked_path).unwrap());
+        assert!(!root.join("cat.svg").exists());
+        assert_eq!(state.image_tag(&root.join("cat.svg")).unwrap(), None);
     }
 
     #[test]
-    fn clears_all_deletion_marks_in_the_current_directory() {
-        let directory = tempfile::tempdir().unwrap();
-        fs::write(directory.path().join("cat.svg"), "<svg>cat</svg>").unwrap();
-        fs::create_dir(directory.path().join("nested")).unwrap();
-        fs::write(directory.path().join("nested/dog.svg"), "<svg>dog</svg>").unwrap();
-        let root = fs::canonicalize(directory.path()).unwrap();
-        let cat = root.join("cat.svg");
-        let dog = root.join("nested/dog.svg");
-        let state = StateStore::new(None).unwrap();
-        state.set_deletion_mark(&cat, true).unwrap();
-        state.set_deletion_mark(&dog, true).unwrap();
-
-        let result = clear_directory_deletion_marks(&root, &state).unwrap();
-
-        assert_eq!(result.cleared, 1);
-        assert!(result.errors.is_empty());
-        assert!(!state.is_deletion_marked(&cat).unwrap());
-        assert!(state.is_deletion_marked(&dog).unwrap());
-        assert!(cat.exists());
-        assert!(dog.exists());
+    fn batch_clear_marks_respects_filter_and_exact_file_list() {
+        for filter in [ImageFilter::All, ImageFilter::Favourite, ImageFilter::Tag3] {
+            let directory = tempfile::tempdir().unwrap();
+            let root = fs::canonicalize(directory.path()).unwrap();
+            let state = StateStore::new(None).unwrap();
+            for name in ["cat.svg", "dog.svg"] {
+                fs::write(root.join(name), "<svg/>").unwrap();
+                state.set_favourite(&root.join(name), true).unwrap();
+                state.set_image_tag(&root.join(name), Some(3)).unwrap();
+            }
+            let keeps_like = matches!(filter, ImageFilter::Tag3);
+            let keeps_tag = matches!(filter, ImageFilter::Favourite);
+            let result = batch_images(
+                &root,
+                &state,
+                BatchImageAction::ClearMark {
+                    files: vec!["cat.svg".into()],
+                    filter,
+                },
+            );
+            assert_eq!(result.affected, 1);
+            assert!(result.errors.is_empty());
+            assert_eq!(
+                state.is_favourite(&root.join("cat.svg")).unwrap(),
+                keeps_like
+            );
+            assert_eq!(
+                state.image_tag(&root.join("cat.svg")).unwrap(),
+                keeps_tag.then_some(3)
+            );
+            assert!(state.is_favourite(&root.join("dog.svg")).unwrap());
+            assert_eq!(state.image_tag(&root.join("dog.svg")).unwrap(), Some(3));
+            assert!(root.join("cat.svg").exists());
+        }
     }
 
     #[test]
-    fn organises_images_and_keeps_favourites_at_their_new_paths() {
+    fn batch_move_preserves_marks_and_comments_with_destination_conflicts() {
         for disk in [false, true] {
             let directory = tempfile::tempdir().unwrap();
             let root = fs::canonicalize(directory.path()).unwrap();
             let cache = tempfile::tempdir().unwrap();
             let state = StateStore::new(disk.then_some(cache.path())).unwrap();
-            fs::write(root.join("liked 猫.svg"), "<svg>liked</svg>").unwrap();
-            fs::write(root.join("other.svg"), "<svg>other</svg>").unwrap();
-            fs::write(root.join("notes.txt"), "notes").unwrap();
-            fs::create_dir(root.join("nested")).unwrap();
-            fs::write(root.join("nested/photo.svg"), "<svg>nested</svg>").unwrap();
-            state
-                .set_favourite(&root.join("liked 猫.svg"), true)
-                .unwrap();
-            state
-                .set_deletion_mark(&root.join("liked 猫.svg"), true)
-                .unwrap();
-            state
-                .set_deletion_mark(&root.join("other.svg"), true)
-                .unwrap();
-
-            let result = move_favourite_images(&root, &state).unwrap();
-            assert_eq!(result.moved, 1);
-            assert!(result.errors.is_empty());
-            assert_eq!(
-                fs::read_to_string(root.join("favourites/liked 猫.svg")).unwrap(),
-                "<svg>liked</svg>"
+            fs::write(root.join("猫.svg"), "new image").unwrap();
+            fs::write(root.join("other.svg"), "other image").unwrap();
+            fs::create_dir(root.join("tag3")).unwrap();
+            fs::write(root.join("tag3/猫.svg"), "existing image").unwrap();
+            fs::write(root.join("tag3/猫_2.svg"), "second image").unwrap();
+            fs::write(root.join("gallery-comments.json"), r#"{"comments":[{"id":"c1","image":"猫.svg","author":"Alice","body":"keep","created_at":"now"},{"id":"c2","image":"other.svg","author":"Bob","body":"other","created_at":"now"}]}"#).unwrap();
+            fs::write(root.join("tag3/gallery-comments.json"), r#"{"comments":[{"id":"c3","image":"猫.svg","author":"Carol","body":"existing","created_at":"now"}]}"#).unwrap();
+            state.set_favourite(&root.join("猫.svg"), true).unwrap();
+            state.set_image_tag(&root.join("猫.svg"), Some(3)).unwrap();
+            let result = batch_images(
+                &root,
+                &state,
+                BatchImageAction::Move {
+                    files: vec!["猫.svg".into()],
+                    directory: "tag3".into(),
+                },
             );
-            assert!(state
-                .is_favourite(&root.join("favourites/liked 猫.svg"))
-                .unwrap());
-            assert!(!state.is_favourite(&root.join("liked 猫.svg")).unwrap());
-            assert!(state
-                .is_deletion_marked(&root.join("favourites/liked 猫.svg"))
-                .unwrap());
-            assert!(!state
-                .is_deletion_marked(&root.join("liked 猫.svg"))
-                .unwrap());
-
+            assert_eq!(result.affected, 1);
+            assert!(result.errors.is_empty(), "{:?}", result.errors);
             assert_eq!(
-                fs::read_to_string(root.join("other.svg")).unwrap(),
-                "<svg>other</svg>"
+                fs::read_to_string(root.join("tag3/猫_3.svg")).unwrap(),
+                "new image"
             );
-            assert!(state.is_deletion_marked(&root.join("other.svg")).unwrap());
-            assert_eq!(fs::read_to_string(root.join("notes.txt")).unwrap(), "notes");
             assert_eq!(
-                fs::read_to_string(root.join("nested/photo.svg")).unwrap(),
-                "<svg>nested</svg>"
+                fs::read_to_string(root.join("tag3/猫.svg")).unwrap(),
+                "existing image"
             );
+            assert!(root.join("other.svg").exists());
+            assert!(!root.join("猫.svg").exists());
+            assert_eq!(state.image_tag(&root.join("猫.svg")).unwrap(), None);
+            assert!(!state.is_favourite(&root.join("猫.svg")).unwrap());
+            assert_eq!(
+                state.image_tag(&root.join("tag3/猫_3.svg")).unwrap(),
+                Some(3)
+            );
+            assert!(state.is_favourite(&root.join("tag3/猫_3.svg")).unwrap());
+            let original = gallery_comments::read(&root.join("other.svg")).unwrap();
+            assert_eq!(original.comments.len(), 1);
+            assert_eq!(original.comments[0].image, "other.svg");
+            let target = gallery_comments::read(&root.join("tag3/猫_3.svg")).unwrap();
+            assert_eq!(target.comments.len(), 2);
+            assert_eq!(target.comments[1].image, "猫_3.svg");
+            assert_eq!(target.comments[1].body, "keep");
+            fs::write(root.join("猫_3.svg"), "parent image").unwrap();
+            let result = batch_images(
+                &root.join("tag3"),
+                &state,
+                BatchImageAction::Move {
+                    files: vec!["猫_3.svg".into()],
+                    directory: "..".into(),
+                },
+            );
+            assert_eq!(result.affected, 1);
+            assert!(result.errors.is_empty(), "{:?}", result.errors);
+            assert_eq!(
+                fs::read_to_string(root.join("猫_3.svg")).unwrap(),
+                "parent image"
+            );
+            assert_eq!(
+                fs::read_to_string(root.join("猫_3_2.svg")).unwrap(),
+                "new image"
+            );
+            assert!(!root.join("tag3/猫_3.svg").exists());
+            assert!(state.is_favourite(&root.join("猫_3_2.svg")).unwrap());
+            assert_eq!(state.image_tag(&root.join("猫_3_2.svg")).unwrap(), Some(3));
+            assert_eq!(state.image_tag(&root.join("tag3/猫_3.svg")).unwrap(), None);
+            let parent_comments = gallery_comments::read(&root.join("猫_3_2.svg")).unwrap();
+            assert_eq!(parent_comments.comments.len(), 2);
+            assert_eq!(parent_comments.comments[1].image, "猫_3_2.svg");
+            assert_eq!(parent_comments.comments[1].body, "keep");
+            let child_comments = gallery_comments::read(&root.join("tag3/猫.svg")).unwrap();
+            assert_eq!(child_comments.comments.len(), 1);
+            assert_eq!(child_comments.comments[0].body, "existing");
             if disk {
                 let reopened = StateStore::new(Some(cache.path())).unwrap();
-                assert!(reopened
-                    .is_favourite(&root.join("favourites/liked 猫.svg"))
-                    .unwrap());
-                assert!(!reopened.is_favourite(&root.join("liked 猫.svg")).unwrap());
+                assert_eq!(
+                    reopened.image_tag(&root.join("猫_3_2.svg")).unwrap(),
+                    Some(3)
+                );
             }
+            let result = batch_images(
+                &root,
+                &state,
+                BatchImageAction::Move {
+                    files: vec!["other.svg".into()],
+                    directory: "new folder".into(),
+                },
+            );
+            assert_eq!(result.affected, 1);
+            assert!(root.join("new folder/other.svg").exists());
         }
     }
 
     #[test]
-    fn organising_images_renames_destination_conflicts() {
+    fn batch_delete_reports_partial_failure_and_cleans_image_data() {
         let directory = tempfile::tempdir().unwrap();
         let root = fs::canonicalize(directory.path()).unwrap();
         let state = StateStore::new(None).unwrap();
-        fs::create_dir(root.join("favourites")).unwrap();
-        fs::write(root.join("favourites/cat.svg"), "existing image").unwrap();
-        fs::write(root.join("favourites/cat_2.svg"), "second image").unwrap();
-        fs::write(root.join("cat.svg"), "new image").unwrap();
-        fs::write(root.join("dog.svg"), "another image").unwrap();
+        fs::write(root.join("cat.svg"), "<svg/>").unwrap();
+        fs::write(root.join("dog.svg"), "<svg/>").unwrap();
+        fs::write(root.join("gallery-comments.json"), r#"{"comments":[{"id":"c1","image":"cat.svg","author":"Alice","body":"cat","created_at":"now"},{"id":"c2","image":"dog.svg","author":"Bob","body":"dog","created_at":"now"}]}"#).unwrap();
         state.set_favourite(&root.join("cat.svg"), true).unwrap();
-        state.set_favourite(&root.join("dog.svg"), true).unwrap();
-
-        let result = move_favourite_images(&root, &state).unwrap();
-        assert_eq!(result.moved, 2);
-        assert!(result.errors.is_empty());
-        assert_eq!(
-            fs::read_to_string(root.join("favourites/cat.svg")).unwrap(),
-            "existing image"
+        state.set_image_tag(&root.join("cat.svg"), Some(2)).unwrap();
+        let result = batch_images(
+            &root,
+            &state,
+            BatchImageAction::Delete {
+                files: vec!["missing.svg".into(), "cat.svg".into()],
+            },
         );
-        assert_eq!(
-            fs::read_to_string(root.join("favourites/cat_2.svg")).unwrap(),
-            "second image"
-        );
-        assert_eq!(
-            fs::read_to_string(root.join("favourites/cat_3.svg")).unwrap(),
-            "new image"
-        );
+        assert_eq!(result.affected, 1);
+        assert_eq!(result.errors.len(), 1);
+        assert!(root.join("dog.svg").exists());
         assert!(!root.join("cat.svg").exists());
-        assert!(state
-            .is_favourite(&root.join("favourites/cat_3.svg"))
-            .unwrap());
-        assert!(state
-            .is_favourite(&root.join("favourites/dog.svg"))
-            .unwrap());
+        assert_eq!(state.image_tag(&root.join("cat.svg")).unwrap(), None);
+        assert!(!state.is_favourite(&root.join("cat.svg")).unwrap());
+        let comments = gallery_comments::read(&root.join("dog.svg")).unwrap();
+        assert_eq!(comments.comments.len(), 1);
+        assert_eq!(comments.comments[0].image, "dog.svg");
     }
 
     #[test]
@@ -8310,11 +8347,10 @@ mod tests {
         assert!(page.contains("const preloadAdjacentImages = () =>"));
         assert!(page.contains("preloadAdjacentImages();"));
         assert!(page.contains("id=\"preview-next\""));
-        assert!(page.contains("id=\"deletion-toggle\""));
         assert!(page.contains("id=\"favourite-burst\""));
         assert!(page.contains("id=\"carousel-toggle\""));
         assert!(page.contains("commentToggle.className = 'comment-toggle'"));
-        assert!(page.contains("viewerControls.insertBefore(commentToggle, deletionToggle)"));
+        assert!(page.contains("viewerControls.insertBefore(commentToggle, viewerControls.querySelector('#carousel-toggle'))"));
         assert!(page.contains("viewerExtras.hidden = true"));
         assert!(page.contains("if (event.key.toLowerCase() === 'c')"));
         assert!(page.contains("?mode=gallery-comments"));
@@ -8331,19 +8367,12 @@ mod tests {
         assert!(page.contains("if (event.key === 'p')"));
         assert!(page.contains("image-lightbox.carousel-mode"));
         assert!(page.contains("document.addEventListener('visibilitychange'"));
-        assert!(page.contains("deletionToggle.innerHTML = svgIcon"));
-        assert!(page.contains("marked ? '取消标记 (d)' : '标记删除 (d)'"));
-        assert!(page.contains("id=\"deletion-filter\""));
-        assert!(page.contains("id=\"delete-marked-images\""));
-        assert!(page.contains(
-            "id=\"delete-marked-images\" class=\"delete-marked-images\" type=\"button\" hidden"
-        ));
-        assert!(page.contains("id=\"clear-deletion-marks\" type=\"button\" hidden"));
-        assert!(page.contains("?mode=clear-deletion-marks"));
-        assert!(page.contains("moveFavouriteButton.hidden = enabled"));
-        assert!(page.contains("id=\"delete-marked-dialog\""));
-        assert!(page.contains("?mode=deletion-mark"));
-        assert!(page.contains("?mode=delete-marked"));
+        assert!(page.contains("id=\"image-filter\""));
+        assert!(page.contains("id=\"move-images\""));
+        assert!(page.contains("id=\"delete-images\""));
+        assert!(page.contains("id=\"clear-image-marks\""));
+        assert!(page.contains("?mode=image-tag"));
+        assert!(page.contains("?mode=batch-images"));
         assert!(page.contains("lightboxClose.addEventListener('click', closeLightbox)"));
         assert!(page.contains("lightbox.addEventListener('pointermove', updateMouseChrome"));
         assert!(page.contains("mouseInChromeZone = true"));
