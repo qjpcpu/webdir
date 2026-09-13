@@ -3840,6 +3840,7 @@ updateScrollJumps();
 
 const galleryToggle = document.querySelector('#gallery-toggle');
 if (galleryToggle) {
+  const DIRECTORY_VIEW_KEY = `webdir-directory-view:${location.pathname}`;
   const organise = document.querySelector('#gallery-organise');
   const moveImagesButton = organise.querySelector('#move-images');
   const thumbnails = listing.querySelectorAll('img[data-list-src]');
@@ -4819,6 +4820,7 @@ if (galleryToggle) {
   };
 
   const setGallery = (enabled, updateUrl = true) => {
+    localStorage.setItem(DIRECTORY_VIEW_KEY, enabled ? 'gallery' : 'list');
     listing.classList.toggle('gallery', enabled);
     document.body.classList.toggle('gallery-mode', enabled);
     galleryToggle.setAttribute('aria-pressed', String(enabled));
@@ -5508,7 +5510,9 @@ if (galleryToggle) {
     setGallery(enabled);
   });
 
-  setGallery(new URLSearchParams(location.search).get('view') === 'gallery', false);
+  const directoryView = new URLSearchParams(location.search).get('view')
+    ?? localStorage.getItem(DIRECTORY_VIEW_KEY);
+  setGallery(directoryView === 'gallery', false);
   updateImageControls();
   window.addEventListener('popstate', () => {
     if (!mobileTouch.matches) return;
@@ -8694,9 +8698,7 @@ mod tests {
         assert!(page.contains("listing.classList.toggle('gallery', enabled)"));
         assert!(page.contains("data-gallery-href=\"/photo.png?view=gallery\""));
         assert!(page.contains("url.searchParams.set('view', 'gallery')"));
-        assert!(page.contains(
-            "setGallery(new URLSearchParams(location.search).get('view') === 'gallery', false)"
-        ));
+        assert!(page.contains("setGallery(directoryView === 'gallery', false)"));
         assert!(page.contains("id=\"image-lightbox\""));
         assert!(page.contains("id=\"scroll-jumps\""));
         assert!(page.contains("id=\"scroll-to-top\""));
