@@ -85,6 +85,14 @@ module.exports = () => {
       await expect(shared.locator('.file-breadcrumbs a')).toHaveCount(1);
       await expect(shared.locator('.file-breadcrumbs a')).toHaveAttribute('href', '/docs/project/');
       await expect(shared.getByRole('button', {name:'复制分享链接'})).toHaveCount(0);
+      await shared.locator('#path-search-toggle').click();
+      await shared.locator('#path-search-input').fill('child');
+      await expect(shared.locator('.path-search-result')).toHaveCount(1);
+      await expect(shared.locator('.path-search-result')).toContainText('sub');
+      await shared.locator('#path-search-input').fill('private');
+      await expect(shared.locator('.path-search-result')).toHaveCount(0);
+      await expect(shared.locator('#path-search-status')).toHaveText('没有找到匹配的文件');
+      await shared.locator('#path-search-input').press('Escape');
       await shared.locator('.file-breadcrumbs a').click();
       await expect(shared.locator('.breadcrumbs a')).toHaveCount(1);
       await shared.locator('.folder-open').filter({hasText:'sub'}).click();

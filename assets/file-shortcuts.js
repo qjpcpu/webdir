@@ -38,6 +38,136 @@
     });
   }
 
+  const pathSearch = document.querySelector('.path-search');
+  if (pathSearch) {
+    const toggle = pathSearch.querySelector('#path-search-toggle');
+    const panel = pathSearch.querySelector('#path-search-panel');
+    const input = pathSearch.querySelector('#path-search-input');
+    const status = pathSearch.querySelector('#path-search-status');
+    const results = pathSearch.querySelector('#path-search-results');
+    const backdrop = document.createElement('div');
+    backdrop.className = 'path-search-backdrop';
+    backdrop.hidden = true;
+    document.body.append(backdrop, panel);
+    let timer;
+    let requestId = 0;
+    let selected = -1;
+    const links = () => Array.from(results.querySelectorAll('.path-search-result'));
+    const select = index => {
+      const items = links();
+      selected = items.length && index >= 0 ? Math.min(index, items.length - 1) : -1;
+      items.forEach((item, itemIndex) => item.setAttribute('aria-selected', String(itemIndex === selected)));
+      items[selected]?.scrollIntoView({block: 'nearest'});
+    };
+    const open = () => {
+      clearTimeout(timer);
+      requestId++;
+      input.value = '';
+      results.replaceChildren();
+      status.textContent = '输入文件名开始搜索';
+      backdrop.hidden = false;
+      panel.hidden = false;
+      toggle.setAttribute('aria-expanded', 'true');
+      input.focus();
+    };
+    const close = () => {
+      backdrop.hidden = true;
+      panel.hidden = true;
+      toggle.setAttribute('aria-expanded', 'false');
+      select(-1);
+    };
+    const render = items => {
+      results.replaceChildren();
+      selected = -1;
+      status.textContent = items.length ? `${items.length} 个匹配文件` : '没有找到匹配的文件';
+      items.forEach(result => {
+        const link = document.createElement('a');
+        link.className = 'path-search-result';
+        link.href = result.open_href;
+        link.role = 'option';
+        link.setAttribute('aria-selected', 'false');
+        const icon = document.createElement('span');
+        icon.className = 'path-search-icon';
+        if (result.thumbnail_href) {
+          const thumbnail = document.createElement('img');
+          thumbnail.src = result.thumbnail_href;
+          thumbnail.alt = '';
+          thumbnail.loading = 'lazy';
+          thumbnail.decoding = 'async';
+          thumbnail.addEventListener('error', () => {
+            thumbnail.remove();
+            icon.textContent = 'IMG';
+          });
+          icon.append(thumbnail);
+        } else {
+          icon.textContent = result.name.split('.').pop()?.slice(0, 4).toUpperCase() || 'FILE';
+        }
+        const copy = document.createElement('span');
+        copy.className = 'path-search-copy';
+        const name = document.createElement('span');
+        name.className = 'path-search-name';
+        name.textContent = result.name;
+        const path = document.createElement('span');
+        path.className = 'path-search-path';
+        path.textContent = result.directory ? `./${result.directory}` : '根目录';
+        copy.append(name, path);
+        link.append(icon, copy);
+        results.append(link);
+      });
+    };
+    const search = async () => {
+      const query = input.value.trim();
+      const currentRequest = ++requestId;
+      if (!query) {
+        results.replaceChildren();
+        status.textContent = '输入文件名开始搜索';
+        return;
+      }
+      status.textContent = '正在从根目录搜索…';
+      try {
+        const url = new URL(location.pathname, location.origin);
+        url.searchParams.set('mode', 'file-search');
+        url.searchParams.set('scope', 'root');
+        url.searchParams.set('q', query);
+        const response = await fetch(url);
+        if (!response.ok) throw new Error((await response.text()).trim() || '搜索失败');
+        const payload = await response.json();
+        if (currentRequest !== requestId) return;
+        if (payload.scope === 'directory') {
+          close();
+          return;
+        }
+        render(payload.results);
+      } catch (error) {
+        if (currentRequest !== requestId) return;
+        results.replaceChildren();
+        status.textContent = error.message;
+      }
+    };
+    toggle.addEventListener('click', () => panel.hidden ? open() : close());
+    input.addEventListener('input', () => {
+      clearTimeout(timer);
+      timer = setTimeout(search, 220);
+    });
+    input.addEventListener('keydown', event => {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        const delta = event.key === 'ArrowDown' ? 1 : -1;
+        select(selected < 0 ? (delta > 0 ? 0 : links().length - 1) : selected + delta);
+      } else if (event.key === 'Enter' && selected >= 0) {
+        event.preventDefault();
+        links()[selected]?.click();
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        close();
+        toggle.focus();
+      }
+    });
+    document.addEventListener('click', event => {
+      if (!pathSearch.contains(event.target) && !panel.contains(event.target)) close();
+    });
+  }
+
   let pendingCopy = null;
   let keyTimer;
   let toastTimer;
