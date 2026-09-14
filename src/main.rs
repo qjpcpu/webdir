@@ -1836,10 +1836,7 @@ fn search_files_with_command(
             continue;
         };
         let file_path = directory.join(&local_path);
-        if !access.allows(&file_path)
-            || review::is_review_sidecar(&file_path)
-            || gallery_comments::is_comments_file(&file_path)
-        {
+        if !access.allows(&file_path) {
             continue;
         }
         let Some(name) = local_path.file_name().and_then(OsStr::to_str) else {
@@ -9343,7 +9340,7 @@ mod tests {
         let command = root.join("fake-fd");
         write_search_command(
             &command,
-            "case \"$*\" in *\"--max-depth 1\"*) printf './project-notes.md\\0' ;; *) printf './archive/project.md\\0./archive/00-project-photo.svg\\0'; index=1; while [ $index -le 60 ]; do printf './archive/project-%02d.md\\0' \"$index\"; index=$((index + 1)); done ;; esac",
+            "case \"$*\" in *\"--max-depth 1\"*) printf './project-notes.md\\0./project.md.review.json\\0' ;; *) printf './archive/project.md\\0./archive/00-project-photo.svg\\0'; index=1; while [ $index -le 60 ]; do printf './archive/project-%02d.md\\0' \"$index\"; index=$((index + 1)); done ;; esac",
         );
 
         let commands = [OsStr::new("/webdir-test/missing-fd"), command.as_os_str()];
@@ -9360,8 +9357,11 @@ mod tests {
         assert_eq!(results.len(), MAX_FILE_SEARCH_RESULTS);
         assert_eq!(results[0].name, "project-notes.md");
         assert_eq!(results[0].depth, 0);
-        assert_eq!(results[1].depth, 1);
-        assert!(results[1..].iter().all(|result| result.depth > 0));
+        assert!(results
+            .iter()
+            .any(|result| result.name == "project.md.review.json"));
+        assert_eq!(results[1].depth, 0);
+        assert!(results[2..].iter().all(|result| result.depth > 0));
         let image = results.iter().find(|result| result.is_image).unwrap();
         assert_eq!(image.directory, "archive");
         assert_eq!(
