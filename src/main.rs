@@ -1801,10 +1801,10 @@ fn search_files_with_command(
     query: &str,
     access: &Access,
     depth_arguments: &[&str],
-    max_results: usize,
+    max_results: Option<usize>,
 ) -> io::Result<Vec<FileSearchResult>> {
-    let max_results_argument = max_results.to_string();
-    let output = Command::new(command)
+    let mut process = Command::new(command);
+    process
         .args([
             "--type",
             "file",
@@ -1815,9 +1815,12 @@ fn search_files_with_command(
             "--follow",
             "--print0",
         ])
-        .args(depth_arguments)
-        .arg("--max-results")
-        .arg(&max_results_argument)
+        .args(depth_arguments);
+    let max_results_argument = max_results.map(|limit| limit.to_string());
+    if let Some(limit) = &max_results_argument {
+        process.arg("--max-results").arg(limit);
+    }
+    let output = process
         .arg("--")
         .arg(query)
         .arg(".")
@@ -1868,7 +1871,9 @@ fn search_files_with_command(
             .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
             .then_with(|| left.open_href.cmp(&right.open_href))
     });
-    results.truncate(max_results);
+    if let Some(limit) = max_results {
+        results.truncate(limit);
+    }
     Ok(results)
 }
 
@@ -1906,10 +1911,10 @@ fn search_files_using_commands(
             query,
             access,
             &["--max-depth", "1"],
-            MAX_FILE_SEARCH_RESULTS,
+            None,
         ) {
             Ok(mut results) => {
-                let remaining = MAX_FILE_SEARCH_RESULTS - results.len();
+                let remaining = MAX_FILE_SEARCH_RESULTS.saturating_sub(results.len());
                 if remaining > 0 {
                     if let Ok(nested) = search_files_with_command(
                         command,
@@ -1918,7 +1923,7 @@ fn search_files_using_commands(
                         query,
                         access,
                         &["--min-depth", "2"],
-                        remaining,
+                        Some(remaining),
                     ) {
                         results.extend(nested);
                     }
@@ -9402,8 +9407,37 @@ mod tests {
         let arguments = fs::read_to_string(shared.join("search-args.txt")).unwrap();
         assert!(arguments.lines().any(|argument| argument == "--hidden"));
         assert!(arguments.lines().any(|argument| argument == "--follow"));
-        assert!(arguments.lines().any(|argument| argument == "50"));
         assert!(arguments.lines().any(|argument| argument == "49"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_search_does_not_limit_current_directory_matches() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let command = root.join("fake-fd");
+        write_search_command(
+            &command,
+            "printf '%s\\n' \"$@\" > search-args.txt; index=1; while [ $index -le 60 ]; do printf './local-%02d.txt\\0' \"$index\"; index=$((index + 1)); done",
+        );
+
+        let commands = [command.as_os_str()];
+        let results = search_files_using_commands(
+            &commands,
+            root,
+            Path::new(""),
+            "local",
+            &Access::default(),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(results.len(), 60);
+        assert!(results.iter().all(|result| result.depth == 0));
+        let arguments = fs::read_to_string(root.join("search-args.txt")).unwrap();
+        assert!(!arguments
+            .lines()
+            .any(|argument| argument == "--max-results"));
     }
 
     #[test]
