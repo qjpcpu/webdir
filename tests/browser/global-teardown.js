@@ -9,4 +9,5 @@ module.exports = async () => {
   for (const name of ['shortcut-folder', 'shortcut-folder-2', 'shortcut-folder-3', 'shortcut-folder-4']) {
     fs.rmSync(path.join(fixtures, name), {recursive: true, force: true});
   }
+  fs.rmSync(path.join(fixtures, 'search-nested'), {recursive: true, force: true});
 };

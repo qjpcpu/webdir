@@ -4,6 +4,7 @@ use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Cursor, Read, Seek, SeekFrom, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 use std::sync::OnceLock;
 
 use pulldown_cmark::{html, CowStr, Event, Options, Parser, Tag};
@@ -49,6 +50,7 @@ const YJS_JS: &[u8] = include_bytes!("../assets/yjs-13.6.32.min.js");
 const AUTH_PATH: &str = "/__webdir/auth";
 const INVALID_ACCESS_PATH: &str = "/__webdir/invalid-access";
 const AUTH_COOKIE_NAME: &str = "webdir_auth_token";
+const MAX_FILE_SEARCH_RESULTS: usize = 50;
 
 #[derive(Debug, PartialEq)]
 struct PortConfig {
@@ -584,6 +586,43 @@ fn handle_connection_with_auth(
                 500,
                 "Internal Server Error",
                 &format!("计算图片相似度失败：{error}\n"),
+                head_only,
+            ),
+        };
+    }
+    if mode.as_deref() == Some("file-search") {
+        if !matches!(method, "GET" | "HEAD") || !metadata.is_dir() {
+            return send_text(
+                &mut stream,
+                405,
+                "Method Not Allowed",
+                "请从目录页搜索文件\n",
+                head_only,
+            );
+        }
+        let query = query_parameter(query, "q").unwrap_or_default();
+        return match search_files(&canonical, &relative, &query, &access) {
+            Ok(Some(results)) => send_json(
+                &mut stream,
+                &FileSearchResponse {
+                    scope: "tree",
+                    results,
+                },
+                head_only,
+            ),
+            Ok(None) => send_json(
+                &mut stream,
+                &FileSearchResponse {
+                    scope: "directory",
+                    results: Vec::new(),
+                },
+                head_only,
+            ),
+            Err(error) => send_text(
+                &mut stream,
+                500,
+                "Internal Server Error",
+                &format!("搜索文件失败：{error}\n"),
                 head_only,
             ),
         };
@@ -1740,6 +1779,159 @@ struct DirectoryEntry {
     directory_favourite: bool,
 }
 
+#[derive(Debug, serde::Serialize)]
+struct FileSearchResult {
+    name: String,
+    directory: String,
+    open_href: String,
+    is_image: bool,
+    depth: usize,
+}
+
+#[derive(serde::Serialize)]
+struct FileSearchResponse {
+    scope: &'static str,
+    results: Vec<FileSearchResult>,
+}
+
+fn search_files_with_command(
+    command: &OsStr,
+    directory: &Path,
+    relative: &Path,
+    query: &str,
+    access: &Access,
+    depth_arguments: &[&str],
+    max_results: usize,
+) -> io::Result<Vec<FileSearchResult>> {
+    let max_results_argument = max_results.to_string();
+    let output = Command::new(command)
+        .args([
+            "--type",
+            "file",
+            "--fixed-strings",
+            "--ignore-case",
+            "--no-ignore",
+            "--hidden",
+            "--follow",
+            "--print0",
+        ])
+        .args(depth_arguments)
+        .arg("--max-results")
+        .arg(&max_results_argument)
+        .arg("--")
+        .arg(query)
+        .arg(".")
+        .current_dir(directory)
+        .output()?;
+    let mut results = Vec::new();
+    for bytes in output.stdout.split(|byte| *byte == 0) {
+        if bytes.is_empty() {
+            continue;
+        }
+        let path = PathBuf::from(String::from_utf8_lossy(bytes).into_owned());
+        let Some(local_path) = safe_relative_path(&path.to_string_lossy()) else {
+            continue;
+        };
+        let file_path = directory.join(&local_path);
+        if !access.allows(&file_path)
+            || review::is_review_sidecar(&file_path)
+            || gallery_comments::is_comments_file(&file_path)
+        {
+            continue;
+        }
+        let Some(name) = local_path.file_name().and_then(OsStr::to_str) else {
+            continue;
+        };
+        let parent = local_path.parent().unwrap_or(Path::new(""));
+        let entry_relative = relative.join(&local_path);
+        let href = url_for_path(&entry_relative, false);
+        let is_image = is_image_file(&file_path);
+        let open_href = if is_image {
+            let mut url = url_for_path(&relative.join(parent), true);
+            url.push_str("?view=gallery&open=");
+            url.push_str(&percent_encode_component(name));
+            url
+        } else {
+            href
+        };
+        results.push(FileSearchResult {
+            name: name.to_owned(),
+            directory: parent.to_string_lossy().replace('\\', "/"),
+            open_href,
+            is_image,
+            depth: parent.components().count(),
+        });
+    }
+    results.sort_by(|left, right| {
+        left.depth
+            .cmp(&right.depth)
+            .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+            .then_with(|| left.open_href.cmp(&right.open_href))
+    });
+    results.truncate(max_results);
+    Ok(results)
+}
+
+fn search_files(
+    directory: &Path,
+    relative: &Path,
+    query: &str,
+    access: &Access,
+) -> io::Result<Option<Vec<FileSearchResult>>> {
+    search_files_using_commands(
+        &[OsStr::new("fd"), OsStr::new("fdfind")],
+        directory,
+        relative,
+        query,
+        access,
+    )
+}
+
+fn search_files_using_commands(
+    commands: &[&OsStr],
+    directory: &Path,
+    relative: &Path,
+    query: &str,
+    access: &Access,
+) -> io::Result<Option<Vec<FileSearchResult>>> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+    for command in commands {
+        match search_files_with_command(
+            command,
+            directory,
+            relative,
+            query,
+            access,
+            &["--max-depth", "1"],
+            MAX_FILE_SEARCH_RESULTS,
+        ) {
+            Ok(mut results) => {
+                let remaining = MAX_FILE_SEARCH_RESULTS - results.len();
+                if remaining > 0 {
+                    if let Ok(nested) = search_files_with_command(
+                        command,
+                        directory,
+                        relative,
+                        query,
+                        access,
+                        &["--min-depth", "2"],
+                        remaining,
+                    ) {
+                        results.extend(nested);
+                    }
+                }
+                return Ok(Some(results));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(_) => continue,
+        }
+    }
+    Ok(None)
+}
+
 fn available_destination_path(directory: &Path, file_name: &OsStr) -> io::Result<PathBuf> {
     let target = directory.join(file_name);
     match fs::symlink_metadata(&target) {
@@ -2348,7 +2540,7 @@ fn render_directory_page_with_access(
         "<button class=\"directory-favourite-toggle\" id=\"directory-favourite-toggle\" type=\"button\" aria-pressed=\"false\">添加到收藏夹</button>"
     };
     Ok(access.page(format!(
-        "<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">\n<title>{title} · 文件浏览</title>\n<style>{DIRECTORY_CSS}</style>\n</head>\n<body>\n<main><nav class=\"breadcrumbs\" aria-label=\"当前位置\">{breadcrumbs}</nav>{directory_favourites}<header><p class=\"eyebrow\">WEBDIR / DIRECTORY</p><h1>{title}</h1><p class=\"summary\">{directory_count} 个目录 · {file_count} 个文件</p>{directory_favourite_toggle}{gallery_toggle}<div class=\"directory-browser-tools\"><input class=\"directory-search\" id=\"directory-search\" type=\"search\" aria-label=\"搜索文件名\" placeholder=\"搜索当前目录的文件名…\" autocomplete=\"off\"><label class=\"directory-sort\">排序<select id=\"directory-sort\" aria-label=\"目录排序\"><option value=\"name\">按名称</option><option value=\"modified\">按修改时间</option></select></label></div>{gallery_tools}<p class=\"directory-notice\" id=\"directory-notice\" role=\"status\" hidden></p></header><section class=\"listing\" aria-label=\"目录内容\">{rows}</section></main><nav class=\"scroll-jumps\" id=\"scroll-jumps\" aria-label=\"页面快速跳转\" hidden><button id=\"scroll-to-top\" type=\"button\" aria-label=\"回到顶部\" title=\"回到顶部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 14 6-6 6 6\"></path><path d=\"M6 19h12\"></path></svg></button><button id=\"scroll-to-bottom\" type=\"button\" aria-label=\"回到底部\" title=\"回到底部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 10 6 6 6-6\"></path><path d=\"M6 5h12\"></path></svg></button></nav><div class=\"image-lightbox\" id=\"image-lightbox\" role=\"dialog\" aria-modal=\"true\" aria-label=\"图片预览\" hidden><button class=\"lightbox-close\" type=\"button\" aria-label=\"关闭图片预览\">×</button><div class=\"lightbox-shell\"><div class=\"lightbox-position\" id=\"lightbox-position\" aria-live=\"polite\"></div><nav class=\"lightbox-filmstrip\" id=\"lightbox-filmstrip\" aria-label=\"图片缩略图导航\"></nav><figure><div class=\"lightbox-stage\"><img class=\"lightbox-image\" alt=\"\"><div class=\"favourite-burst\" id=\"favourite-burst\" aria-hidden=\"true\" hidden><svg viewBox=\"0 0 24 24\"><path d=\"M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21l7.7-7.5 1.1-1.1a5.5 5.5 0 0 0 0-7.8Z\"></path></svg></div></div><figcaption><span class=\"lightbox-name\"></span><span class=\"lightbox-controls\"><button class=\"preview-step\" id=\"preview-previous\" type=\"button\" aria-label=\"上一张\" title=\"上一张\">←</button><button class=\"favourite-toggle\" id=\"favourite-toggle\" type=\"button\" aria-label=\"点赞 (f)\" aria-pressed=\"false\" title=\"点赞 (f)\">♡</button><button class=\"preview-step\" id=\"preview-next\" type=\"button\" aria-label=\"下一张\" title=\"下一张\">→</button><button class=\"carousel-toggle\" id=\"carousel-toggle\" type=\"button\" aria-label=\"进入轮播 (p)\" aria-pressed=\"false\" title=\"进入轮播 (p)\">轮播</button></span></figcaption><p class=\"lightbox-error\" id=\"favourite-error\" role=\"status\" hidden></p><p class=\"lightbox-error\" id=\"image-tag-error\" role=\"status\" hidden></p></figure></div>{GALLERY_DELETE_DIALOG}</div>{GALLERY_BATCH_DELETE_DIALOG}\n<script>{FILE_SHORTCUT_JS}</script><script>{DIRECTORY_JS}</script>\n</body>\n</html>"
+        "<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">\n<title>{title} · 文件浏览</title>\n<style>{DIRECTORY_CSS}</style>\n</head>\n<body>\n<main><nav class=\"breadcrumbs\" aria-label=\"当前位置\">{breadcrumbs}</nav>{directory_favourites}<header><p class=\"eyebrow\">WEBDIR / DIRECTORY</p><h1>{title}</h1><p class=\"summary\">{directory_count} 个目录 · {file_count} 个文件</p>{directory_favourite_toggle}{gallery_toggle}<div class=\"directory-browser-tools\"><div class=\"file-search\" id=\"file-search\"><label class=\"file-search-box\" for=\"file-search-input\"><svg viewBox=\"0 0 32 18\" aria-hidden=\"true\"><circle cx=\"9\" cy=\"10\" r=\"6\"></circle><circle cx=\"23\" cy=\"10\" r=\"6\"></circle><path d=\"M15 9.5c1.1-1 2.9-1 4 0M3 8 1 6M29 8l2-2\"></path></svg><input id=\"file-search-input\" type=\"search\" aria-label=\"搜索当前文件夹及子文件夹中的文件\" aria-controls=\"file-search-results\" aria-expanded=\"false\" placeholder=\"搜索所有文件…\" autocomplete=\"off\"><kbd>⌘ K</kbd></label><section class=\"file-search-panel\" id=\"file-search-panel\" aria-label=\"文件搜索结果\" hidden><div class=\"file-search-status\" id=\"file-search-status\" role=\"status\">输入文件名开始搜索</div><div class=\"file-search-results\" id=\"file-search-results\" role=\"listbox\"></div></section></div><label class=\"directory-sort\">排序<select id=\"directory-sort\" aria-label=\"目录排序\"><option value=\"name\">按名称</option><option value=\"modified\">按修改时间</option></select></label></div>{gallery_tools}<p class=\"directory-notice\" id=\"directory-notice\" role=\"status\" hidden></p></header><section class=\"listing\" aria-label=\"目录内容\">{rows}</section></main><nav class=\"scroll-jumps\" id=\"scroll-jumps\" aria-label=\"页面快速跳转\" hidden><button id=\"scroll-to-top\" type=\"button\" aria-label=\"回到顶部\" title=\"回到顶部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 14 6-6 6 6\"></path><path d=\"M6 19h12\"></path></svg></button><button id=\"scroll-to-bottom\" type=\"button\" aria-label=\"回到底部\" title=\"回到底部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 10 6 6 6-6\"></path><path d=\"M6 5h12\"></path></svg></button></nav><div class=\"image-lightbox\" id=\"image-lightbox\" role=\"dialog\" aria-modal=\"true\" aria-label=\"图片预览\" hidden><button class=\"lightbox-close\" type=\"button\" aria-label=\"关闭图片预览\">×</button><div class=\"lightbox-shell\"><div class=\"lightbox-position\" id=\"lightbox-position\" aria-live=\"polite\"></div><nav class=\"lightbox-filmstrip\" id=\"lightbox-filmstrip\" aria-label=\"图片缩略图导航\"></nav><figure><div class=\"lightbox-stage\"><img class=\"lightbox-image\" alt=\"\"><div class=\"favourite-burst\" id=\"favourite-burst\" aria-hidden=\"true\" hidden><svg viewBox=\"0 0 24 24\"><path d=\"M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21l7.7-7.5 1.1-1.1a5.5 5.5 0 0 0 0-7.8Z\"></path></svg></div></div><figcaption><span class=\"lightbox-name\"></span><span class=\"lightbox-controls\"><button class=\"preview-step\" id=\"preview-previous\" type=\"button\" aria-label=\"上一张\" title=\"上一张\">←</button><button class=\"favourite-toggle\" id=\"favourite-toggle\" type=\"button\" aria-label=\"点赞 (f)\" aria-pressed=\"false\" title=\"点赞 (f)\">♡</button><button class=\"preview-step\" id=\"preview-next\" type=\"button\" aria-label=\"下一张\" title=\"下一张\">→</button><button class=\"carousel-toggle\" id=\"carousel-toggle\" type=\"button\" aria-label=\"进入轮播 (p)\" aria-pressed=\"false\" title=\"进入轮播 (p)\">轮播</button></span></figcaption><p class=\"lightbox-error\" id=\"favourite-error\" role=\"status\" hidden></p><p class=\"lightbox-error\" id=\"image-tag-error\" role=\"status\" hidden></p></figure></div>{GALLERY_DELETE_DIALOG}</div>{GALLERY_BATCH_DELETE_DIALOG}\n<script>{FILE_SHORTCUT_JS}</script><script>{DIRECTORY_JS}</script>\n</body>\n</html>"
     )))
 }
 
@@ -3355,6 +3547,122 @@ window.addEventListener('beforeunload', () => {
   history.replaceState({...history.state, scrollX, scrollY}, '');
 });
 
+const fileSearch = document.querySelector('#file-search');
+const fileSearchInput = document.querySelector('#file-search-input');
+const fileSearchPanel = document.querySelector('#file-search-panel');
+const fileSearchStatus = document.querySelector('#file-search-status');
+const fileSearchResults = document.querySelector('#file-search-results');
+let fileSearchTimer = null;
+let fileSearchRequest = 0;
+let fileSearchSelected = -1;
+const fileSearchLinks = () => Array.from(fileSearchResults.querySelectorAll('.file-search-result'));
+const selectFileSearchResult = index => {
+  const links = fileSearchLinks();
+  fileSearchSelected = links.length && index >= 0 ? Math.min(index, links.length - 1) : -1;
+  links.forEach((link, itemIndex) => link.setAttribute('aria-selected', String(itemIndex === fileSearchSelected)));
+  links[fileSearchSelected]?.scrollIntoView({block: 'nearest'});
+};
+const openFileSearch = () => {
+  fileSearchPanel.hidden = false;
+  fileSearchInput.setAttribute('aria-expanded', 'true');
+};
+const closeFileSearch = () => {
+  fileSearchPanel.hidden = true;
+  fileSearchInput.setAttribute('aria-expanded', 'false');
+  selectFileSearchResult(-1);
+};
+const renderFileSearchResults = (results, scope = 'tree') => {
+  fileSearchResults.replaceChildren();
+  fileSearchSelected = -1;
+  if (scope === 'directory') {
+    closeFileSearch();
+    return;
+  }
+  fileSearchStatus.textContent = results.length ? `${results.length} 个匹配文件` : '没有找到匹配的文件';
+  results.forEach(result => {
+    const link = document.createElement('a');
+    link.className = 'file-search-result';
+    link.href = result.open_href;
+    link.role = 'option';
+    link.setAttribute('aria-selected', 'false');
+    const icon = document.createElement('span');
+    icon.className = 'file-search-result-icon';
+    icon.textContent = result.is_image ? 'IMG' : (result.name.split('.').pop()?.slice(0, 4).toUpperCase() || 'FILE');
+    const copy = document.createElement('span');
+    copy.className = 'file-search-result-copy';
+    const name = document.createElement('span');
+    name.className = 'file-search-result-name';
+    name.textContent = result.name;
+    const path = document.createElement('span');
+    path.className = 'file-search-result-path';
+    path.textContent = result.directory ? `./${result.directory}` : '当前目录';
+    copy.append(name, path);
+    link.append(icon, copy);
+    if (result.depth === 0) {
+      const current = document.createElement('span');
+      current.className = 'file-search-result-current';
+      current.textContent = '当前';
+      link.append(current);
+    }
+    fileSearchResults.append(link);
+  });
+};
+const runFileSearch = async () => {
+  const query = fileSearchInput.value.trim();
+  const request = ++fileSearchRequest;
+  if (!query) {
+    fileSearchResults.replaceChildren();
+    fileSearchStatus.textContent = '输入文件名开始搜索';
+    return;
+  }
+  fileSearchStatus.textContent = '正在搜索当前文件夹及子文件夹…';
+  try {
+    const url = new URL(location.pathname, location.origin);
+    url.searchParams.set('mode', 'file-search');
+    url.searchParams.set('q', query);
+    const response = await fetch(url);
+    if (!response.ok) throw new Error((await response.text()).trim() || '搜索失败');
+    const payload = await response.json();
+    if (request !== fileSearchRequest) return;
+    renderFileSearchResults(payload.results, payload.scope);
+  } catch (error) {
+    if (request !== fileSearchRequest) return;
+    fileSearchResults.replaceChildren();
+    fileSearchStatus.textContent = error.message;
+  }
+};
+fileSearchInput.addEventListener('focus', openFileSearch);
+fileSearchInput.addEventListener('input', () => {
+  openFileSearch();
+  clearTimeout(fileSearchTimer);
+  fileSearchTimer = setTimeout(runFileSearch, 220);
+});
+fileSearchInput.addEventListener('keydown', event => {
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault();
+    const delta = event.key === 'ArrowDown' ? 1 : -1;
+    selectFileSearchResult(fileSearchSelected < 0 ? (delta > 0 ? 0 : fileSearchLinks().length - 1) : fileSearchSelected + delta);
+  } else if (event.key === 'Enter' && fileSearchSelected >= 0) {
+    event.preventDefault();
+    fileSearchLinks()[fileSearchSelected]?.click();
+  } else if (event.key === 'Escape') {
+    event.preventDefault();
+    closeFileSearch();
+    fileSearchInput.blur();
+  }
+});
+document.addEventListener('click', event => {
+  if (!fileSearch.contains(event.target)) closeFileSearch();
+});
+document.addEventListener('keydown', event => {
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+    event.preventDefault();
+    openFileSearch();
+    fileSearchInput.focus();
+    fileSearchInput.select();
+  }
+});
+
 const directoryNotice = document.querySelector('#directory-notice');
 const directoryFavouriteToggle = document.querySelector('#directory-favourite-toggle');
 const favouritePathname = path => new URL(path, location.origin).pathname;
@@ -3687,7 +3995,6 @@ if (history.state?.moveNotice) {
 }
 
 const listing = document.querySelector('.listing');
-const directorySearch = document.querySelector('#directory-search');
 const directorySort = document.querySelector('#directory-sort');
 const directoryEmpty = document.querySelector('#directory-empty');
 const imageFilter = document.querySelector('#image-filter');
@@ -3709,8 +4016,8 @@ const refreshImageFilters = () => {
   imageFilter.value = selectedImageFilter;
 };
 refreshImageFilters();
-if (typeof history.state?.directorySearch === 'string') {
-  directorySearch.value = history.state.directorySearch;
+if (typeof history.state?.fileSearch === 'string') {
+  fileSearchInput.value = history.state.fileSearch;
 }
 if (document.querySelector('#gallery-toggle')) {
   const option = document.createElement('option');
@@ -3768,7 +4075,7 @@ const sortDirectory = async () => {
   entries.forEach(entry => listing.insertBefore(entry, directoryEmpty));
 };
 const filterDirectory = () => {
-  const query = directorySearch.value.trim().toLowerCase();
+  const query = fileSearchInput.value.trim().toLowerCase();
   const markedOnly = !!imageFilter && selectedImageFilter !== 'all';
   let directoryCount = 0;
   let fileCount = 0;
@@ -3790,8 +4097,8 @@ const filterDirectory = () => {
     : query ? '没有匹配的文件或目录' : '这个目录是空的';
   document.dispatchEvent(new Event('gallery-filter-change'));
 };
-directorySearch.addEventListener('input', () => {
-  history.replaceState({...history.state, directorySearch: directorySearch.value}, '');
+fileSearchInput.addEventListener('input', () => {
+  history.replaceState({...history.state, fileSearch: fileSearchInput.value}, '');
   filterDirectory();
 });
 directorySort.addEventListener('change', () => {
@@ -3800,6 +4107,7 @@ directorySort.addEventListener('change', () => {
 });
 sortDirectory();
 filterDirectory();
+if (fileSearchInput.value.trim()) runFileSearch();
 
 const scrollJumps = document.querySelector('#scroll-jumps');
 const scrollToTop = scrollJumps.querySelector('#scroll-to-top');
@@ -5513,6 +5821,17 @@ if (galleryToggle) {
   const directoryView = new URLSearchParams(location.search).get('view')
     ?? localStorage.getItem(DIRECTORY_VIEW_KEY);
   setGallery(directoryView === 'gallery', false);
+  const requestedImage = new URLSearchParams(location.search).get('open');
+  if (requestedImage) {
+    const entry = imageModel().find(item => entryName(item) === requestedImage);
+    if (entry) {
+      setGallery(true, false);
+      openLightbox(entry);
+      const url = new URL(location.href);
+      url.searchParams.delete('open');
+      history.replaceState(history.state, '', url);
+    }
+  }
   updateImageControls();
   window.addEventListener('popstate', () => {
     if (!mobileTouch.matches) return;
@@ -5580,20 +5899,35 @@ main { width:min(100% - 2rem,980px); margin:0 auto; padding:clamp(1.5rem,6vw,5re
 .directory-favourite button:hover { color:var(--accent); background:var(--accent-soft); }
 .directory-favourite .directory-favourite-drag { border-right:1px solid var(--line); border-left:0; font-size:.82rem; cursor:grab; touch-action:none; user-select:none; }
 .directory-favourite .directory-favourite-drag:active { cursor:grabbing; }
-main>header { position:relative; padding:clamp(1.4rem,4vw,2.5rem); overflow:hidden; border:1px solid var(--line); border-radius:1.1rem 1.1rem 0 0; background:var(--surface); }
-main>header::after { position:absolute; right:-1.4rem; bottom:-3.2rem; width:9rem; height:7rem; border:1.1rem solid var(--accent-soft); border-radius:1.2rem; content:""; transform:rotate(-8deg); }
-.view-toggle { position:absolute; z-index:2; right:clamp(1rem,3vw,2rem); top:clamp(1rem,3vw,2rem); display:flex; align-items:center; gap:.45rem; min-height:2.35rem; padding:.55rem .8rem; border:1px solid var(--line); border-radius:.65rem; color:var(--ink); background:var(--surface); box-shadow:0 6px 18px rgba(54,59,92,.08); font:700 .75rem/1 ui-sans-serif,-apple-system,sans-serif; cursor:pointer; }
+main>header { position:relative; padding:clamp(1.4rem,4vw,2.5rem); border:1px solid var(--line); border-radius:1.1rem 1.1rem 0 0; background:var(--surface); }
+main>header::after { position:absolute; right:-1.4rem; bottom:-3.2rem; width:9rem; height:7rem; border:1.1rem solid var(--accent-soft); border-radius:1.2rem; content:""; transform:rotate(-8deg); pointer-events:none; }
+.view-toggle { position:absolute; z-index:2; right:clamp(1rem,3vw,2rem); top:4.65rem; display:flex; align-items:center; gap:.45rem; min-height:2.35rem; padding:.55rem .8rem; border:1px solid var(--line); border-radius:.65rem; color:var(--ink); background:var(--surface); box-shadow:0 6px 18px rgba(54,59,92,.08); font:700 .75rem/1 ui-sans-serif,-apple-system,sans-serif; cursor:pointer; }
 .view-toggle:hover,.view-toggle[aria-pressed="true"] { border-color:var(--accent); color:var(--accent); background:var(--accent-soft); }
 .view-toggle span { font-size:1rem; }
+.file-search { position:relative; z-index:8; min-width:0; flex:1; }
+.file-search-box { display:flex; align-items:center; height:2.75rem; overflow:hidden; border:1px solid color-mix(in srgb,var(--accent) 26%,var(--line)); border-radius:999px; background:color-mix(in srgb,var(--surface) 94%,var(--accent-soft)); box-shadow:0 9px 26px rgba(54,59,92,.12),inset 0 0 0 1px color-mix(in srgb,var(--surface) 65%,transparent); transition:border-color .18s ease,box-shadow .18s ease,transform .18s ease; }
+.file-search-box:focus-within { border-color:var(--accent); box-shadow:0 12px 34px rgba(54,59,92,.18),0 0 0 3px color-mix(in srgb,var(--accent) 13%,transparent); transform:translateY(-1px); }
+.file-search-box svg { flex:0 0 auto; width:2rem; margin-left:.72rem; fill:none; stroke:var(--accent); stroke-width:1.6; stroke-linecap:round; }
+.file-search-box input { min-width:0; flex:1; height:100%; padding:0 .55rem; border:0; color:var(--ink); background:transparent; font:600 .78rem/1 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans-serif; outline:0; }
+.file-search-box input::placeholder { color:var(--muted); font-weight:500; }
+.file-search-box kbd { flex:0 0 auto; margin-right:.55rem; padding:.28rem .4rem; border:1px solid var(--line); border-radius:.38rem; color:var(--muted); background:var(--paper); box-shadow:0 1px 0 var(--line); font:650 .61rem/1 ui-monospace,SFMono-Regular,Consolas,monospace; }
+.file-search-panel { position:relative; max-height:min(62vh,30rem); margin-top:.5rem; overflow:auto; padding:.42rem; border:1px solid var(--line); border-radius:.9rem; background:color-mix(in srgb,var(--surface) 96%,transparent); box-shadow:0 18px 42px rgba(32,35,51,.15); }
+.file-search-status { padding:.85rem .8rem; color:var(--muted); font-size:.72rem; }
+.file-search-results { display:grid; gap:.22rem; }
+.file-search-result { display:grid; grid-template-columns:2.15rem minmax(0,1fr) auto; align-items:center; gap:.65rem; min-height:3.55rem; padding:.52rem .65rem; border-radius:.62rem; color:var(--ink); text-decoration:none; }
+.file-search-result:hover,.file-search-result[aria-selected="true"] { color:var(--accent); background:var(--accent-soft); }
+.file-search-result-icon { display:grid; place-items:center; width:2.15rem; height:2.15rem; border:1px solid var(--line); border-radius:.55rem; color:var(--accent); background:var(--surface); font:750 .62rem/1 ui-monospace,SFMono-Regular,Consolas,monospace; }
+.file-search-result-copy { display:grid; min-width:0; gap:.25rem; }
+.file-search-result-name { overflow:hidden; font:650 .78rem/1.15 ui-monospace,SFMono-Regular,Consolas,monospace; text-overflow:ellipsis; white-space:nowrap; }
+.file-search-result-path { color:var(--muted); font-size:.66rem; line-height:1.35; overflow-wrap:anywhere; }
+.file-search-result-current { padding:.25rem .4rem; border-radius:.35rem; color:var(--accent); background:var(--surface); font:700 .58rem/1 ui-sans-serif,-apple-system,sans-serif; }
 .eyebrow { margin:0 0 .7rem; color:var(--accent); font:700 .72rem/1 ui-monospace,SFMono-Regular,Consolas,monospace; letter-spacing:.14em; }
 h1 { position:relative; z-index:1; margin:0; overflow-wrap:anywhere; font-family:"Iowan Old Style","Noto Serif SC","Songti SC",Georgia,serif; font-size:clamp(2rem,6vw,3.8rem); line-height:1.08; letter-spacing:-.035em; }
 .summary { position:relative; z-index:1; margin:.8rem 0 0; color:var(--muted); font-size:.88rem; }
 .directory-favourite-toggle { position:relative; z-index:2; min-height:2rem; margin-top:.85rem; padding:.38rem .65rem; border:1px solid var(--line); border-radius:.45rem; color:var(--muted); background:var(--surface); font:600 .72rem/1 ui-sans-serif,-apple-system,sans-serif; cursor:pointer; }
 .directory-favourite-toggle:hover,.directory-favourite-toggle[aria-pressed="true"] { border-color:var(--accent); color:var(--accent); background:var(--accent-soft); }
 .directory-favourite-toggle:disabled { opacity:.5; cursor:wait; }
-.directory-browser-tools { position:relative; z-index:1; display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:stretch; gap:.55rem; margin-top:1.25rem; }
-.directory-search { display:block; width:100%; min-width:0; padding:.75rem .9rem; border:1px solid var(--line); border-radius:.65rem; color:var(--ink); background:var(--paper); font:inherit; }
-.directory-search::placeholder { color:var(--muted); }
+.directory-browser-tools { position:relative; z-index:3; display:flex; align-items:flex-start; gap:.75rem; margin-top:1.25rem; }
 .directory-sort { display:flex; align-items:center; gap:.45rem; padding:.35rem .4rem .35rem .7rem; border:1px solid var(--line); border-radius:.65rem; color:var(--muted); background:var(--paper); font:650 .72rem/1 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans-serif; white-space:nowrap; }
 .directory-sort:focus-within { border-color:var(--accent); box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 18%,transparent); }
 .directory-sort select { min-height:2rem; padding:0 1.7rem 0 .55rem; border:0; border-left:1px solid var(--line); color:var(--ink); background:transparent; font:inherit; cursor:pointer; outline:0; }
@@ -5828,7 +6162,7 @@ h1 { position:relative; z-index:1; margin:0; overflow-wrap:anywhere; font-family
 .empty span { font:300 3rem/1 ui-monospace,SFMono-Regular,Consolas,monospace; }
 .empty p { margin:.8rem 0 0; }
 :focus-visible { outline:3px solid color-mix(in srgb,var(--accent) 55%,transparent); outline-offset:-3px; }
-@media (max-width:650px) { main,.gallery-mode main { width:100%; padding:1rem; } main>header { padding:1.5rem 1.1rem; } .view-toggle { position:relative; right:auto; top:auto; width:max-content; margin-top:1rem; } .directory-browser-tools { grid-template-columns:1fr; } .directory-sort { justify-self:end; } .entry { grid-template-columns:2.4rem minmax(0,1fr) auto; padding-inline:1rem; } .kind,.arrow { display:none; } .detail { grid-column:3; } .folder .detail { display:none; } .folder-favourite-toggle { position:static; grid-column:3; justify-self:end; } .entry.image .glyph { width:2.4rem; height:2.4rem; } .listing.gallery { grid-template-columns:repeat(auto-fill,minmax(145px,1fr)); gap:.65rem; padding:.65rem; } .gallery .entry { grid-template-columns:minmax(0,1fr); grid-template-rows:8.5rem auto auto; padding:.6rem; } .gallery .entry:hover { padding:.6rem; } .gallery .entry.image .glyph { width:100%; height:100%; } .gallery .detail { grid-column:1; grid-row:3; justify-self:start; } .scroll-jumps { right:max(.4rem,env(safe-area-inset-right)); } .scroll-jumps button { width:2.8rem; height:2.8rem; } .image-lightbox { padding:max(.7rem,env(safe-area-inset-top)) max(.7rem,env(safe-area-inset-right)) max(.7rem,env(safe-area-inset-bottom)) max(.7rem,env(safe-area-inset-left)); } .lightbox-shell { gap:.45rem; } .lightbox-filmstrip { grid-template-columns:repeat(5,3.35rem); gap:.25rem; } .filmstrip-slot { width:3.35rem; } .filmstrip-slot[data-distance="3"] { display:none; } .image-lightbox figcaption { flex-wrap:wrap; } .lightbox-name { width:100%; text-align:center; } .lightbox-controls { gap:.25rem; } .preview-step,.carousel-toggle,.comment-toggle,.viewer-more-toggle { min-width:2.8rem; width:2.8rem; height:2.8rem; } .favourite-toggle { width:2.9rem; height:2.9rem; } .gallery-comments { inset:auto max(.45rem,env(safe-area-inset-right)) max(.45rem,env(safe-area-inset-bottom)) max(.45rem,env(safe-area-inset-left)); width:auto; height:min(92dvh,42rem); border-radius:1.15rem; animation-name:gallery-comments-mobile-in; } @keyframes gallery-comments-mobile-in { from { opacity:0; transform:translateY(1.5rem) scale(.985); } } .gallery-comment-composer textarea { min-height:4.8rem; } }
+@media (max-width:650px) { main,.gallery-mode main { width:100%; padding:1rem; } main>header { padding:1.5rem 1.1rem; } .directory-browser-tools { flex-wrap:wrap; } .file-search { flex-basis:100%; } .file-search-panel { max-height:58vh; } .file-search-box kbd { display:none; } .directory-sort { margin-left:auto; } .view-toggle { position:relative; right:auto; top:auto; width:max-content; margin-top:1rem; } .entry { grid-template-columns:2.4rem minmax(0,1fr) auto; padding-inline:1rem; } .kind,.arrow { display:none; } .detail { grid-column:3; } .folder .detail { display:none; } .folder-favourite-toggle { position:static; grid-column:3; justify-self:end; } .entry.image .glyph { width:2.4rem; height:2.4rem; } .listing.gallery { grid-template-columns:repeat(auto-fill,minmax(145px,1fr)); gap:.65rem; padding:.65rem; } .gallery .entry { grid-template-columns:minmax(0,1fr); grid-template-rows:8.5rem auto auto; padding:.6rem; } .gallery .entry:hover { padding:.6rem; } .gallery .entry.image .glyph { width:100%; height:100%; } .gallery .detail { grid-column:1; grid-row:3; justify-self:start; } .scroll-jumps { right:max(.4rem,env(safe-area-inset-right)); } .scroll-jumps button { width:2.8rem; height:2.8rem; } .image-lightbox { padding:max(.7rem,env(safe-area-inset-top)) max(.7rem,env(safe-area-inset-right)) max(.7rem,env(safe-area-inset-bottom)) max(.7rem,env(safe-area-inset-left)); } .lightbox-shell { gap:.45rem; } .lightbox-filmstrip { grid-template-columns:repeat(5,3.35rem); gap:.25rem; } .filmstrip-slot { width:3.35rem; } .filmstrip-slot[data-distance="3"] { display:none; } .image-lightbox figcaption { flex-wrap:wrap; } .lightbox-name { width:100%; text-align:center; } .lightbox-controls { gap:.25rem; } .preview-step,.carousel-toggle,.comment-toggle,.viewer-more-toggle { min-width:2.8rem; width:2.8rem; height:2.8rem; } .favourite-toggle { width:2.9rem; height:2.9rem; } .gallery-comments { inset:auto max(.45rem,env(safe-area-inset-right)) max(.45rem,env(safe-area-inset-bottom)) max(.45rem,env(safe-area-inset-left)); width:auto; height:min(92dvh,42rem); border-radius:1.15rem; animation-name:gallery-comments-mobile-in; } @keyframes gallery-comments-mobile-in { from { opacity:0; transform:translateY(1.5rem) scale(.985); } } .gallery-comment-composer textarea { min-height:4.8rem; } }
 @media (max-height:620px) { .gallery-comments>header { padding:.7rem .9rem .6rem; } .gallery-comments>header button { width:2.15rem; height:2.15rem; } .gallery-comments-image { grid-template-columns:2.7rem minmax(0,1fr) auto; gap:.65rem; padding:.55rem .9rem; } .gallery-comments-image img { width:2.7rem; height:2.7rem; } .gallery-comment-empty { gap:.25rem; padding:.75rem; } .gallery-comment-composer { max-height:58dvh; gap:.5rem; padding:.7rem .9rem; } .gallery-comment-composer textarea { min-height:4rem; } .gallery-comments>footer { display:none; } }
 @media (max-width:1024px),(hover:none) and (pointer:coarse) { .preview-step,.carousel-toggle,.comment-toggle,.viewer-more-toggle,.viewer-tools button,.shortcut-help-toggle { min-width:3rem; height:3rem; } .lightbox-controls { width:100%; min-width:0; flex-shrink:1; justify-content:center; flex-wrap:wrap; } .viewer-extras,.viewer-tools { width:100%; justify-content:center; border:0; } .image-info,.shortcut-help { left:50%; right:auto; bottom:8.7rem; width:max-content; max-width:calc(100vw - 2rem); transform:translateX(-50%); } }
 @media (hover:none) and (pointer:coarse) { .listing.gallery .entry.image,.listing.gallery .entry.image:hover { display:block; padding:0; } .listing.gallery .entry.image::after,.listing.gallery .entry.image .entry-name,.listing.gallery .entry.image .detail { opacity:1; transform:none; } .image-lightbox figcaption { padding-bottom:max(.2rem,env(safe-area-inset-bottom)); } }
@@ -8958,6 +9292,118 @@ mod tests {
         assert!(should_use_gallery(1, 5));
         assert!(!should_use_gallery(0, 5));
         assert!(!should_use_gallery(0, 0));
+    }
+
+    #[test]
+    fn unavailable_search_commands_fall_back_to_the_current_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let commands = [
+            OsStr::new("/webdir-test/missing-fd"),
+            OsStr::new("/webdir-test/missing-fdfind"),
+        ];
+
+        let results = search_files_using_commands(
+            &commands,
+            directory.path(),
+            Path::new(""),
+            "notes",
+            &Access::default(),
+        )
+        .unwrap();
+
+        assert!(results.is_none());
+    }
+
+    #[cfg(unix)]
+    fn write_search_command(path: &Path, body: &str) {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_search_prioritizes_current_files_and_builds_gallery_links() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        fs::create_dir(root.join("archive")).unwrap();
+        fs::write(root.join("project-notes.md"), "current").unwrap();
+        fs::write(root.join("archive/project.md"), "nested").unwrap();
+        fs::write(
+            root.join("archive/00-project-photo.svg"),
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"/>",
+        )
+        .unwrap();
+        let command = root.join("fake-fd");
+        write_search_command(
+            &command,
+            "case \"$*\" in *\"--max-depth 1\"*) printf './project-notes.md\\0' ;; *) printf './archive/project.md\\0./archive/00-project-photo.svg\\0'; index=1; while [ $index -le 60 ]; do printf './archive/project-%02d.md\\0' \"$index\"; index=$((index + 1)); done ;; esac",
+        );
+
+        let commands = [OsStr::new("/webdir-test/missing-fd"), command.as_os_str()];
+        let results = search_files_using_commands(
+            &commands,
+            root,
+            Path::new(""),
+            "project",
+            &Access::default(),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(results.len(), MAX_FILE_SEARCH_RESULTS);
+        assert_eq!(results[0].name, "project-notes.md");
+        assert_eq!(results[0].depth, 0);
+        assert_eq!(results[1].depth, 1);
+        assert!(results[1..].iter().all(|result| result.depth > 0));
+        let image = results.iter().find(|result| result.is_image).unwrap();
+        assert_eq!(image.directory, "archive");
+        assert_eq!(
+            image.open_href,
+            "/archive/?view=gallery&open=00-project-photo.svg"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_search_follows_links_but_filters_results_outside_a_share() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let shared = root.join("shared");
+        let private = root.join("private");
+        fs::create_dir(&shared).unwrap();
+        fs::create_dir(&private).unwrap();
+        fs::write(shared.join("allowed.txt"), "allowed").unwrap();
+        fs::write(private.join("private.txt"), "private").unwrap();
+        std::os::unix::fs::symlink(&private, shared.join("linked-private")).unwrap();
+        let command = root.join("fake-fd");
+        write_search_command(
+            &command,
+            "printf '%s\\n' \"$@\" >> search-args.txt; case \"$*\" in *\"--max-depth 1\"*) printf './allowed.txt\\0' ;; *) printf './linked-private/private.txt\\0' ;; esac; printf 'Permission denied\\n' >&2; exit 1",
+        );
+        let access = Access {
+            can_share: false,
+            scope: Some(sharing::Scope {
+                relative: PathBuf::from("shared"),
+                canonical: fs::canonicalize(&shared).unwrap(),
+            }),
+        };
+
+        let commands = [command.as_os_str()];
+        let results =
+            search_files_using_commands(&commands, &shared, Path::new("shared"), "txt", &access)
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "allowed.txt");
+        assert_eq!(results[0].open_href, "/shared/allowed.txt");
+        let arguments = fs::read_to_string(shared.join("search-args.txt")).unwrap();
+        assert!(arguments.lines().any(|argument| argument == "--hidden"));
+        assert!(arguments.lines().any(|argument| argument == "--follow"));
+        assert!(arguments.lines().any(|argument| argument == "50"));
+        assert!(arguments.lines().any(|argument| argument == "49"));
     }
 
     #[test]

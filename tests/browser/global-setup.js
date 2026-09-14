@@ -10,4 +10,12 @@ module.exports = async () => {
     fs.rmSync(path.join(fixtures, name), {recursive: true, force: true});
     fs.mkdirSync(path.join(fixtures, name));
   }
+  const searchDirectory = path.join(fixtures, 'search-nested');
+  fs.rmSync(searchDirectory, {recursive: true, force: true});
+  fs.mkdirSync(searchDirectory);
+  fs.copyFileSync(path.join(fixtures, '03-square.svg'), path.join(searchDirectory, 'nested-portrait.svg'));
+  fs.writeFileSync(path.join(searchDirectory, 'portrait-notes.txt'), 'nested search result\n');
+  fs.writeFileSync(path.join(searchDirectory, '.hidden-portrait.txt'), 'hidden file\n');
+  fs.mkdirSync(path.join(searchDirectory, '.hidden-directory'));
+  fs.writeFileSync(path.join(searchDirectory, '.hidden-directory', 'portrait-secret.txt'), 'hidden directory\n');
 };

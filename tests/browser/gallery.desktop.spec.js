@@ -35,13 +35,13 @@ test('sorting works in gallery and list views and drives preview order', async (
 
 test('directory search survives a page reload', async ({page}) => {
   await page.goto('/?view=gallery');
-  await page.locator('#directory-search').fill('landscape');
+  await page.locator('#file-search-input').fill('landscape');
   await expect(page.locator('.listing > .entry.image:visible')).toHaveCount(1);
   await expect(page.locator('.listing > .entry.image:visible .entry-name')).toHaveText('02-landscape.svg');
 
   await page.reload();
 
-  await expect(page.locator('#directory-search')).toHaveValue('landscape');
+  await expect(page.locator('#file-search-input')).toHaveValue('landscape');
   await expect(page.locator('.listing > .entry.image:visible')).toHaveCount(1);
   await expect(page.locator('.listing > .entry.image:visible .entry-name')).toHaveText('02-landscape.svg');
 });
