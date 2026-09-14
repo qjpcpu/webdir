@@ -139,7 +139,8 @@ Markdown 阅读页支持多人实时审阅。首次发表评论时输入审阅�
 3. `resolved`：修改已确认。
 
 审阅数据保存在正文旁边的 `<文件名>.review.json`，例如 `spec.md.review.json`。旁车文件不会显示在
-目录列表中，AI 可以直接读取、修改正文，并在对应评论中追加处理说明。
+目录列表中。文件内的 `instructions` 会要求 AI 处理所有未解决评论，在对应评论中追加回复并直接修改
+Markdown 正文；如果不需要进一步讨论，则把评论状态改为 `resolved`。
 
 ![划选 Markdown 正文并添加待处理评论](docs/images/review-open.png)
 

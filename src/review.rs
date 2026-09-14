@@ -19,6 +19,8 @@ static NEXT_WRITE_ID: AtomicU64 = AtomicU64::new(1);
 pub struct ReviewDocument {
     #[serde(default = "review_version")]
     pub version: u32,
+    #[serde(default = "review_instructions")]
+    pub instructions: Vec<String>,
     #[serde(default)]
     pub comments: Vec<ReviewComment>,
     #[serde(flatten)]
@@ -29,6 +31,7 @@ impl Default for ReviewDocument {
     fn default() -> Self {
         Self {
             version: review_version(),
+            instructions: review_instructions(),
             comments: Vec::new(),
             extra: BTreeMap::new(),
         }
@@ -126,6 +129,12 @@ struct ReviewControl {
 
 fn review_version() -> u32 {
     1
+}
+
+fn review_instructions() -> Vec<String> {
+    vec![
+        "AI 只处理 status 不为 resolved 的评论。处理每条评论时，必须在该评论的 messages 中追加回复，并直接修改对应的 Markdown 正文；如果处理结果不需要进一步讨论，将该评论的 status 改为 resolved。".into(),
+    ]
 }
 
 pub fn sidecar_path(markdown_path: &Path) -> PathBuf {
@@ -507,6 +516,29 @@ mod tests {
         );
         assert!(is_review_sidecar(Path::new("SPEC.MD.REVIEW.JSON")));
         assert!(!is_review_sidecar(Path::new("review.json")));
+    }
+
+    #[test]
+    fn generated_review_includes_ai_instructions() {
+        let directory = tempfile::tempdir().unwrap();
+        let markdown = directory.path().join("spec.md");
+        fs::write(&markdown, "# Spec").unwrap();
+        let hub = ReviewHub::default();
+
+        hub.apply_action(
+            &markdown,
+            ReviewAction::AddComment {
+                comment: comment("one"),
+            },
+        )
+        .unwrap();
+
+        let value: Value =
+            serde_json::from_str(&fs::read_to_string(sidecar_path(&markdown)).unwrap()).unwrap();
+        assert_eq!(
+            value["instructions"],
+            serde_json::json!(review_instructions())
+        );
     }
 
     #[test]
