@@ -133,7 +133,11 @@ fn main() {
         }
     }
 
-    println!("Serving {} at http://localhost:{port}", root.display());
+    println!(
+        "[{}] Serving {} at http://localhost:{port}",
+        local_timestamp(),
+        root.display()
+    );
     let collaboration = CollaborationHub::default();
     let reviews = ReviewHub::default();
     for stream in listener.incoming() {
@@ -244,6 +248,15 @@ fn bind_listener(config: &PortConfig) -> io::Result<TcpListener> {
 
 fn usage() -> &'static str {
     "用法: webdir [-p PORT] [-pid FILE] [-cache DIR] [-dir DIR] [--auth-token TOKEN] [--raw]\n\n选项:\n  -p, --port PORT      指定监听端口（默认 8080）\n  -pid, --pid FILE     将启动进程 PID 写入指定文件\n  -cache, --cache DIR   指定缓存根目录（缩略图、图片特征和状态存入 DIR）\n  -dir, --dir DIR      指定托管目录（默认当前目录）\n  --auth-token TOKEN   为所有访问启用 token 认证\n  --raw                以原始静态网站服务器模式运行\n  -h, --help           显示帮助"
+}
+
+fn local_timestamp() -> String {
+    let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+    let format = time::format_description::parse_borrowed::<2>(
+        "[year]-[month]-[day] [hour]:[minute]:[second] [offset_hour sign:mandatory]:[offset_minute]",
+    )
+    .expect("时间格式应有效");
+    now.format(&format).expect("当前时间应可格式化")
 }
 
 fn write_pid_file(path: &Path) -> io::Result<()> {

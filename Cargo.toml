@@ -15,5 +15,6 @@ tungstenite = "0.30"
 two-face = { version = "0.5.1", default-features = false, features = ["syntect-fancy"] }
 yrs = "0.27"
 tempfile = "3.23"
+time = { version = "0.3", features = ["formatting", "local-offset"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
