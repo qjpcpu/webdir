@@ -3600,6 +3600,10 @@ window.onDrawioViewerLoad = () => {
 
 const GALLERY_ORGANISE_TOOLS: &str = r#"
 <div class="gallery-organise" id="gallery-organise" role="group" aria-label="筛选和批量操作图片">
+  <button id="select-images" type="button" hidden>多选</button>
+  <span id="image-selection-count" role="status" hidden>已选 0 张</span>
+  <button id="select-all-images" type="button" hidden>全选</button>
+  <button id="clear-image-selection" type="button" hidden>清空选择</button>
   <span class="image-filter-control"><select id="image-filter" aria-label="图片标记筛选"><option value="all">全部</option></select><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m5 6.5 3 3 3-3"/></svg></span>
   <button id="move-images" type="button" disabled>移动到…</button>
   <button id="delete-images" type="button" disabled>批量删除</button>
@@ -4242,6 +4246,12 @@ if (galleryToggle) {
   const DIRECTORY_VIEW_KEY = `webdir-directory-view:${location.pathname}`;
   const organise = document.querySelector('#gallery-organise');
   const moveImagesButton = organise.querySelector('#move-images');
+  const selectImagesButton = organise.querySelector('#select-images');
+  const selectionCount = organise.querySelector('#image-selection-count');
+  const selectAllImagesButton = organise.querySelector('#select-all-images');
+  const clearSelectionButton = organise.querySelector('#clear-image-selection');
+  let selectingImages = false;
+  const selectedImages = new Set();
   const thumbnails = listing.querySelectorAll('img[data-list-src]');
   const lightbox = document.querySelector('#image-lightbox');
   const lightboxImage = lightbox.querySelector('.lightbox-image');
@@ -4371,6 +4381,14 @@ if (galleryToggle) {
   const REVIEW_IDENTITY_KEY = 'webdir-review-identity';
   const imageModel = () => Array.from(listing.querySelectorAll('.entry.image[data-preview-src]'));
   const visibleImages = () => imageModel().filter(entry => !entry.hidden);
+  const batchImages = () => visibleImages().filter(entry => !selectingImages || selectedImages.has(entry));
+  imageModel().forEach(entry => {
+    const indicator = document.createElement('span');
+    indicator.className = 'image-selection-indicator';
+    indicator.setAttribute('aria-hidden', 'true');
+    indicator.textContent = '✓';
+    entry.append(indicator);
+  });
   let previewTrigger = null;
   let deleting = false;
   let liking = 0;
@@ -4448,12 +4466,62 @@ if (galleryToggle) {
   };
 
   const updateImageControls = () => {
-    const count = visibleImages().length;
+    for (const entry of selectedImages) {
+      if (!entry.isConnected || entry.hidden) selectedImages.delete(entry);
+    }
+    imageModel().forEach(entry => {
+      const selected = selectedImages.has(entry);
+      entry.classList.toggle('image-selected', selected);
+      const link = entry.querySelector('.file-open') || entry;
+      if (selectingImages) {
+        link.setAttribute('role', 'checkbox');
+        link.setAttribute('aria-checked', String(selected));
+      } else {
+        link.removeAttribute('role');
+        link.removeAttribute('aria-checked');
+      }
+    });
+    selectionCount.textContent = `已选 ${selectedImages.size} 张`;
+    selectAllImagesButton.disabled = moving || visibleImages().length === selectedImages.size;
+    clearSelectionButton.disabled = moving || selectedImages.size === 0;
+    selectImagesButton.disabled = moving;
+    const count = batchImages().length;
     for (const button of [moveImagesButton, deleteImagesButton, clearImageMarksButton]) {
       button.disabled = count === 0 || moving || liking > 0 || marking > 0 || deleting;
     }
     updateLightboxState();
   };
+  const setImageSelection = (enabled, updateHistory = true) => {
+    if (updateHistory && mobileTouch.matches) {
+      if (enabled && !history.state?.gallerySelection) {
+        history.pushState({...history.state, gallerySelection: true}, '');
+      } else if (!enabled && history.state?.gallerySelection) {
+        history.back();
+        return;
+      }
+    }
+    selectingImages = enabled;
+    selectedImages.clear();
+    listing.classList.toggle('selecting-images', enabled);
+    selectImagesButton.hidden = enabled || !listing.classList.contains('gallery');
+    for (const control of [selectionCount, selectAllImagesButton, clearSelectionButton]) control.hidden = !enabled;
+    updateImageControls();
+  };
+  const toggleImageSelection = entry => {
+    if (moving) return;
+    if (selectedImages.has(entry)) selectedImages.delete(entry);
+    else selectedImages.add(entry);
+    updateImageControls();
+  };
+  selectImagesButton.addEventListener('click', () => setImageSelection(true));
+  selectAllImagesButton.addEventListener('click', () => {
+    visibleImages().forEach(entry => selectedImages.add(entry));
+    updateImageControls();
+  });
+  clearSelectionButton.addEventListener('click', () => {
+    selectedImages.clear();
+    updateImageControls();
+  });
   document.addEventListener('gallery-filter-change', updateImageControls);
 
   const updatePreviewButtons = () => {
@@ -5011,7 +5079,8 @@ if (galleryToggle) {
   document.body.append(clearMarksDialog);
   let batchFiles = [];
   let batchFilter = 'all';
-  const captureBatchFiles = () => visibleImages().map(entryName);
+  const captureBatchFiles = () => batchImages().map(entryName);
+  const batchScope = () => selectingImages ? '已选的' : '当前筛选的';
   const runBatch = async action => {
     if (!action.files.length || moving || liking || marking || deleting) return;
     moving = true;
@@ -5048,7 +5117,7 @@ if (galleryToggle) {
   moveImagesButton.addEventListener('click', () => {
     batchFiles = captureBatchFiles();
     if (!batchFiles.length || moving) return;
-    moveDialog.querySelector('.move-description').textContent = `移动当前筛选的 ${batchFiles.length} 张图片`;
+    moveDialog.querySelector('.move-description').textContent = `移动${batchScope()} ${batchFiles.length} 张图片`;
     moveDialog.querySelector('input').value = selectedImageFilter;
     moveDialog.showModal();
     moveDialog.querySelector('input').select();
@@ -5071,7 +5140,7 @@ if (galleryToggle) {
     batchFiles = captureBatchFiles();
     if (!batchFiles.length || moving) return;
     batchDeleteError.hidden = true;
-    batchDeleteDialog.querySelector('#batch-delete-description').textContent = `当前筛选的 ${batchFiles.length} 张图片将从磁盘中删除，此操作无法撤销。`;
+    batchDeleteDialog.querySelector('#batch-delete-description').textContent = `${batchScope()} ${batchFiles.length} 张图片将从磁盘中删除，此操作无法撤销。`;
     batchDeleteDialog.showModal();
   });
   batchDeleteCancel.addEventListener('click', () => batchDeleteDialog.close());
@@ -5084,7 +5153,7 @@ if (galleryToggle) {
     if (!batchFiles.length || moving) return;
     batchFilter = selectedImageFilter;
     const marks = batchFilter === 'all' ? '喜欢和数字标记' : batchFilter === 'favourite' ? '喜欢标记' : '数字标记';
-    clearMarksDialog.querySelector('#clear-marks-description').textContent = `将取消当前筛选的 ${batchFiles.length} 张图片的${marks}，图片文件会保留。`;
+    clearMarksDialog.querySelector('#clear-marks-description').textContent = `将取消${batchScope()} ${batchFiles.length} 张图片的${marks}，图片文件会保留。`;
     clearMarksDialog.showModal();
   });
   clearMarksDialog.querySelector('#clear-marks-cancel').addEventListener('click', () => clearMarksDialog.close());
@@ -5220,9 +5289,16 @@ if (galleryToggle) {
   };
 
   const setGallery = (enabled, updateUrl = true) => {
+    if (!enabled && history.state?.gallerySelection) {
+      window.addEventListener('popstate', () => setGallery(false, updateUrl), {once: true});
+      history.back();
+      return;
+    }
     localStorage.setItem(DIRECTORY_VIEW_KEY, enabled ? 'gallery' : 'list');
     listing.classList.toggle('gallery', enabled);
     document.body.classList.toggle('gallery-mode', enabled);
+    selectImagesButton.hidden = !enabled || selectingImages;
+    if (!enabled) setImageSelection(false);
     galleryToggle.setAttribute('aria-pressed', String(enabled));
     galleryToggle.innerHTML = enabled
       ? '<span aria-hidden="true">☷</span> 列表'
@@ -5605,9 +5681,18 @@ if (galleryToggle) {
   listing.addEventListener('click', event => {
     const entry = event.target.closest('.entry.image[data-preview-src]');
     if (!listing.classList.contains('gallery') || !entry) return;
-    if (!entry) return;
     event.preventDefault();
+    if (selectingImages) {
+      toggleImageSelection(entry);
+      return;
+    }
     openLightbox(entry);
+  });
+  listing.addEventListener('keydown', event => {
+    const entry = event.target.closest('.entry.image[data-preview-src]');
+    if (!selectingImages || !entry || event.key !== ' ' || event.target.getAttribute('role') !== 'checkbox') return;
+    event.preventDefault();
+    toggleImageSelection(entry);
   });
 
   lightboxClose.addEventListener('click', closeLightbox);
@@ -5827,6 +5912,11 @@ if (galleryToggle) {
       return;
     }
     if (event.key === 'Escape') {
+      if (selectingImages && lightbox.hidden && !document.querySelector('dialog[open]')) {
+        event.preventDefault();
+        if (!event.repeat) setImageSelection(false);
+        return;
+      }
       if (!commentsDrawer.hidden) closeGalleryComments();
       else if (!viewerExtras.hidden) {
         viewerExtras.hidden = true;
@@ -5927,6 +6017,7 @@ if (galleryToggle) {
   updateImageControls();
   window.addEventListener('popstate', () => {
     if (!mobileTouch.matches) return;
+    setImageSelection(Boolean(history.state?.gallerySelection), false);
     if (history.state?.galleryPreview) {
       const entry = visibleImages()
         .find(entry => entry.dataset.listHref === history.state.previewImage);
@@ -5935,6 +6026,9 @@ if (galleryToggle) {
       closeLightbox();
     }
   });
+  if (listing.classList.contains('gallery') && history.state?.gallerySelection) {
+    setImageSelection(true, false);
+  }
   if (listing.classList.contains('gallery') && history.state?.previewImage) {
     const entry = visibleImages()
       .find(entry => entry.dataset.listHref === history.state.previewImage);
@@ -6036,6 +6130,12 @@ h1 { position:relative; z-index:1; margin:0; overflow-wrap:anywhere; font-family
 .gallery-organise button { display:inline-flex; align-items:center; gap:.4rem; min-height:2rem; padding:.35rem .6rem; border:1px solid var(--line); border-radius:.45rem; color:var(--muted); background:var(--surface); font:500 .72rem/1.3 ui-sans-serif,-apple-system,sans-serif; cursor:pointer; transition:color .15s ease,border-color .15s ease,background .15s ease; }
 .gallery-organise button:hover:not(:disabled) { border-color:var(--accent); color:var(--ink); background:var(--accent-soft); }
 .gallery-organise button:disabled { opacity:.5; cursor:not-allowed; }
+#image-selection-count { color:var(--muted); font-size:.75rem; }
+.image-selection-indicator { display:none; }
+.gallery.selecting-images .image-selection-indicator { position:absolute; z-index:3; top:.5rem; right:.5rem; display:grid; place-items:center; width:1.5rem; height:1.5rem; border:2px solid #fff; border-radius:50%; color:transparent; background:rgba(0,0,0,.4); font:700 .9rem/1 ui-sans-serif,sans-serif; pointer-events:none; }
+.gallery.selecting-images .image-selected .image-selection-indicator { color:#fff; background:var(--accent); }
+.gallery.selecting-images .entry.image.image-selected::before { position:absolute; z-index:3; inset:0; border:3px solid var(--accent); border-radius:inherit; content:""; pointer-events:none; }
+.gallery.selecting-images .entry.image .glyph { cursor:pointer; }
 .gallery-organise #delete-images:not(:disabled) { border-color:color-mix(in srgb,#b42336 55%,var(--line)); color:light-dark(#a51d31,#ff9ba9); }
 .directory-notice { position:relative; z-index:1; margin:.75rem 0 0; color:var(--muted); font-size:.78rem; line-height:1.6; overflow-wrap:anywhere; }
 .listing { overflow:hidden; border:1px solid var(--line); border-top:0; border-radius:0 0 1.1rem 1.1rem; background:var(--surface); box-shadow:0 25px 70px rgba(54,59,92,.09); }

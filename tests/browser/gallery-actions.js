@@ -35,6 +35,149 @@ module.exports = () => test.describe('gallery image actions', () => {
   });
   test.afterEach(() => fs.rmSync(directory, {recursive: true, force: true}));
 
+  test('multi-select toggles photos, selects visible results, and returns to preview mode', async ({page}) => {
+    await tag(page, names[0], 3);
+    await tag(page, names[1], 3);
+    await page.goto(`${url}?view=gallery`);
+    await page.locator('#select-images').click();
+    await expect(page.locator('#delete-images')).toBeDisabled();
+    await entry(page, names[0]).click();
+    await entry(page, names[2]).click();
+    await expect(page.locator('#image-selection-count')).toHaveText('已选 2 张');
+    await expect(page.locator('#image-lightbox')).toBeHidden();
+    await entry(page, names[2]).click();
+    await expect(page.locator('#image-selection-count')).toHaveText('已选 1 张');
+    await choose(page, 'tag3');
+    await page.locator('#select-all-images').click();
+    await expect(page.locator('.image-selected')).toHaveCount(2);
+    await page.locator('#file-search-input').fill('01');
+    await expect(page.locator('#image-selection-count')).toHaveText('已选 1 张');
+    await page.locator('#file-search-input').fill('');
+    await expect(page.locator('#image-selection-count')).toHaveText('已选 1 张');
+    await page.locator('#clear-image-selection').click();
+    await expect(page.locator('#delete-images')).toBeDisabled();
+    const checkbox = page.getByRole('checkbox', {name: new RegExp(names[0])});
+    await checkbox.focus();
+    await page.keyboard.press(' ');
+    await expect(checkbox).toHaveAttribute('aria-checked', 'true');
+    await page.keyboard.press('Enter');
+    await expect(checkbox).toHaveAttribute('aria-checked', 'false');
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#select-images')).toBeVisible();
+    await entry(page, names[0]).click();
+    await expect(page.locator('#image-lightbox')).toBeVisible();
+    await page.locator('.lightbox-close').click();
+    await page.locator('#select-images').click();
+    await entry(page, names[0]).click();
+    await page.locator('#gallery-toggle').click();
+    await expect(page.locator('#select-images')).toBeHidden();
+    await expect(page).toHaveURL(url);
+    await page.locator('#gallery-toggle').click();
+    await page.locator('#select-images').click();
+    await expect(page.locator('#image-selection-count')).toHaveText('已选 0 张');
+  });
+
+  test('Escape exits multi-select after dismissing an open batch dialog', async ({page}) => {
+    await page.goto('/');
+    await page.goto(`${url}?view=gallery`);
+    await page.locator('#select-images').click();
+    await entry(page, names[0]).click();
+    await page.locator('#delete-images').click();
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#batch-delete-dialog')).not.toBeVisible();
+    await expect(page.locator('.listing')).toHaveClass(/selecting-images/);
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#select-images')).toBeVisible();
+    await expect(page.locator('.image-selected')).toHaveCount(0);
+    await expect(page).toHaveURL(`${url}?view=gallery`);
+    await page.locator('#select-images').click();
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#select-images')).toBeVisible();
+    await page.goBack();
+    await expect(page).toHaveURL('/');
+  });
+
+  test('mobile browser back exits multi-select on the same gallery and keeps preview navigation usable', async ({page}) => {
+    test.skip(!await page.evaluate(() => matchMedia('(hover: none) and (pointer: coarse)').matches), 'touch navigation only');
+    await page.goto('/');
+    await page.goto(`${url}?view=gallery`);
+    await page.locator('#select-images').click();
+    await entry(page, names[0]).click();
+    await page.evaluate(() => { window.selectionNavigationMarker = true; });
+    const position = await page.evaluate(() => ({x: scrollX, y: scrollY}));
+    await page.goBack();
+    await expect(page.locator('#select-images')).toBeVisible();
+    await expect(page.locator('.image-selected')).toHaveCount(0);
+    await expect(page).toHaveURL(`${url}?view=gallery`);
+    expect(await page.evaluate(() => window.selectionNavigationMarker)).toBe(true);
+    expect(await page.evaluate(() => ({x: scrollX, y: scrollY}))).toEqual(position);
+    await page.goForward();
+    await expect(page.locator('.listing')).toHaveClass(/selecting-images/);
+    await page.reload();
+    await expect(page.locator('.listing')).toHaveClass(/selecting-images/);
+    await page.goBack();
+    await expect(page.locator('#select-images')).toBeVisible();
+    await entry(page, names[0]).click();
+    await expect(page.locator('#image-lightbox')).toBeVisible();
+    await page.goBack();
+    await expect(page.locator('#image-lightbox')).toBeHidden();
+    await page.goBack();
+    await expect(page).toHaveURL('/');
+  });
+
+  for (const action of ['move', 'delete', 'clear-mark']) {
+    test(`multi-select batch ${action} operates on the chosen photos`, async ({page}) => {
+      for (const name of names) {
+        await like(page, name);
+        await tag(page, name, 3);
+      }
+      await page.goto(`${url}?view=gallery`);
+      await page.locator('#select-images').click();
+      await entry(page, names[0]).click();
+      await entry(page, names[2]).click();
+      const controls = {
+        move: ['#move-images', '.move-description', '[data-move-confirm]'],
+        delete: ['#delete-images', '#batch-delete-description', '#batch-delete-confirm'],
+        'clear-mark': ['#clear-image-marks', '#clear-marks-description', '#clear-marks-confirm']
+      };
+      const [button, description, confirm] = controls[action];
+      await page.locator(button).click();
+      await expect(page.locator(description)).toContainText('已选的 2 张图片');
+      if (action === 'move') await page.locator('.move-dialog input').fill('chosen');
+      const request = page.waitForRequest(request => request.url().includes('mode=batch-images'));
+      await reloadAfter(page, () => page.locator(confirm).click());
+      expect((await request).postDataJSON().files).toEqual([names[0], names[2]]);
+      await expect(entry(page, names[1])).toHaveAttribute('data-favourite', 'true');
+      await expect(entry(page, names[1])).toHaveAttribute('data-image-tag', '3');
+      for (const name of [names[0], names[2]]) {
+        if (action === 'clear-mark') {
+          await expect(entry(page, name)).toHaveAttribute('data-favourite', 'false');
+          await expect(entry(page, name)).toHaveAttribute('data-image-tag', '');
+        } else {
+          expect(fs.existsSync(path.join(directory, name))).toBe(false);
+          if (action === 'move') expect(fs.existsSync(path.join(directory, 'chosen', name))).toBe(true);
+        }
+      }
+      expect(fs.readFileSync(path.join(directory, 'notes.txt'), 'utf8')).toBe('keep');
+    });
+  }
+
+  test('multi-select retains its choices after cancelling or failing a batch operation', async ({page}) => {
+    await page.goto(`${url}?view=gallery`);
+    await page.locator('#select-images').click();
+    await entry(page, names[0]).click();
+    await page.locator('#delete-images').click();
+    await page.locator('#batch-delete-cancel').click();
+    await expect(page.locator('#image-selection-count')).toHaveText('已选 1 张');
+    await page.route('**/*?mode=batch-images', route => route.fulfill({status: 500, body: '删除失败'}));
+    await page.locator('#delete-images').click();
+    await page.locator('#batch-delete-confirm').click();
+    await expect(page.locator('#directory-notice')).toHaveText('删除失败');
+    await expect(page.locator('#delete-images')).toBeEnabled();
+    await expect(page.locator('#image-selection-count')).toHaveText('已选 1 张');
+    expect(fs.existsSync(path.join(directory, names[0]))).toBe(true);
+  });
+
   test('numeric keys replace and clear colored tags while preserving likes and editing input', async ({page}) => {
     await like(page, names[0]);
     await page.goto(`${url}?view=gallery`);
