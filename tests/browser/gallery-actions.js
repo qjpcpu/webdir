@@ -348,7 +348,7 @@ module.exports = () => test.describe('gallery image actions', () => {
     expect(fs.readFileSync(path.join(directory, 'notes.txt'), 'utf8')).toBe('keep');
   });
 
-  test('yy copies ordered filtered basenames and keeps viewer path copying', async ({page}) => {
+  test('yy copies ordered filtered basenames and the current viewer basename', async ({page}) => {
     await like(page, names[0]);
     await like(page, names[1]);
     await tag(page, names[0], 3);
@@ -390,6 +390,7 @@ module.exports = () => test.describe('gallery image actions', () => {
     await page.locator('#file-search-input').fill('01');
     await entry(page, names[0]).click();
     await page.keyboard.type('yy');
-    await expect.poll(() => page.evaluate(() => window.copiedTexts.at(-1))).toBe(`${path.basename(directory)}/${names[0]}`);
+    await expect.poll(() => page.evaluate(() => window.copiedTexts.at(-1))).toBe(names[0]);
+    await expect(page.locator('#file-path-toast')).toHaveText(`复制文件名 ${names[0]}`);
   });
 });

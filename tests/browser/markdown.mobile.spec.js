@@ -1,5 +1,23 @@
 const { test, expect } = require('@playwright/test');
 
+test('review file copy button copies only the filename', async ({page}) => {
+  await page.addInitScript(() => {
+    window.copiedTexts = [];
+    document.execCommand = command => {
+      if (command !== 'copy') return false;
+      window.copiedTexts.push(document.activeElement.value);
+      return true;
+    };
+  });
+  await page.goto('/review.md');
+
+  await expect(page.locator('#copy-review-path')).toHaveText('复制评论文件名');
+  await page.locator('#review-toggle').click();
+  await page.locator('#copy-review-path').click();
+  await expect.poll(() => page.evaluate(() => window.copiedTexts)).toEqual(['review.md.review.json']);
+  await expect(page.locator('#file-path-toast')).toHaveText('复制文件名 review.md.review.json');
+});
+
 test('touch selection opens the range-comment composer and a body tap hides the panel', async ({page}) => {
   await page.addInitScript(() => localStorage.setItem('webdir-review-identity', 'Alice'));
   await page.goto('/review.md');

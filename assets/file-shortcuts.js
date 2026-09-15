@@ -216,13 +216,19 @@
     }
     notify(copied ? message : '复制失败，请检查浏览器剪贴板权限');
   };
-  const copyPath = path => copyText(path, `复制文件路径 ${path}`);
+  const copyName = path => {
+    const name = path.slice(path.lastIndexOf('/') + 1);
+    copyText(name, `复制文件名 ${name}`);
+  };
 
   const openReviewFile = document.querySelector('#open-review-file');
   if (openReviewFile) openReviewFile.href = `${location.pathname}.review.json`;
-  document.querySelector('#copy-review-path')?.addEventListener('click', () => {
-    copyPath(`${document.body.dataset.filePath}.review.json`);
-  });
+  const copyReviewFile = document.querySelector('#copy-review-path');
+  if (copyReviewFile) {
+    copyReviewFile.addEventListener('click', () => {
+      copyName(`${document.body.dataset.filePath}.review.json`);
+    });
+  }
 
   document.addEventListener('keydown', event => {
     if (document.querySelector('#editor:not([hidden])')) {
@@ -257,7 +263,7 @@
       if (copyGallery) {
         if (names.length) copyText(names.join(','), `已复制 ${names.length} 个文件名`);
         else notify('没有可复制的图片');
-      } else copyPath(path);
+      } else copyName(path);
     } else {
       reset();
       pendingCopy = key;

@@ -445,6 +445,17 @@ test('slideshow fills the viewport and favourite particles are not stage-clipped
   await page.evaluate(() => {
     const lightbox = document.querySelector('#image-lightbox');
     window.__webkitFullscreenCalls = 0;
+    window.__carouselChromeDelay = null;
+    window.__hideCarouselChrome = null;
+    const nativeSetTimeout = window.setTimeout;
+    window.setTimeout = (callback, delay, ...args) => {
+      if (delay === 2500) {
+        window.__carouselChromeDelay = delay;
+        window.__hideCarouselChrome = callback;
+        return -1;
+      }
+      return nativeSetTimeout(callback, delay, ...args);
+    };
     Object.defineProperty(lightbox, 'requestFullscreen', {value: undefined, configurable: true});
     Object.defineProperty(lightbox, 'webkitRequestFullscreen', {
       value: () => { window.__webkitFullscreenCalls += 1; },
@@ -459,6 +470,7 @@ test('slideshow fills the viewport and favourite particles are not stage-clipped
   await expect(page.locator('.lightbox-filmstrip')).toBeHidden();
   await expect(page.locator('#image-lightbox figcaption')).toBeHidden();
   await expect(page.locator('.carousel-hud')).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__carouselChromeDelay)).toBe(2500);
   await expect(page.locator('.carousel-backdrop')).toBeVisible();
   const imageBackdrop = await page.locator('.carousel-backdrop').evaluate(element => {
     const style = getComputedStyle(element);
@@ -474,6 +486,11 @@ test('slideshow fills the viewport and favourite particles are not stage-clipped
   });
   expect(fullscreen.box).toEqual(fullscreen.viewport);
   expect(fullscreen.stage[1]).toBeGreaterThanOrEqual(fullscreen.viewport[1] - 1);
+  await page.evaluate(() => window.__hideCarouselChrome());
+  await expect(page.locator('.carousel-hud')).toHaveCSS('opacity', '0');
+  await expect(page.locator('.carousel-hud')).toHaveCSS('pointer-events', 'none');
+  await page.keyboard.press(' ');
+  await expect(page.locator('.carousel-hud')).toHaveCSS('opacity', '1');
   await page.locator('[data-carousel-exit]').click();
 
   await page.locator('#favourite-toggle').click();
