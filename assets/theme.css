@@ -1,0 +1,9 @@
+:root { color-scheme:light; }
+:root[data-theme="dark"] { color-scheme:dark; }
+#theme-toggle { display:grid; place-items:center; flex:0 0 auto; width:2rem; height:2rem; min-height:0; padding:.4rem; border:1px solid var(--line); border-radius:.55rem; color:light-dark(#52647a,#ead08c); background:var(--surface); cursor:pointer; }
+#theme-toggle:hover { border-color:var(--accent); background:var(--accent-soft); }
+#theme-toggle svg { width:1.1rem; height:1.1rem; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+#theme-toggle .theme-sun,:root[data-theme="dark"] #theme-toggle .theme-moon { display:none; }
+:root[data-theme="dark"] #theme-toggle .theme-sun { display:block; }
+.path-search { display:flex; align-items:center; gap:.55rem; }
+body > #theme-toggle { position:fixed; top:1rem; right:1rem; z-index:10; }

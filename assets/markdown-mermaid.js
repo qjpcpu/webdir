@@ -1,7 +1,6 @@
 (() => {
-  const colorScheme = matchMedia('(prefers-color-scheme: dark)');
   function configureTheme() {
-    const dark = colorScheme.matches;
+    const dark = document.documentElement.dataset.theme === 'dark';
     const ink = dark ? '#edf0f7' : '#30364f';
     const surface = dark ? '#191c27' : '#ffffff';
     const line = dark ? '#929bbb' : '#7d87a5';
@@ -69,6 +68,5 @@
     }
   });
 
-  colorScheme.addEventListener('change', () => window.renderMarkdownMermaid(true));
   window.renderMarkdownMermaid();
 })();

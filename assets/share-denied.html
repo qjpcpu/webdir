@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>超出分享范围 · 文件浏览</title>
 <style>
-:root { color-scheme:light dark; --paper:#f7f8fc; --surface:#fff; --ink:#202333; --muted:#73788b; --line:#dfe3ee; --accent:#5b5bd6; --soft:#eeeeff; }
+:root { color-scheme:light; --paper:#f7f8fc; --surface:#fff; --ink:#202333; --muted:#73788b; --line:#dfe3ee; --accent:#5b5bd6; --soft:#eeeeff; }
 * { box-sizing:border-box; }
 body { margin:0; min-height:100svh; display:flex; flex-direction:column; color:var(--ink); background:var(--paper); font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Noto Sans SC",sans-serif; }
 header,footer { width:min(100% - 48px,960px); margin-inline:auto; }
@@ -23,7 +23,7 @@ a:focus-visible { outline:3px solid var(--accent); outline-offset:4px; }
 a svg { width:18px; height:18px; }
 .hint { margin:22px 0 0; color:var(--muted); font-size:12px; line-height:1.8; }
 footer { padding-block:24px; color:var(--muted); font-size:12px; border-top:1px solid var(--line); }
-@media (prefers-color-scheme:dark) { :root { --paper:#14151e; --surface:#1c1e2b; --ink:#eeeefa; --muted:#a0a4ba; --line:#33364b; --accent:#8888ee; --soft:#2c2d49; } a { color:#14151e; } a:hover { background:#aaaaff; } }
+:root[data-theme="dark"] { --paper:#14151e; --surface:#1c1e2b; --ink:#eeeefa; --muted:#a0a4ba; --line:#33364b; --accent:#8888ee; --soft:#2c2d49; } :where(:root[data-theme="dark"]) a { color:#14151e; } :where(:root[data-theme="dark"]) a:hover { background:#aaaaff; }
 @media (max-width:700px) { header { padding-block:24px; } main { padding:16px 0 36px; } .card { grid-template-columns:1fr; gap:18px; padding:28px 24px 32px; } .art { width:190px; justify-self:center; } .description { font-size:14px; } }
 @media (prefers-reduced-motion:reduce) { a { transition:none; } }
 </style>
