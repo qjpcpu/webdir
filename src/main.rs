@@ -6384,6 +6384,8 @@ body { margin:0; padding-top:calc(3.4rem + 1px); color:var(--ink); background:va
 .button.danger { border-color:#bd3e52; background:#bd3e52; }
 .button:hover,.format-tools button:hover { filter:brightness(.96); transform:translateY(-1px); }
 .button:active,.format-tools button:active { transform:translateY(1px); }
+#edit-button { border-color:light-dark(#31526d,#b8cfe2); color:light-dark(#f7fbff,#213b52); background:light-dark(#365773,#c4d6e6); }
+#edit-button:hover { border-color:light-dark(#27455e,#d3e3ef); background:light-dark(#2b4963,#d5e3ee); filter:none; }
 .identity-button { max-width:11rem; overflow:hidden; padding:.4rem .6rem; border:0; color:var(--muted); background:transparent; font:600 .72rem/1.2 ui-monospace,SFMono-Regular,Consolas,monospace; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }
 .identity-button:hover { color:var(--accent); }
 .review-toggle { display:inline-flex; align-items:center; gap:.3rem; }
@@ -6468,6 +6470,8 @@ sup { line-height:0; }
 .comment-card:first-child { padding-top:0; }
 .comment-card:last-child { border-bottom:0; }
 .comment-card.active { margin-inline:-.55rem; padding-inline:.55rem; background:var(--accent-soft); }
+.comment-card.submitted { animation:comment-submitted 1.6s ease-out; }
+@keyframes comment-submitted { from { background:var(--comment); } to { background:transparent; } }
 .comment-meta { display:flex; align-items:center; justify-content:space-between; gap:.5rem; margin-bottom:.55rem; }
 .comment-status { color:var(--comment-line); font:750 .62rem/1 ui-monospace,SFMono-Regular,Consolas,monospace; letter-spacing:.05em; }
 .comment-status.addressed { color:var(--addressed); }
@@ -6487,10 +6491,12 @@ sup { line-height:0; }
 .message-editor div { display:flex; justify-content:flex-end; gap:.35rem; margin-top:.4rem; }
 .comment-actions { display:flex; flex-wrap:wrap; gap:.35rem; margin-top:.8rem; }
 .comment-actions button { padding:.4rem .52rem; border:1px solid var(--line); border-radius:.4rem; color:var(--muted); background:var(--surface); font:650 .67rem/1 ui-sans-serif,-apple-system,sans-serif; cursor:pointer; }
-.comment-actions button.primary { border-color:var(--accent); color:white; background:var(--accent); }
+.comment-actions button.primary { border-color:light-dark(#b9d7c5,#42604f); color:light-dark(#2e684e,#acd3bd); background:light-dark(#e6f2eb,#243b31); }
+.comment-actions button.primary:hover { border-color:light-dark(#91bda4,#658b75); background:light-dark(#d5e9de,#2d493b); }
 .comment-actions button[data-confirming="true"] { border-color:#bd3e52; color:#bd3e52; }
 .reply-box { margin-top:.65rem; }
-.selection-comment { position:fixed; z-index:8; padding:.55rem .7rem; border:1px solid color-mix(in srgb,var(--accent) 55%,var(--line)); border-radius:.5rem; color:white; background:var(--accent); box-shadow:0 10px 28px rgba(54,59,92,.22); font:650 .72rem/1 ui-sans-serif,-apple-system,sans-serif; cursor:pointer; transform:translate(-50%,-100%); }
+.selection-comment { position:fixed; z-index:8; padding:.55rem .7rem; border:1px solid light-dark(#d9bd7c,#79633d); border-radius:.5rem; color:light-dark(#634b20,#f3d99d); background:light-dark(#f4dfa7,#493d29); box-shadow:0 6px 18px rgba(81,61,28,.16); font:650 .72rem/1 ui-sans-serif,-apple-system,sans-serif; cursor:pointer; transform:translate(-50%,-100%); }
+.selection-comment:hover { border-color:light-dark(#c3a260,#9a8051); background:light-dark(#edd18c,#58482f); }
 .toast { position:fixed; z-index:10; right:1rem; bottom:1rem; max-width:min(24rem,calc(100vw - 2rem)); padding:.7rem .9rem; border:1px solid var(--line); border-radius:.55rem; color:var(--ink); background:var(--surface); box-shadow:0 16px 45px rgba(54,59,92,.18); font-size:.75rem; }
 .identity-dialog { width:min(92vw,430px); padding:0; border:1px solid var(--line); border-radius:1rem; color:var(--ink); background:var(--surface); box-shadow:0 28px 90px rgba(35,38,61,.24); }
 .identity-dialog::backdrop { background:rgba(20,22,34,.52); backdrop-filter:blur(5px); }
@@ -6521,7 +6527,7 @@ main.preview-paper { width:100%; margin:0; padding:2rem; border:0; border-radius
 .sync-anchor { display:block; overflow:hidden; width:0; height:0; pointer-events:none; }
 body.editing { overflow:hidden; }
 @media (max-width:1180px) { .reader-layout { grid-template-areas:"paper review"; grid-template-columns:minmax(0,820px) minmax(280px,340px); width:min(100% - 2rem,1180px); } body.review-closed .reader-layout { grid-template-areas:"paper"; grid-template-columns:minmax(0,1100px); width:min(100% - 2rem,1100px); } #toc { display:none; } }
-@media (max-width:900px) { .reader-layout,body.review-closed .reader-layout { display:block; width:min(100% - 2rem,820px); } .review-panel { position:fixed; z-index:7; top:calc(5.8rem + 1px); right:0; bottom:0; width:min(92vw,370px); max-height:none; border-radius:0; transform:translateX(0); transition:transform .22s ease; } body.review-closed .review-panel { display:flex; transform:translateX(100%); pointer-events:none; } .review-header button { display:block; } }
+@media (max-width:900px) { .reader-layout,body.review-closed .reader-layout { display:block; width:min(100% - 2rem,820px); } .review-panel { position:fixed; align-self:stretch; z-index:7; top:calc(5.8rem + 1px); right:0; bottom:0; width:min(92vw,370px); max-height:none; border-radius:0; transform:translateX(0); transition:transform .22s ease; } body.review-closed .review-panel { display:flex; transform:translateX(100%); pointer-events:none; } .review-header button { display:block; } }
 @media (max-width:700px) { html { font-size:16px; } .reader-layout,body.review-closed .reader-layout { width:100%; margin:0; } main.paper { padding:1.5rem 1rem 3rem; border-width:0; border-radius:0; box-shadow:none; } :root { --file-header-padding:.7rem; } .mark,.identity-button,.raw-button { display:none; } .editor-panes { grid-template-columns:1fr; grid-template-rows:1fr 1fr; } .preview-pane { border-right:0; border-bottom:1px solid var(--line); } .collaboration-status { margin-left:auto; } #save-status { display:none; } }
 @media (hover:none) and (pointer:coarse) { .selection-comment { top:auto !important; bottom:max(1rem,calc(env(safe-area-inset-bottom) + .5rem)); left:50% !important; min-height:2.75rem; padding:.7rem 1rem; transform:translateX(-50%); } }
 @media (prefers-color-scheme:dark) { :root { --paper:#11131b; --surface:#191c27; --ink:#edf0f7; --muted:#a7adbd; --line:#303545; --accent:#a9a5ff; --accent-soft:#292943; --code:#0d0f16; --code-ink:#e7e9f3; --quote:#20283a; --comment:#5d4b20; --comment-line:#d9ad43; --addressed:#e0ae63; --success:#6fc394; } body { background-image:radial-gradient(circle at 50% -20%,#252943 0,transparent 38rem); } code { color:#f2a7ca; } main { box-shadow:0 24px 70px rgba(0,0,0,.25); } }
@@ -6582,6 +6588,8 @@ let reviewReconnectDelay = 500;
 let pendingCommentScope = null;
 let pendingSelectionLabel = '';
 let selectedCommentId = null;
+let submittedCommentId = null;
+let submittedCommentTimer;
 let pendingIdentityAction = null;
 
 function setStatus(message, state = '') {
@@ -7110,7 +7118,7 @@ function messageMarkup(message, index, commentId) {
   const edited = message.edited_at ? ' · 已编辑' : '';
   return `<section class="message" data-comment-id="${escapeReviewHtml(commentId)}" data-message-id="${escapeReviewHtml(message.id || '')}" data-message-index="${index}"><header><strong>${escapeReviewHtml(message.author)}</strong><span><time>${escapeReviewHtml(shownDate)}</time>${edited}</span></header><p>${escapeReviewHtml(message.body)}</p><div class="message-tools"><button type="button" data-message-action="edit">修改</button><button type="button" data-message-action="delete">删除</button></div></section>`;
 }
-function commentMarkup(comment, resolved) {
+function commentMarkup(comment, resolved, showDeleteButton) {
   const documentScope = comment.scope?.type === 'document';
   const quote = documentScope
     ? '全文评论'
@@ -7127,7 +7135,9 @@ function commentMarkup(comment, resolved) {
   } else if (comment.status === 'resolved') {
     buttons += '<button type="button" data-comment-action="reopen">重新打开</button>';
   }
-  buttons += `<button type="button" data-comment-action="delete-comment">${documentScope ? '删除全文评论' : '删除整条评论'}</button>`;
+  if (showDeleteButton) {
+    buttons += `<button type="button" data-comment-action="delete-comment">${documentScope ? '删除全文评论' : '删除整条评论'}</button>`;
+  }
   return `<article class="comment-card${selectedCommentId === comment.id ? ' active' : ''}" data-comment-id="${escapeReviewHtml(comment.id)}" title="双击定位正文"><div class="comment-meta"><span class="comment-status ${escapeReviewHtml(comment.status)}">${escapeReviewHtml(reviewStatusLabel(comment.status))}</span><span>${comment.messages.length} 条消息</span></div><p class="comment-scope${stale ? ' stale' : ''}">${stale ? '原文已变化 · ' : ''}${escapeReviewHtml(quote)}</p>${comment.messages.map((message, index) => messageMarkup(message, index, comment.id)).join('')}<div class="comment-actions">${buttons}</div></article>`;
 }
 function renderReview() {
@@ -7152,12 +7162,20 @@ function renderReview() {
       };
       return position(left) - position(right) || left.index - right.index;
     });
+  const lastDocumentComment = visible.findLast(item => item.comment.scope?.type === 'document');
+  const lastRangeComment = visible.findLast(item => item.comment.scope?.type !== 'document');
   commentList.innerHTML = visible.length
-    ? visible.map(item => commentMarkup(item.comment, item.resolved)).join('')
+    ? visible.map(item => commentMarkup(item.comment, item.resolved, item === lastDocumentComment || item === lastRangeComment)).join('')
     : `<div class="comment-empty">${reviewFilter === 'open' ? '暂无待处理评论。划选正文即可添加批注。' : `暂无${reviewStatusLabel(reviewFilter)}评论。`}</div>`;
   markReviewRanges(resolvedScopes);
-  if (selectedCommentId) {
-    requestAnimationFrame(() => commentList.querySelector(`[data-comment-id="${CSS.escape(selectedCommentId)}"]`)?.scrollIntoView({block: 'nearest'}));
+  const revealCommentId = submittedCommentId || selectedCommentId;
+  if (revealCommentId) {
+    const card = commentList.querySelector(`.comment-card[data-comment-id="${CSS.escape(revealCommentId)}"]`);
+    if (card && revealCommentId === submittedCommentId) card.classList.add('submitted');
+    requestAnimationFrame(() => {
+      if (!card?.isConnected) return;
+      card.scrollIntoView({block: 'nearest'});
+    });
   }
 }
 function sourceRunForBoundary(node) {
@@ -7258,6 +7276,13 @@ async function submitComment() {
     window.getSelection()?.removeAllRanges();
     selectionComment.hidden = true;
     reviewFilter = 'open';
+    selectedCommentId = null;
+    submittedCommentId = action.comment.id;
+    clearTimeout(submittedCommentTimer);
+    submittedCommentTimer = setTimeout(() => {
+      submittedCommentId = null;
+      commentList.querySelector('.submitted')?.classList.remove('submitted');
+    }, 1600);
     renderReview();
     showReviewToast('评论已保存');
   } catch (error) { showReviewError(error.message); }

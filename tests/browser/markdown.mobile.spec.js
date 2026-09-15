@@ -1,5 +1,7 @@
 const { test, expect } = require('@playwright/test');
 
+require('./markdown-review')();
+
 test('review file copy button copies only the filename', async ({page}) => {
   await page.addInitScript(() => {
     window.copiedTexts = [];
@@ -79,7 +81,11 @@ test('document comments can be added, edited, and deleted on touch layouts', asy
   await editor.fill('编辑后的全文评论 jk');
   await editor.press('Meta+Enter');
   await expect(editor).toHaveValue('编辑后的全文评论 jk\n');
-  await editor.press('Enter');
+  await Promise.all([
+    page.waitForResponse(response => response.url().includes('mode=review-data')).then(response => response.finished()),
+    page.waitForResponse(response => response.url().includes('mode=review-action')).then(response => response.finished()),
+    editor.press('Enter')
+  ]);
   await expect(card.locator('.message p')).toHaveText('编辑后的全文评论 jk');
 
   const deleteComment = card.locator('[data-comment-action="delete-comment"]');
