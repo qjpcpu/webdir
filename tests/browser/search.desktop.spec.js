@@ -17,6 +17,7 @@ test('searches descendants, ranks current files first, and opens an image in its
   );
   await expect(results.filter({hasText: 'nested-portrait.svg'}).locator('.file-search-result-path'))
     .toHaveText('./search-nested');
+  await expect(results.first()).not.toHaveAttribute('target', '_blank');
 
   await results.filter({hasText: 'nested-portrait.svg'}).click();
 
@@ -61,6 +62,7 @@ test('shows root search beside every path bar without a command shortcut', async
   await expect(result).toHaveCount(1);
   await expect(result.locator('.path-search-name')).toHaveText('01-portrait.svg');
   await expect(result.locator('.path-search-path')).toHaveText('根目录');
+  await expect(result).toHaveAttribute('target', '_blank');
   await expect(result.locator('.path-search-icon img')).toHaveAttribute('src', '/01-portrait.svg?mode=asset');
   const iconBox = await result.locator('.path-search-icon').boundingBox();
   const thumbnailBox = await result.locator('.path-search-icon img').boundingBox();

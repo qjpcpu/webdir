@@ -84,6 +84,7 @@
         const link = document.createElement('a');
         link.className = 'path-search-result';
         link.href = result.open_href;
+        link.target = '_blank';
         link.role = 'option';
         link.setAttribute('aria-selected', 'false');
         const icon = document.createElement('span');
