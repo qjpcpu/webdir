@@ -16,6 +16,10 @@ module.exports = async () => {
   fs.copyFileSync(path.join(fixtures, '03-square.svg'), path.join(searchDirectory, 'nested-portrait.svg'));
   fs.writeFileSync(path.join(searchDirectory, 'portrait-notes.txt'), 'nested search result\n');
   fs.writeFileSync(path.join(searchDirectory, '.hidden-portrait.txt'), 'hidden file\n');
+  for (const parent of ['tiana/bootstrap/caddy', 'other/caddy', 'unrelated']) {
+    fs.mkdirSync(path.join(searchDirectory, parent), {recursive: true});
+    fs.writeFileSync(path.join(searchDirectory, parent, 'root.crt'), 'certificate fixture\n');
+  }
   fs.mkdirSync(path.join(searchDirectory, '.hidden-directory'));
   fs.writeFileSync(path.join(searchDirectory, '.hidden-directory', 'portrait-secret.txt'), 'hidden directory\n');
 };

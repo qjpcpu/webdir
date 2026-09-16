@@ -64,7 +64,7 @@
       requestId++;
       input.value = '';
       results.replaceChildren();
-      status.textContent = '输入文件名开始搜索';
+      status.textContent = '输入文件名或路径开始搜索';
       backdrop.hidden = false;
       panel.hidden = false;
       toggle.setAttribute('aria-expanded', 'true');
@@ -76,7 +76,7 @@
       toggle.setAttribute('aria-expanded', 'false');
       select(-1);
     };
-    const render = items => {
+    const render = (items, pathQuery) => {
       results.replaceChildren();
       selected = -1;
       status.textContent = items.length ? `${items.length} 个匹配文件` : '没有找到匹配的文件';
@@ -110,7 +110,9 @@
         name.textContent = result.name;
         const path = document.createElement('span');
         path.className = 'path-search-path';
-        path.textContent = result.directory ? `./${result.directory}` : '根目录';
+        path.textContent = pathQuery
+          ? (result.directory ? `搜索根目录 / ${result.directory}` : '搜索根目录')
+          : (result.directory ? `./${result.directory}` : '根目录');
         copy.append(name, path);
         link.append(icon, copy);
         results.append(link);
@@ -121,10 +123,10 @@
       const currentRequest = ++requestId;
       if (!query) {
         results.replaceChildren();
-        status.textContent = '输入文件名开始搜索';
+        status.textContent = '输入文件名或路径开始搜索';
         return;
       }
-      status.textContent = '正在从根目录搜索…';
+      status.textContent = query.includes('/') ? '正在按路径搜索…' : '正在从根目录搜索…';
       try {
         const url = new URL(location.pathname, location.origin);
         url.searchParams.set('mode', 'file-search');
@@ -138,7 +140,7 @@
           close();
           return;
         }
-        render(payload.results);
+        render(payload.results, query.includes('/'));
       } catch (error) {
         if (currentRequest !== requestId) return;
         results.replaceChildren();
@@ -147,6 +149,7 @@
     };
     toggle.addEventListener('click', () => panel.hidden ? open() : close());
     input.addEventListener('input', () => {
+      requestId++;
       clearTimeout(timer);
       timer = setTimeout(search, 220);
     });

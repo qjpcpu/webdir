@@ -1,4 +1,7 @@
 const { test, expect } = require('@playwright/test');
+const path = require('node:path');
+const fs = require('node:fs');
+const fixtures = fs.realpathSync(path.join(__dirname, 'fixtures'));
 
 test('searches descendants, ranks current files first, and opens an image in its gallery', async ({page}) => {
   await page.goto('/');
@@ -110,4 +113,66 @@ test('silently keeps the current-directory filter when fd is unavailable', async
   await expect(page.locator('.listing > .entry.image:visible .entry-name')).toHaveText('01-portrait.svg');
   await expect(page.locator('#file-search-panel')).toBeHidden();
   await expect(page.locator('body')).not.toContainText('当前设备未安装 fd');
+});
+
+
+test('locates absolute paths across directories and opens exact images', async ({page}) => {
+  await page.goto('/search-nested/');
+  await page.locator('#file-search-input').fill(path.join(fixtures, '01-portrait.svg'));
+  const result = page.locator('.file-search-result');
+  await expect(result).toHaveCount(1);
+  await expect(result.locator('.file-search-result-path')).toHaveText('搜索根目录');
+  await expect(result.locator('.file-search-result-current')).toHaveCount(0);
+  await result.click();
+  await expect(page).toHaveURL(/\/\?view=gallery$/);
+  await expect(page.locator('.lightbox-image')).toHaveAttribute('alt', '01-portrait.svg');
+  await page.keyboard.press('Escape');
+
+  await page.locator('#path-search-toggle').click();
+  await page.locator('#path-search-input').fill(path.join(fixtures, 'search-nested/portrait-notes.txt'));
+  const popupResult = page.locator('.path-search-result');
+  await expect(popupResult).toHaveCount(1);
+  await expect(popupResult.locator('.path-search-path')).toHaveText('搜索根目录 / search-nested');
+  const opened = page.waitForEvent('popup');
+  await popupResult.click();
+  const popup = await opened;
+  await expect(popup).toHaveURL(/\/search-nested\/portrait-notes\.txt$/);
+  await popup.close();
+});
+
+test('ranks partial paths from the accessible root in both search controls', async ({page}) => {
+  await page.goto('/search-nested/unrelated/');
+  const query = 'xxx/tiana/bootstrap/caddy/root.crt';
+  await page.locator('#file-search-input').fill(query);
+  await expect(page.locator('.listing > .entry.file:visible .entry-name')).toHaveText('root.crt');
+  const results = page.locator('.file-search-result');
+  await expect(results).toHaveCount(3);
+  await expect(results.locator('.file-search-result-path')).toHaveText([
+    '搜索根目录 / search-nested/tiana/bootstrap/caddy',
+    '搜索根目录 / search-nested/other/caddy',
+    '搜索根目录 / search-nested/unrelated',
+  ]);
+  await page.locator('#file-search-input').fill('tiana/bootstrap/caddy/root.crt');
+  await expect(results).toHaveCount(1);
+  await expect(results).toHaveAttribute('href', '/search-nested/tiana/bootstrap/caddy/root.crt');
+  await page.locator('#file-search-input').press('Escape');
+  await page.locator('#path-search-toggle').click();
+  await page.locator('#path-search-input').fill(query);
+  await expect(page.locator('.path-search-result')).toHaveCount(3);
+  await expect(page.locator('.path-search-result').first()).toHaveAttribute('href', '/search-nested/tiana/bootstrap/caddy/root.crt');
+  await page.locator('#path-search-input').fill('tiana/bootstrap/caddy/root.crt');
+  await expect(page.locator('.path-search-result')).toHaveCount(1);
+  await expect(page.locator('.path-search-result')).toHaveAttribute('href', '/search-nested/tiana/bootstrap/caddy/root.crt');
+});
+
+test('searches partial absolute filenames only in their parent directory', async ({page}) => {
+  await page.goto('/');
+  await page.locator('#file-search-input').fill(path.join(fixtures, 'search-nested/portrait-not'));
+  await expect(page.locator('.file-search-result')).toHaveCount(1);
+  await expect(page.locator('.file-search-result')).toHaveAttribute('href', '/search-nested/portrait-notes.txt');
+  for (const query of [path.join(fixtures, 'missing/root.crt'), path.join(fixtures, '../root.crt')]) {
+    await page.locator('#file-search-input').fill(query);
+    await expect(page.locator('.file-search-result')).toHaveCount(0);
+    await expect(page.locator('#file-search-status')).toHaveText('没有找到匹配的文件');
+  }
 });

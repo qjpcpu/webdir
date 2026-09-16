@@ -637,7 +637,17 @@ fn handle_connection_with_auth(
         } else {
             relative.parent().unwrap_or(Path::new(""))
         };
-        return match search_files(search_directory, search_relative, &query, &access) {
+        let results = if query.trim().contains('/') {
+            search_path_files(
+                &[OsStr::new("fd"), OsStr::new("fdfind")],
+                root,
+                &query,
+                &access,
+            )
+        } else {
+            search_files(search_directory, search_relative, &query, &access)
+        };
+        return match results {
             Ok(Some(results)) => send_json(
                 &mut stream,
                 &FileSearchResponse {
@@ -1681,7 +1691,7 @@ fn send_empty(stream: &mut TcpStream, status: u16, reason: &str) -> io::Result<(
 
 const FILE_SHORTCUT_JS: &str = include_str!("../assets/file-shortcuts.js");
 
-const PATH_SEARCH_CONTROL: &str = r#"<div class="path-search"><button class="path-search-toggle" id="path-search-toggle" type="button" aria-label="从根目录搜索文件" aria-expanded="false" aria-controls="path-search-panel"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6.5"></circle><path d="m14.8 14.8 5.2 5.2"></path></svg></button><section class="path-search-panel" id="path-search-panel" aria-label="文件搜索" hidden><label class="path-search-box"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6.5"></circle><path d="m14.8 14.8 5.2 5.2"></path></svg><input class="path-search-input" id="path-search-input" type="search" placeholder="从根目录搜索文件…" autocomplete="off" aria-label="从根目录搜索文件" aria-controls="path-search-results"></label><div class="path-search-status" id="path-search-status" role="status">输入文件名开始搜索</div><div class="path-search-results" id="path-search-results" role="listbox"></div></section></div>"#;
+const PATH_SEARCH_CONTROL: &str = r#"<div class="path-search"><button class="path-search-toggle" id="path-search-toggle" type="button" aria-label="从根目录搜索文件" aria-expanded="false" aria-controls="path-search-panel"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6.5"></circle><path d="m14.8 14.8 5.2 5.2"></path></svg></button><section class="path-search-panel" id="path-search-panel" aria-label="文件搜索" hidden><label class="path-search-box"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6.5"></circle><path d="m14.8 14.8 5.2 5.2"></path></svg><input class="path-search-input" id="path-search-input" type="search" placeholder="输入文件名或路径…" autocomplete="off" aria-label="从根目录搜索文件" aria-controls="path-search-results"></label><div class="path-search-status" id="path-search-status" role="status">输入文件名或路径开始搜索</div><div class="path-search-results" id="path-search-results" role="listbox"></div></section></div>"#;
 
 const PATH_SEARCH_CSS: &str = r#"
 .path-search { position:relative; flex:0 0 auto; margin-left:auto; font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans-serif; }
@@ -1872,6 +1882,172 @@ struct FileSearchResponse {
     results: Vec<FileSearchResult>,
 }
 
+fn file_search_result(
+    directory: &Path,
+    relative: &Path,
+    local_path: &Path,
+) -> Option<FileSearchResult> {
+    let name = local_path.file_name()?.to_str()?;
+    let parent = local_path.parent().unwrap_or(Path::new(""));
+    let file_path = directory.join(local_path);
+    let href = url_for_path(&relative.join(local_path), false);
+    let is_image = is_image_file(&file_path);
+    let thumbnail_href = is_image.then(|| {
+        if has_extension(&file_path, "svg") {
+            format!("{href}?mode=asset")
+        } else {
+            format!("{href}?mode=thumb")
+        }
+    });
+    let open_href = if is_image {
+        format!(
+            "{}?view=gallery&open={}",
+            url_for_path(&relative.join(parent), true),
+            percent_encode_component(name),
+        )
+    } else {
+        href
+    };
+    Some(FileSearchResult {
+        name: name.to_owned(),
+        directory: parent.to_string_lossy().replace('\\', "/"),
+        open_href,
+        thumbnail_href,
+        is_image,
+        depth: parent.components().count(),
+    })
+}
+
+fn search_path_files(
+    commands: &[&OsStr],
+    root: &Path,
+    query: &str,
+    access: &Access,
+) -> io::Result<Option<Vec<FileSearchResult>>> {
+    let query = query.trim();
+    let path = Path::new(query);
+    let base_relative = access
+        .scope
+        .as_ref()
+        .map_or(Path::new(""), |scope| scope.relative.as_path());
+    let base = root.join(base_relative);
+    let mut directory = base.clone();
+    let mut relative = base_relative.to_owned();
+    let mut depth_arguments: &[&str] = &[];
+    if path.is_absolute() {
+        let Ok(target_relative) = path.strip_prefix(root) else {
+            return Ok(Some(Vec::new()));
+        };
+        let Some(target_relative) = safe_relative_path(&target_relative.to_string_lossy()) else {
+            return Ok(Some(Vec::new()));
+        };
+        if !access.allows_request(root, &target_relative) {
+            return Ok(Some(Vec::new()));
+        }
+        let target = root.join(&target_relative);
+        match fs::canonicalize(&target) {
+            Ok(canonical) => {
+                if !canonical.is_file()
+                    || !(canonical.starts_with(root)
+                        || traverses_directory_symlink(root, &target_relative))
+                {
+                    return Ok(Some(Vec::new()));
+                }
+                let local = target_relative.strip_prefix(base_relative).unwrap();
+                return Ok(Some(
+                    file_search_result(&base, base_relative, local)
+                        .into_iter()
+                        .collect(),
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(_) => return Ok(Some(Vec::new())),
+        }
+        relative = target_relative.parent().unwrap_or(Path::new("")).to_owned();
+        directory = root.join(&relative);
+        if !directory.is_dir() {
+            return Ok(Some(Vec::new()));
+        }
+        depth_arguments = &["--max-depth", "1"];
+    }
+    let Some(name) = path
+        .file_name()
+        .and_then(OsStr::to_str)
+        .filter(|_| !query.ends_with('/'))
+    else {
+        return Ok(Some(Vec::new()));
+    };
+    for command in commands {
+        if let Ok(mut results) = search_files_with_command(
+            command,
+            &directory,
+            &relative,
+            name,
+            access,
+            depth_arguments,
+            Some(MAX_FILE_SEARCH_RESULTS),
+        ) {
+            let prefix = relative.strip_prefix(base_relative).unwrap();
+            for result in &mut results {
+                let parent = if result.directory.is_empty() {
+                    prefix.to_owned()
+                } else {
+                    prefix.join(&result.directory)
+                };
+                result.directory = parent.to_string_lossy().replace('\\', "/");
+                result.depth = parent.components().count();
+            }
+            if !path.is_absolute() {
+                let query = query.to_lowercase();
+                let contains_path = |result: &FileSearchResult| {
+                    format!("{}/{}", result.directory, result.name)
+                        .to_lowercase()
+                        .contains(&query)
+                };
+                if results.iter().any(contains_path) {
+                    results.retain(contains_path);
+                }
+            }
+            rank_path_search_results(&mut results, path);
+            return Ok(Some(results));
+        }
+    }
+    Ok(None)
+}
+
+fn rank_path_search_results(results: &mut [FileSearchResult], query: &Path) {
+    let name = query
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_lowercase();
+    let parents: Vec<_> = query
+        .parent()
+        .unwrap_or(Path::new(""))
+        .components()
+        .rev()
+        .map(|part| part.as_os_str().to_string_lossy().to_lowercase())
+        .collect();
+    results.sort_by_cached_key(|result| {
+        let suffix = Path::new(&result.directory)
+            .components()
+            .rev()
+            .zip(&parents)
+            .take_while(|(part, expected)| {
+                part.as_os_str().to_string_lossy().to_lowercase() == **expected
+            })
+            .count();
+        let result_name = result.name.to_lowercase();
+        (
+            std::cmp::Reverse(suffix),
+            result_name != name,
+            result.depth,
+            result_name,
+            result.open_href.clone(),
+        )
+    });
+}
+
 fn search_files_with_command(
     command: &OsStr,
     directory: &Path,
@@ -1917,36 +2093,9 @@ fn search_files_with_command(
         if !access.allows(&file_path) {
             continue;
         }
-        let Some(name) = local_path.file_name().and_then(OsStr::to_str) else {
-            continue;
-        };
-        let parent = local_path.parent().unwrap_or(Path::new(""));
-        let entry_relative = relative.join(&local_path);
-        let href = url_for_path(&entry_relative, false);
-        let is_image = is_image_file(&file_path);
-        let thumbnail_href = is_image.then(|| {
-            if has_extension(&file_path, "svg") {
-                format!("{href}?mode=asset")
-            } else {
-                format!("{href}?mode=thumb")
-            }
-        });
-        let open_href = if is_image {
-            let mut url = url_for_path(&relative.join(parent), true);
-            url.push_str("?view=gallery&open=");
-            url.push_str(&percent_encode_component(name));
-            url
-        } else {
-            href
-        };
-        results.push(FileSearchResult {
-            name: name.to_owned(),
-            directory: parent.to_string_lossy().replace('\\', "/"),
-            open_href,
-            thumbnail_href,
-            is_image,
-            depth: parent.components().count(),
-        });
+        if let Some(result) = file_search_result(directory, relative, &local_path) {
+            results.push(result);
+        }
     }
     results.sort_by(|left, right| {
         left.depth
@@ -2631,7 +2780,7 @@ fn render_directory_page_with_access(
         "<button class=\"directory-favourite-toggle\" id=\"directory-favourite-toggle\" type=\"button\" aria-pressed=\"false\">添加到收藏夹</button>"
     };
     let body = format!(
-        "<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">\n<title>{title} · 文件浏览</title>\n<style>{DIRECTORY_CSS}</style>\n</head>\n<body>\n<main><nav class=\"breadcrumbs\" aria-label=\"当前位置\">{breadcrumbs}</nav>{directory_favourites}<header><p class=\"eyebrow\">WEBDIR / DIRECTORY</p><h1>{title}</h1><p class=\"summary\">{directory_count} 个目录 · {file_count} 个文件</p>{directory_favourite_toggle}{gallery_toggle}<div class=\"directory-browser-tools\"><div class=\"file-search\" id=\"file-search\"><label class=\"file-search-box\" for=\"file-search-input\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"10\" cy=\"10\" r=\"6.5\"></circle><path d=\"m14.8 14.8 5.2 5.2\"></path></svg><input id=\"file-search-input\" type=\"search\" aria-label=\"搜索当前文件夹及子文件夹中的文件\" aria-controls=\"file-search-results\" aria-expanded=\"false\" placeholder=\"搜索所有文件…\" autocomplete=\"off\"></label><section class=\"file-search-panel\" id=\"file-search-panel\" aria-label=\"文件搜索结果\" hidden><div class=\"file-search-status\" id=\"file-search-status\" role=\"status\">输入文件名开始搜索</div><div class=\"file-search-results\" id=\"file-search-results\" role=\"listbox\"></div></section></div><label class=\"directory-sort\">排序<select id=\"directory-sort\" aria-label=\"目录排序\"><option value=\"name\">按名称</option><option value=\"modified\">按修改时间</option></select></label></div>{gallery_tools}<p class=\"directory-notice\" id=\"directory-notice\" role=\"status\" hidden></p></header><section class=\"listing\" aria-label=\"目录内容\">{rows}</section></main><nav class=\"scroll-jumps\" id=\"scroll-jumps\" aria-label=\"页面快速跳转\" hidden><button id=\"scroll-to-top\" type=\"button\" aria-label=\"回到顶部\" title=\"回到顶部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 14 6-6 6 6\"></path><path d=\"M6 19h12\"></path></svg></button><button id=\"scroll-to-bottom\" type=\"button\" aria-label=\"回到底部\" title=\"回到底部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 10 6 6 6-6\"></path><path d=\"M6 5h12\"></path></svg></button></nav><div class=\"image-lightbox\" id=\"image-lightbox\" role=\"dialog\" aria-modal=\"true\" aria-label=\"图片预览\" hidden><button class=\"lightbox-close\" type=\"button\" aria-label=\"关闭图片预览\">×</button><div class=\"lightbox-shell\"><div class=\"lightbox-position\" id=\"lightbox-position\" aria-live=\"polite\"></div><nav class=\"lightbox-filmstrip\" id=\"lightbox-filmstrip\" aria-label=\"图片缩略图导航\"></nav><figure><div class=\"lightbox-stage\"><img class=\"lightbox-image\" alt=\"\"><div class=\"favourite-burst\" id=\"favourite-burst\" aria-hidden=\"true\" hidden><svg viewBox=\"0 0 24 24\"><path d=\"M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21l7.7-7.5 1.1-1.1a5.5 5.5 0 0 0 0-7.8Z\"></path></svg></div></div><figcaption><span class=\"lightbox-name\"></span><span class=\"lightbox-controls\"><button class=\"preview-step\" id=\"preview-previous\" type=\"button\" aria-label=\"上一张\" title=\"上一张\">←</button><button class=\"favourite-toggle\" id=\"favourite-toggle\" type=\"button\" aria-label=\"点赞 (f)\" aria-pressed=\"false\" title=\"点赞 (f)\">♡</button><button class=\"preview-step\" id=\"preview-next\" type=\"button\" aria-label=\"下一张\" title=\"下一张\">→</button><button class=\"carousel-toggle\" id=\"carousel-toggle\" type=\"button\" aria-label=\"进入轮播 (p)\" aria-pressed=\"false\" title=\"进入轮播 (p)\">轮播</button></span></figcaption><p class=\"lightbox-error\" id=\"favourite-error\" role=\"status\" hidden></p><p class=\"lightbox-error\" id=\"image-tag-error\" role=\"status\" hidden></p></figure></div>{GALLERY_DELETE_DIALOG}</div>{GALLERY_BATCH_DELETE_DIALOG}\n<script>{FILE_SHORTCUT_JS}</script><script>{DIRECTORY_JS}</script>\n</body>\n</html>"
+        "<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">\n<title>{title} · 文件浏览</title>\n<style>{DIRECTORY_CSS}</style>\n</head>\n<body>\n<main><nav class=\"breadcrumbs\" aria-label=\"当前位置\">{breadcrumbs}</nav>{directory_favourites}<header><p class=\"eyebrow\">WEBDIR / DIRECTORY</p><h1>{title}</h1><p class=\"summary\">{directory_count} 个目录 · {file_count} 个文件</p>{directory_favourite_toggle}{gallery_toggle}<div class=\"directory-browser-tools\"><div class=\"file-search\" id=\"file-search\"><label class=\"file-search-box\" for=\"file-search-input\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"10\" cy=\"10\" r=\"6.5\"></circle><path d=\"m14.8 14.8 5.2 5.2\"></path></svg><input id=\"file-search-input\" type=\"search\" aria-label=\"搜索当前文件夹及子文件夹中的文件\" aria-controls=\"file-search-results\" aria-expanded=\"false\" placeholder=\"输入文件名或路径…\" autocomplete=\"off\"></label><section class=\"file-search-panel\" id=\"file-search-panel\" aria-label=\"文件搜索结果\" hidden><div class=\"file-search-status\" id=\"file-search-status\" role=\"status\">输入文件名或路径开始搜索</div><div class=\"file-search-results\" id=\"file-search-results\" role=\"listbox\"></div></section></div><label class=\"directory-sort\">排序<select id=\"directory-sort\" aria-label=\"目录排序\"><option value=\"name\">按名称</option><option value=\"modified\">按修改时间</option></select></label></div>{gallery_tools}<p class=\"directory-notice\" id=\"directory-notice\" role=\"status\" hidden></p></header><section class=\"listing\" aria-label=\"目录内容\">{rows}</section></main><nav class=\"scroll-jumps\" id=\"scroll-jumps\" aria-label=\"页面快速跳转\" hidden><button id=\"scroll-to-top\" type=\"button\" aria-label=\"回到顶部\" title=\"回到顶部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 14 6-6 6 6\"></path><path d=\"M6 19h12\"></path></svg></button><button id=\"scroll-to-bottom\" type=\"button\" aria-label=\"回到底部\" title=\"回到底部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 10 6 6 6-6\"></path><path d=\"M6 5h12\"></path></svg></button></nav><div class=\"image-lightbox\" id=\"image-lightbox\" role=\"dialog\" aria-modal=\"true\" aria-label=\"图片预览\" hidden><button class=\"lightbox-close\" type=\"button\" aria-label=\"关闭图片预览\">×</button><div class=\"lightbox-shell\"><div class=\"lightbox-position\" id=\"lightbox-position\" aria-live=\"polite\"></div><nav class=\"lightbox-filmstrip\" id=\"lightbox-filmstrip\" aria-label=\"图片缩略图导航\"></nav><figure><div class=\"lightbox-stage\"><img class=\"lightbox-image\" alt=\"\"><div class=\"favourite-burst\" id=\"favourite-burst\" aria-hidden=\"true\" hidden><svg viewBox=\"0 0 24 24\"><path d=\"M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21l7.7-7.5 1.1-1.1a5.5 5.5 0 0 0 0-7.8Z\"></path></svg></div></div><figcaption><span class=\"lightbox-name\"></span><span class=\"lightbox-controls\"><button class=\"preview-step\" id=\"preview-previous\" type=\"button\" aria-label=\"上一张\" title=\"上一张\">←</button><button class=\"favourite-toggle\" id=\"favourite-toggle\" type=\"button\" aria-label=\"点赞 (f)\" aria-pressed=\"false\" title=\"点赞 (f)\">♡</button><button class=\"preview-step\" id=\"preview-next\" type=\"button\" aria-label=\"下一张\" title=\"下一张\">→</button><button class=\"carousel-toggle\" id=\"carousel-toggle\" type=\"button\" aria-label=\"进入轮播 (p)\" aria-pressed=\"false\" title=\"进入轮播 (p)\">轮播</button></span></figcaption><p class=\"lightbox-error\" id=\"favourite-error\" role=\"status\" hidden></p><p class=\"lightbox-error\" id=\"image-tag-error\" role=\"status\" hidden></p></figure></div>{GALLERY_DELETE_DIALOG}</div>{GALLERY_BATCH_DELETE_DIALOG}\n<script>{FILE_SHORTCUT_JS}</script><script>{DIRECTORY_JS}</script>\n</body>\n</html>"
     )
     .replacen(
         "</head>",
@@ -3673,7 +3822,7 @@ const closeFileSearch = () => {
   fileSearchInput.setAttribute('aria-expanded', 'false');
   selectFileSearchResult(-1);
 };
-const renderFileSearchResults = (results, scope = 'tree') => {
+const renderFileSearchResults = (results, scope = 'tree', pathQuery = false) => {
   fileSearchResults.replaceChildren();
   fileSearchSelected = -1;
   if (scope === 'directory') {
@@ -3712,10 +3861,12 @@ const renderFileSearchResults = (results, scope = 'tree') => {
     name.textContent = result.name;
     const path = document.createElement('span');
     path.className = 'file-search-result-path';
-    path.textContent = result.directory ? `./${result.directory}` : '当前目录';
+    path.textContent = pathQuery
+      ? (result.directory ? `搜索根目录 / ${result.directory}` : '搜索根目录')
+      : (result.directory ? `./${result.directory}` : '当前目录');
     copy.append(name, path);
     link.append(icon, copy);
-    if (result.depth === 0) {
+    if (!pathQuery && result.depth === 0) {
       const current = document.createElement('span');
       current.className = 'file-search-result-current';
       current.textContent = '当前';
@@ -3729,10 +3880,10 @@ const runFileSearch = async () => {
   const request = ++fileSearchRequest;
   if (!query) {
     fileSearchResults.replaceChildren();
-    fileSearchStatus.textContent = '输入文件名开始搜索';
+    fileSearchStatus.textContent = '输入文件名或路径开始搜索';
     return;
   }
-  fileSearchStatus.textContent = '正在搜索当前文件夹及子文件夹…';
+  fileSearchStatus.textContent = query.includes('/') ? '正在按路径搜索…' : '正在搜索当前文件夹及子文件夹…';
   try {
     const url = new URL(location.pathname, location.origin);
     url.searchParams.set('mode', 'file-search');
@@ -3741,7 +3892,7 @@ const runFileSearch = async () => {
     if (!response.ok) throw new Error((await response.text()).trim() || '搜索失败');
     const payload = await response.json();
     if (request !== fileSearchRequest) return;
-    renderFileSearchResults(payload.results, payload.scope);
+    renderFileSearchResults(payload.results, payload.scope, query.includes('/'));
   } catch (error) {
     if (request !== fileSearchRequest) return;
     fileSearchResults.replaceChildren();
@@ -3750,6 +3901,7 @@ const runFileSearch = async () => {
 };
 fileSearchInput.addEventListener('focus', openFileSearch);
 fileSearchInput.addEventListener('input', () => {
+  fileSearchRequest++;
   openFileSearch();
   clearTimeout(fileSearchTimer);
   fileSearchTimer = setTimeout(runFileSearch, 220);
@@ -4183,7 +4335,7 @@ const sortDirectory = async () => {
   entries.forEach(entry => listing.insertBefore(entry, directoryEmpty));
 };
 const filterDirectory = () => {
-  const query = fileSearchInput.value.trim().toLowerCase();
+  const query = fileSearchInput.value.trim().toLowerCase().split('/').pop();
   const markedOnly = !!imageFilter && selectedImageFilter !== 'all';
   let directoryCount = 0;
   let fileCount = 0;
@@ -9517,6 +9669,158 @@ mod tests {
         assert!(fs::read_to_string(review::sidecar_path(&path))
             .unwrap()
             .contains("review-one"));
+    }
+
+    #[test]
+    fn absolute_path_search_locates_files_without_commands() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(directory.path()).unwrap();
+        fs::create_dir(root.join("docs")).unwrap();
+        fs::write(root.join("docs/note.txt"), "note").unwrap();
+        fs::write(root.join("docs/photo.svg"), "<svg/>").unwrap();
+        let access = Access::default();
+        let search = |query: &Path| {
+            search_path_files(&[], &root, &query.to_string_lossy(), &access)
+                .unwrap()
+                .unwrap()
+        };
+        let results = search(&root.join("docs/note.txt"));
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].open_href, "/docs/note.txt");
+        assert_eq!(results[0].directory, "docs");
+        assert_eq!(results[0].depth, 1);
+        let image = search(&root.join("docs/photo.svg"));
+        assert_eq!(image[0].open_href, "/docs/?view=gallery&open=photo.svg");
+        assert_eq!(
+            image[0].thumbnail_href.as_deref(),
+            Some("/docs/photo.svg?mode=asset")
+        );
+        assert!(search(&root.join("docs")).is_empty());
+        assert!(search(&root.join("missing/note.txt")).is_empty());
+        assert!(search(&root.with_extension("other").join("docs/note.txt")).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn absolute_path_search_limits_partial_names_to_the_parent_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(directory.path()).unwrap();
+        fs::create_dir(root.join("docs")).unwrap();
+        let command = root.join("fake-fd");
+        write_search_command(&command,
+            "pwd > search-directory.txt; printf '%s\\n' \"$@\" > search-args.txt; printf './root.crt\\0'");
+        let results = search_path_files(
+            &[command.as_os_str()],
+            &root,
+            &root.join("docs/root").to_string_lossy(),
+            &Access::default(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(results[0].open_href, "/docs/root.crt");
+        assert_eq!(results[0].directory, "docs");
+        assert_eq!(
+            fs::read_to_string(root.join("docs/search-directory.txt"))
+                .unwrap()
+                .trim(),
+            root.join("docs").to_str().unwrap()
+        );
+        let args = fs::read_to_string(root.join("docs/search-args.txt")).unwrap();
+        assert!(args.contains("--max-depth\n1\n"));
+        assert!(args.contains("--max-results\n50\n"));
+        assert!(args.ends_with("--\nroot\n.\n"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn path_search_ranks_suffixes_in_one_bounded_query() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let command = root.join("fake-fd");
+        write_search_command(&command,
+            "printf '%s\\n' \"$@\" >> search-args.txt; printf './root.crt\\0./other/caddy/root.crt\\0./tiana/bootstrap/CADDY/root.crt.backup\\0./tiana/bootstrap/CADDY/root.crt\\0./bootstrap/caddy/root.crt\\0./z/bootstrap/caddy/root.crt\\0'");
+        let results = search_path_files(
+            &[command.as_os_str()],
+            root,
+            "xxx/bootstrap/caddy/ROOT.crt",
+            &Access::default(),
+        )
+        .unwrap()
+        .unwrap();
+        let paths: Vec<_> = results
+            .iter()
+            .map(|result| result.open_href.as_str())
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                "/bootstrap/caddy/root.crt",
+                "/tiana/bootstrap/CADDY/root.crt",
+                "/z/bootstrap/caddy/root.crt",
+                "/tiana/bootstrap/CADDY/root.crt.backup",
+                "/other/caddy/root.crt",
+                "/root.crt",
+            ]
+        );
+        let args = fs::read_to_string(root.join("search-args.txt")).unwrap();
+        assert_eq!(
+            args.lines().filter(|line| *line == "--max-results").count(),
+            1
+        );
+        assert!(args.contains("--max-results\n50\n"));
+        assert!(args.ends_with("--\nROOT.crt\n.\n"));
+
+        let results = search_path_files(
+            &[command.as_os_str()],
+            root,
+            "bootstrap/caddy/ROOT.crt",
+            &Access::default(),
+        )
+        .unwrap()
+        .unwrap();
+        let paths: Vec<_> = results
+            .iter()
+            .map(|result| result.open_href.as_str())
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                "/bootstrap/caddy/root.crt",
+                "/tiana/bootstrap/CADDY/root.crt",
+                "/z/bootstrap/caddy/root.crt",
+                "/tiana/bootstrap/CADDY/root.crt.backup",
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn path_search_caps_candidates_and_checks_the_share_scope() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        fs::create_dir(root.join("shared")).unwrap();
+        fs::create_dir(root.join("private")).unwrap();
+        fs::write(root.join("private/root.crt"), "private").unwrap();
+        std::os::unix::fs::symlink(root.join("private"), root.join("shared/link")).unwrap();
+        let access = Access {
+            can_share: false,
+            scope: Some(sharing::Scope {
+                relative: PathBuf::from("shared"),
+                canonical: fs::canonicalize(root.join("shared")).unwrap(),
+            }),
+        };
+        let command = root.join("fake-fd");
+        write_search_command(&command,
+            "printf './link/root.crt\\0'; index=1; while [ $index -le 60 ]; do printf './root.crt.%02d\\0' \"$index\"; index=$((index + 1)); done");
+        let results =
+            search_path_files(&[command.as_os_str()], root, "xxx/caddy/root.crt", &access)
+                .unwrap()
+                .unwrap();
+        assert_eq!(results.len(), MAX_FILE_SEARCH_RESULTS);
+        assert!(results
+            .iter()
+            .all(|result| result.open_href.starts_with("/shared/root.crt.")));
+        assert!(results.iter().all(|result| result.directory.is_empty()));
     }
 
     #[test]

@@ -92,6 +92,15 @@ module.exports = () => {
       await shared.locator('#path-search-input').fill('private');
       await expect(shared.locator('.path-search-result')).toHaveCount(0);
       await expect(shared.locator('#path-search-status')).toHaveText('没有找到匹配的文件');
+      await shared.locator('#path-search-input').fill(path.join(directory, 'docs/project/sub/child.txt'));
+      await expect(shared.locator('.path-search-result')).toHaveCount(1);
+      await expect(shared.locator('.path-search-path')).toHaveText('搜索根目录 / sub');
+      await shared.locator('#path-search-input').fill('xxx/sub/child.txt');
+      await expect(shared.locator('.path-search-result')).toHaveCount(1);
+      await expect(shared.locator('.path-search-result')).toHaveAttribute('href', '/docs/project/sub/child.txt');
+      await shared.locator('#path-search-input').fill(path.join(directory, 'docs/other/private.md'));
+      await expect(shared.locator('.path-search-result')).toHaveCount(0);
+      await expect(shared.locator('#path-search-status')).toHaveText('没有找到匹配的文件');
       await shared.locator('#path-search-input').press('Escape');
       await shared.locator('.file-breadcrumbs a').click();
       await expect(shared.locator('.breadcrumbs a')).toHaveCount(1);

@@ -327,6 +327,42 @@ mod tests {
     }
 
     #[test]
+    fn absolute_path_search_stays_in_the_shared_directory() {
+        let server = Server::new();
+        let (_, cookie) = server.share();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            server.root().join("docs/project2"),
+            server.root().join("docs/project/linked-private"),
+        )
+        .unwrap();
+        let search = |relative: &str| {
+            let query =
+                crate::percent_encode_component(&server.root().join(relative).to_string_lossy());
+            let response = server.request(
+                "GET",
+                &format!("/docs/project/sub/?mode=file-search&q={query}"),
+                &cookie,
+                "",
+            );
+            assert!(response.starts_with("HTTP/1.1 200"));
+            serde_json::from_str::<serde_json::Value>(body(&response)).unwrap()
+        };
+        let result = search("docs/project/note.md");
+        assert_eq!(result["results"][0]["open_href"], "/docs/project/note.md");
+        assert_eq!(result["results"][0]["directory"], "");
+        let child = search("docs/project/sub/child.md");
+        assert_eq!(child["results"][0]["directory"], "sub");
+        for path in [
+            "docs/project2/private.md",
+            "docs/project/linked-private/private.md",
+            "docs/project/missing/file.txt",
+        ] {
+            assert_eq!(search(path)["results"], serde_json::json!([]));
+        }
+    }
+
+    #[test]
     fn shared_navigation_and_all_file_operations_stay_in_scope() {
         let server = Server::new();
         let (_, cookie) = server.share();
