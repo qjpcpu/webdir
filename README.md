@@ -208,6 +208,9 @@ GIF、SVG、超出处理限制或转换失败的图片直接使用原文件。
 
 Rust 单元与接口测试：
 
+分享隔离测试会运行真实的文件搜索，请先安装 `fd`（Ubuntu/Debian：`sudo apt-get install fd-find`，
+macOS：`brew install fd`）。
+
 ```bash
 cargo test
 ```

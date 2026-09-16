@@ -121,6 +121,8 @@ impl Access {
 
 #[cfg(test)]
 mod tests {
+    mod privacy_tests;
+
     use super::*;
     use crate::{CollaborationHub, ReviewHub, StateStore};
     use std::io::{Read, Write};
@@ -129,6 +131,7 @@ mod tests {
     struct Server {
         directory: tempfile::TempDir,
         state: StateStore,
+        image_cache: Option<crate::ImageCache>,
     }
 
     impl Server {
@@ -151,6 +154,7 @@ mod tests {
             Self {
                 directory,
                 state: StateStore::new(None).unwrap(),
+                image_cache: None,
             }
         }
 
@@ -170,8 +174,22 @@ mod tests {
             body: &str,
             secret: &str,
         ) -> String {
+            String::from_utf8(self.request_bytes(method, target, cookie, body, &[], secret))
+                .unwrap()
+        }
+
+        fn request_bytes(
+            &self,
+            method: &str,
+            target: &str,
+            cookie: &str,
+            body: &str,
+            headers: &[(&str, &str)],
+            secret: &str,
+        ) -> Vec<u8> {
             let root = self.root();
             let state = self.state.clone();
+            let image_cache = self.image_cache.clone();
             let secret = secret.to_owned();
             let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
             let address = listener.local_addr().unwrap();
@@ -183,17 +201,24 @@ mod tests {
                     &CollaborationHub::default(),
                     &ReviewHub::default(),
                     false,
-                    None,
+                    image_cache.as_ref(),
                     &state,
                     Some(&secret),
                 )
                 .unwrap();
             });
             let mut client = TcpStream::connect(address).unwrap();
-            let request = format!("{method} {target} HTTP/1.1\r\nHost: localhost\r\nAccept: text/html\r\nCookie: {cookie}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            client
+                .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .unwrap();
+            let headers = headers
+                .iter()
+                .map(|(name, value)| format!("{name}: {value}\r\n"))
+                .collect::<String>();
+            let request = format!("{method} {target} HTTP/1.1\r\nHost: localhost\r\nAccept: text/html\r\nCookie: {cookie}\r\nContent-Length: {}\r\nConnection: close\r\n{headers}\r\n{body}", body.len());
             client.write_all(request.as_bytes()).unwrap();
-            let mut response = String::new();
-            client.read_to_string(&mut response).unwrap();
+            let mut response = Vec::new();
+            client.read_to_end(&mut response).unwrap();
             server.join().unwrap();
             response
         }
