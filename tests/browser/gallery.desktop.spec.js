@@ -2,16 +2,17 @@ const { test, expect } = require('@playwright/test');
 const { openGalleryImage } = require('./helpers');
 
 test('sorting works in gallery and list views and drives preview order', async ({page}) => {
+  await page.route('**/*?mode=directory-entries', async route => {
+    const response = await route.fetch();
+    const entries = await response.json();
+    const modified = {'01-portrait.svg': 100, '02-landscape.svg': 300, '03-square.svg': 200};
+    entries.forEach(entry => { if (modified[entry.name]) entry.modified = modified[entry.name]; });
+    await route.fulfill({response, json: entries});
+  });
   await page.goto('/?view=gallery');
   const imageNames = () => page.locator('.listing > .entry.image .entry-name').allTextContents();
   await expect(page.locator('#directory-sort')).toHaveValue('name');
   await expect.poll(imageNames).toEqual(['01-portrait.svg', '02-landscape.svg', '03-square.svg']);
-  await page.evaluate(() => {
-    const modified = {'01-portrait.svg': 100, '02-landscape.svg': 300, '03-square.svg': 200};
-    document.querySelectorAll('.entry.image').forEach(entry => {
-      entry.dataset.modified = String(modified[entry.querySelector('.entry-name').textContent]);
-    });
-  });
 
   await page.locator('#directory-sort').selectOption('modified');
   await expect.poll(imageNames).toEqual(['02-landscape.svg', '03-square.svg', '01-portrait.svg']);

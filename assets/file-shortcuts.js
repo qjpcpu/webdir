@@ -253,8 +253,7 @@
     const gallery = document.querySelector('.listing.gallery');
     const filter = document.querySelector('#image-filter')?.value;
     const copyGallery = !lightbox && gallery && filter && filter !== 'all';
-    const names = copyGallery ? Array.from(gallery.querySelectorAll('.entry.image:not([hidden])'))
-      .map(entry => entry.querySelector('.entry-name').textContent) : [];
+    const names = copyGallery ? (window.webdirDirectory?.visibleImages() || []).map(entry => entry.name) : [];
     const key = copyGallery ? JSON.stringify([filter, names]) : path;
     if (!key) {
       reset();

@@ -430,10 +430,14 @@ module.exports = () => test.describe('gallery image actions', () => {
       await expect(page.locator('#clear-marks-description')).toContainText('1 张图片');
       await expect(page.locator('#clear-marks-description')).toContainText(filter === 'all' ? '喜欢和数字标记' : filter === 'favourite' ? '喜欢标记' : '数字标记');
       await reloadAfter(page, () => page.locator('#clear-marks-confirm').click());
-      await expect(entry(page, names[0])).toHaveAttribute('data-favourite', String(filter === 'tag3'));
-      await expect(entry(page, names[0])).toHaveAttribute('data-image-tag', filter === 'favourite' ? '3' : '');
-      await expect(entry(page, names[1])).toHaveAttribute('data-favourite', 'true');
-      await expect(entry(page, names[1])).toHaveAttribute('data-image-tag', '3');
+      const response = await page.request.get(`${url}?mode=directory-entries`);
+      const entries = await response.json();
+      const first = entries.find(item => item.name === names[0]);
+      const second = entries.find(item => item.name === names[1]);
+      expect(first.favourite).toBe(String(filter === 'tag3'));
+      expect(first.imageTag).toBe(filter === 'favourite' ? '3' : '');
+      expect(second.favourite).toBe('true');
+      expect(second.imageTag).toBe('3');
     }
   });
 

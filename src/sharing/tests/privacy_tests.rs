@@ -126,6 +126,7 @@ fn directory_views_search_and_metadata_endpoints_reject_outside_targets() {
         "/docs/missing/",
         "/docs/project2/?view=gallery",
         "/docs/project2/?mode=similarity-order",
+        "/docs/project2/?mode=directory-entries",
         "/docs/project2/?mode=file-search&q=private",
         "/docs/project2/?mode=file-search&scope=root&q=private",
         "/?mode=file-search&scope=root&q=private",
@@ -413,6 +414,7 @@ fn symlink_chains_and_external_directories_are_filtered_at_every_read_entry() {
     for target in [
         "/docs/project/external/",
         "/docs/project/chain/?view=gallery",
+        "/docs/project/chain/?mode=directory-entries",
         "/docs/project/external/?mode=similarity-order",
         "/docs/project/external/?mode=file-search&scope=root&q=private",
         "/docs/project/chain/private.md?mode=raw",
@@ -439,6 +441,7 @@ fn symlink_chains_and_external_directories_are_filtered_at_every_read_entry() {
         "",
         "?view=gallery",
         "?mode=similarity-order",
+        "?mode=directory-entries",
         "?mode=file-search&scope=root&q=private",
     ] {
         let response = server.request("GET", &format!("/docs/project/{query}"), &cookie, "");

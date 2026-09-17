@@ -1,0 +1,20 @@
+html { overflow-x:clip; }
+body:not(.gallery-mode) #select-images { display:none; }
+#directory-loading { grid-column:1/-1; }
+#directory-loading p { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); }
+#directory-load-error { grid-column:1/-1; }
+#directory-loading p,#directory-load-error { color:var(--muted); font-size:.88rem; }
+.directory-skeletons { display:grid; gap:0; }
+.directory-skeletons i { display:block; height:4.25rem; border-radius:.55rem; background:var(--accent-soft); }
+.gallery-mode .directory-skeletons { grid-template-columns:repeat(auto-fill,minmax(168px,1fr)); gap:.42rem; }
+.gallery-mode .directory-skeletons i { height:auto; aspect-ratio:1; }
+#directory-load-error { padding:2rem; text-align:center; }
+#directory-retry { padding:.6rem 1rem; border:1px solid var(--line); border-radius:.5rem; color:var(--ink); background:var(--surface); cursor:pointer; }
+.listing { --directory-card-height:15.75; }
+.listing.virtual-directory { position:relative; overflow-anchor:none; }
+.listing.virtual-directory > .entry,.listing.virtual-directory > .entry.image { position:absolute; margin:0; content-visibility:visible; }
+.listing.virtual-directory > .gallery-other-heading { position:absolute; margin:0; padding:1.6rem .55rem .35rem; }
+@media (max-width:650px) {
+  .listing { --directory-card-height:12.5; }
+  .gallery-mode .directory-skeletons { grid-template-columns:repeat(auto-fill,minmax(145px,1fr)); gap:.65rem; }
+}

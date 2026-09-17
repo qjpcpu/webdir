@@ -63,6 +63,18 @@ impl StateStore {
         self.set("favourites", path, value)
     }
 
+    pub(crate) fn directory_image_state(&self, path: &Path) -> io::Result<(bool, Option<u8>)> {
+        let connection = self.connection.lock().unwrap();
+        let mut statement = connection.prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM favourites WHERE path = ?1), (SELECT tag FROM image_tags WHERE path = ?1)"
+        ).map_err(sqlite_error)?;
+        statement
+            .query_row(params![path_bytes(path)], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .map_err(sqlite_error)
+    }
+
     pub(crate) fn image_tag(&self, path: &Path) -> io::Result<Option<u8>> {
         self.connection
             .lock()

@@ -87,7 +87,8 @@
   const listing = document.querySelector('.listing');
   if (listing) {
     button(document.querySelector('main > header h1'), location.pathname, true);
-    listing.querySelectorAll('.entry').forEach(entry => {
+    const mountEntry = entry => {
+      if (entry.querySelector('.entry-actions')) return;
       const link = entry.querySelector('.file-open, .folder-open');
       if (link) {
         const actions = document.createElement('div');
@@ -97,7 +98,9 @@
         button(actions, link.href, entry.classList.contains('folder'));
         entry.append(actions);
       }
-    });
+    };
+    listing.querySelectorAll('.entry').forEach(mountEntry);
+    document.addEventListener('directory-entry-mounted', event => mountEntry(event.detail.node));
   } else {
     const toolbar = document.querySelector('.top-actions') || document.querySelector('body > header');
     if (toolbar) button(toolbar, location.pathname, false);

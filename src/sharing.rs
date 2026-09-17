@@ -530,10 +530,10 @@ mod tests {
             root.join("docs/project/leak.svg"),
         )
         .unwrap();
-        let listing = server.request("GET", "/docs/project/", &cookie, "");
-        assert!(!listing.contains("href=\"/docs/project/outside/\""));
+        let listing = server.request("GET", "/docs/project/?mode=directory-entries", &cookie, "");
+        assert!(!listing.contains("\"listHref\":\"/docs/project/outside/\""));
         assert!(!listing.contains("leak.svg"));
-        assert!(listing.contains("href=\"/docs/project/inside/\""));
+        assert!(listing.contains("\"listHref\":\"/docs/project/inside/\""));
         assert!(server
             .request("GET", "/docs/project/inside/child.md", &cookie, "")
             .starts_with("HTTP/1.1 200"));
