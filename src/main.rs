@@ -528,6 +528,19 @@ fn handle_connection_with_auth(
         return send_text(&mut stream, 403, "Forbidden", "超出分享范围\n", head_only);
     }
 
+    if mode.as_deref() == Some("directory-favourite") && method == "DELETE" {
+        return match state.set_directory_favourite(&join_relative_path(root, &relative), false) {
+            Ok(()) => send_empty(&mut stream, 204, "No Content"),
+            Err(_) => send_text(
+                &mut stream,
+                500,
+                "Internal Server Error",
+                "保存目录收藏失败，请重试。\n",
+                false,
+            ),
+        };
+    }
+
     let canonical = match fs::canonicalize(root.join(&relative)) {
         Ok(path) if path.starts_with(root) || traverses_directory_symlink(root, &relative) => path,
         Ok(_) => return send_text(&mut stream, 403, "Forbidden", "禁止访问\n", head_only),
@@ -759,7 +772,7 @@ fn handle_connection_with_auth(
         };
     }
     if mode.as_deref() == Some("directory-favourite") {
-        if !matches!(method, "PUT" | "DELETE") || !metadata.is_dir() {
+        if method != "PUT" || !metadata.is_dir() {
             return send_text(
                 &mut stream,
                 405,
@@ -768,9 +781,7 @@ fn handle_connection_with_auth(
                 head_only,
             );
         }
-        return match state
-            .set_directory_favourite(&join_relative_path(root, &relative), method == "PUT")
-        {
+        return match state.set_directory_favourite(&join_relative_path(root, &relative), true) {
             Ok(()) => send_empty(&mut stream, 204, "No Content"),
             Err(_) => send_text(
                 &mut stream,
@@ -9167,6 +9178,48 @@ mod tests {
         );
         assert!(request("DELETE", "/nested/?mode=directory-favourite").starts_with("HTTP/1.1 204"));
         let removed = request("GET", "/");
+        assert!(!removed.contains("class=\"directory-favourites\""));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn directory_favourite_request_removes_a_missing_directory_shortcut() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(directory.path()).unwrap();
+        let favourite = root.join("nested");
+        fs::create_dir(&favourite).unwrap();
+        let state = StateStore::new(None).unwrap();
+        state.set_directory_favourite(&favourite, true).unwrap();
+        state
+            .set_directory_favourite_label(&favourite, "My folder")
+            .unwrap();
+        fs::remove_dir(&favourite).unwrap();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            for _ in 0..3 {
+                let (stream, _) = listener.accept().unwrap();
+                handle_connection(
+                    stream,
+                    &root,
+                    &CollaborationHub::default(),
+                    &ReviewHub::default(),
+                    false,
+                    None,
+                    &state,
+                )
+                .unwrap();
+            }
+            assert!(!state.is_directory_favourite(&favourite).unwrap());
+            assert_eq!(state.directory_favourite_label(&favourite).unwrap(), None);
+        });
+
+        let listed = test_http_request(address, "GET", "/", "");
+        assert!(listed.contains("data-directory-favourite-remove=\"/nested/\""));
+        let response =
+            test_http_request(address, "DELETE", "/nested/?mode=directory-favourite", "");
+        assert!(response.starts_with("HTTP/1.1 204"), "{response}");
+        let removed = test_http_request(address, "GET", "/", "");
         assert!(!removed.contains("class=\"directory-favourites\""));
         server.join().unwrap();
     }
