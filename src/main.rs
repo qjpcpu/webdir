@@ -541,8 +541,22 @@ fn handle_connection_with_auth(
         };
     }
 
-    let canonical = match fs::canonicalize(root.join(&relative)) {
-        Ok(path) if path.starts_with(root) || traverses_directory_symlink(root, &relative) => path,
+    let root_search = mode.as_deref() == Some("file-search")
+        && query_parameter(query, "scope").as_deref() == Some("root");
+    let resolved_relative = if root_search {
+        access
+            .scope
+            .as_ref()
+            .map_or(Path::new(""), |scope| scope.relative.as_path())
+    } else {
+        relative.as_path()
+    };
+    let canonical = match fs::canonicalize(root.join(resolved_relative)) {
+        Ok(path)
+            if path.starts_with(root) || traverses_directory_symlink(root, resolved_relative) =>
+        {
+            path
+        }
         Ok(_) => return send_text(&mut stream, 403, "Forbidden", "禁止访问\n", head_only),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             let body = access.not_found(&decoded);
@@ -628,7 +642,6 @@ fn handle_connection_with_auth(
                 head_only,
             );
         }
-        let root_search = query_parameter(query, "scope").as_deref() == Some("root");
         let query = query_parameter(query, "q").unwrap_or_default();
         let search_directory = if root_search {
             access

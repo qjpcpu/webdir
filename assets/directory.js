@@ -69,7 +69,7 @@ const renderFileSearchResults = (results, scope = 'tree', pathQuery = false) => 
     const path = document.createElement('span');
     path.className = 'file-search-result-path';
     path.textContent = pathQuery
-      ? (result.directory ? `搜索根目录 / ${result.directory}` : '搜索根目录')
+      ? `/${result.directory}`
       : (result.directory ? `./${result.directory}` : '当前目录');
     copy.append(name, path);
     link.append(icon, copy);
@@ -96,7 +96,11 @@ const runFileSearch = async () => {
     url.searchParams.set('mode', 'file-search');
     url.searchParams.set('q', query);
     const response = await fetch(url);
-    if (!response.ok) throw new Error((await response.text()).trim() || '搜索失败');
+    if (!response.ok) {
+      const message = response.headers.get('content-type')?.startsWith('text/plain')
+        ? (await response.text()).trim() : '';
+      throw new Error(message || `搜索失败（HTTP ${response.status}）`);
+    }
     const payload = await response.json();
     if (request !== fileSearchRequest) return;
     renderFileSearchResults(payload.results, payload.scope, query.includes('/'));

@@ -76,7 +76,7 @@
       toggle.setAttribute('aria-expanded', 'false');
       select(-1);
     };
-    const render = (items, pathQuery) => {
+    const render = items => {
       results.replaceChildren();
       selected = -1;
       status.textContent = items.length ? `${items.length} 个匹配文件` : '没有找到匹配的文件';
@@ -110,9 +110,7 @@
         name.textContent = result.name;
         const path = document.createElement('span');
         path.className = 'path-search-path';
-        path.textContent = pathQuery
-          ? (result.directory ? `搜索根目录 / ${result.directory}` : '搜索根目录')
-          : (result.directory ? `./${result.directory}` : '根目录');
+        path.textContent = `/${result.directory}`;
         copy.append(name, path);
         link.append(icon, copy);
         results.append(link);
@@ -133,14 +131,18 @@
         url.searchParams.set('scope', 'root');
         url.searchParams.set('q', query);
         const response = await fetch(url);
-        if (!response.ok) throw new Error((await response.text()).trim() || '搜索失败');
+        if (!response.ok) {
+          const message = response.headers.get('content-type')?.startsWith('text/plain')
+            ? (await response.text()).trim() : '';
+          throw new Error(message || `搜索失败（HTTP ${response.status}）`);
+        }
         const payload = await response.json();
         if (currentRequest !== requestId) return;
         if (payload.scope === 'directory') {
           close();
           return;
         }
-        render(payload.results, query.includes('/'));
+        render(payload.results);
       } catch (error) {
         if (currentRequest !== requestId) return;
         results.replaceChildren();

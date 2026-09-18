@@ -296,6 +296,56 @@ fn websocket_upgrades_cannot_open_outside_documents() {
 }
 
 #[test]
+fn root_search_from_removed_directories_preserves_share_scope() {
+    let server = Server::new();
+    let (_, cookie) = server.share();
+    let removed = server.root().join("docs/project/removed");
+    fs::create_dir(&removed).unwrap();
+    fs::remove_dir(&removed).unwrap();
+    let outside = server.root().join("docs/project2/private.md");
+    for (query, expected) in [
+        ("note".to_owned(), vec!["/docs/project/note.md"]),
+        (
+            "sub/child.md".to_owned(),
+            vec!["/docs/project/sub/child.md"],
+        ),
+        ("private".to_owned(), vec![]),
+        ("xxx/project2/private.md".to_owned(), vec![]),
+        (outside.to_string_lossy().into_owned(), vec![]),
+    ] {
+        let query = crate::percent_encode_component(&query);
+        let target = format!("/docs/project/removed/?mode=file-search&scope=root&q={query}");
+        let response = server.request("GET", &target, &cookie, "");
+        assert_status(response.as_bytes(), 200, &target);
+        let json: serde_json::Value = serde_json::from_str(body(&response)).unwrap();
+        assert_eq!(json["scope"], "tree");
+        let hrefs: Vec<_> = json["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|result| result["open_href"].as_str().unwrap())
+            .collect();
+        assert_eq!(hrefs, expected, "{target}: {json}");
+    }
+    let response = server.request(
+        "GET",
+        "/docs/project/removed/?mode=file-search&scope=root&q=private",
+        OWNER,
+        "",
+    );
+    assert_status(response.as_bytes(), 200, "owner root search");
+    let json: serde_json::Value = serde_json::from_str(body(&response)).unwrap();
+    assert_eq!(json["results"][0]["open_href"], "/docs/project2/private.md");
+    let response = server.request(
+        "GET",
+        "/docs/project2/removed/?mode=file-search&scope=root&q=note",
+        &cookie,
+        "",
+    );
+    assert_status(response.as_bytes(), 403, "outside share scope");
+}
+
+#[test]
 fn root_and_path_search_return_only_shared_files_and_image_links() {
     let server = Server::new();
     let (_, cookie) = server.share();

@@ -3,6 +3,36 @@ const path = require('node:path');
 const fs = require('node:fs');
 const fixtures = fs.realpathSync(path.join(__dirname, 'fixtures'));
 
+test('searches the root after the current directory is removed', async ({page}) => {
+  const directory = fs.mkdtempSync(path.join(fixtures, 'removed-search-'));
+  try {
+    await page.goto(`/${path.basename(directory)}/`);
+    await expect(page.locator('.listing')).toHaveAttribute('aria-busy', 'false');
+    fs.rmdirSync(directory);
+    await page.locator('#path-search-toggle').click();
+    await page.locator('#path-search-input').fill('01-portrait');
+    await expect(page.locator('.path-search-result')).toHaveCount(1);
+    await expect(page.locator('.path-search-name')).toHaveText('01-portrait.svg');
+  } finally {
+    fs.rmSync(directory, {recursive: true, force: true});
+  }
+});
+
+test('shows readable search errors for HTML and plain text responses', async ({page}) => {
+  await page.goto('/');
+  await page.locator('#path-search-toggle').click();
+  for (const [contentType, body, message] of [
+    ['text/html', '<!doctype html><html><body>Not Found</body></html>', '搜索失败（HTTP 404）'],
+    ['text/plain', '超出分享范围\n', '超出分享范围'],
+  ]) {
+    await page.route(url => url.searchParams.get('mode') === 'file-search', route => route.fulfill({
+      status: 404, contentType, body,
+    }));
+    await page.locator('#path-search-input').fill(contentType);
+    await expect(page.locator('#path-search-status')).toHaveText(message);
+  }
+});
+
 test('searches descendants, ranks current files first, and opens an image in its gallery', async ({page}) => {
   await page.goto('/');
   await page.locator('#file-search-input').fill('portrait');
@@ -64,7 +94,7 @@ test('shows root search beside every path bar without a command shortcut', async
   const result = page.locator('.path-search-result');
   await expect(result).toHaveCount(1);
   await expect(result.locator('.path-search-name')).toHaveText('01-portrait.svg');
-  await expect(result.locator('.path-search-path')).toHaveText('根目录');
+  await expect(result.locator('.path-search-path')).toHaveText('/');
   await expect(result).toHaveAttribute('target', '_blank');
   await expect(result.locator('.path-search-icon img')).toHaveAttribute('src', '/01-portrait.svg?mode=asset');
   const iconBox = await result.locator('.path-search-icon').boundingBox();
@@ -121,7 +151,7 @@ test('locates absolute paths across directories and opens exact images', async (
   await page.locator('#file-search-input').fill(path.join(fixtures, '01-portrait.svg'));
   const result = page.locator('.file-search-result');
   await expect(result).toHaveCount(1);
-  await expect(result.locator('.file-search-result-path')).toHaveText('搜索根目录');
+  await expect(result.locator('.file-search-result-path')).toHaveText('/');
   await expect(result.locator('.file-search-result-current')).toHaveCount(0);
   await result.click();
   await expect(page).toHaveURL(/\/\?view=gallery$/);
@@ -132,7 +162,7 @@ test('locates absolute paths across directories and opens exact images', async (
   await page.locator('#path-search-input').fill(path.join(fixtures, 'search-nested/portrait-notes.txt'));
   const popupResult = page.locator('.path-search-result');
   await expect(popupResult).toHaveCount(1);
-  await expect(popupResult.locator('.path-search-path')).toHaveText('搜索根目录 / search-nested');
+  await expect(popupResult.locator('.path-search-path')).toHaveText('/search-nested');
   const opened = page.waitForEvent('popup');
   await popupResult.click();
   const popup = await opened;
@@ -148,9 +178,9 @@ test('ranks partial paths from the accessible root in both search controls', asy
   const results = page.locator('.file-search-result');
   await expect(results).toHaveCount(3);
   await expect(results.locator('.file-search-result-path')).toHaveText([
-    '搜索根目录 / search-nested/tiana/bootstrap/caddy',
-    '搜索根目录 / search-nested/other/caddy',
-    '搜索根目录 / search-nested/unrelated',
+    '/search-nested/tiana/bootstrap/caddy',
+    '/search-nested/other/caddy',
+    '/search-nested/unrelated',
   ]);
   await page.locator('#file-search-input').fill('tiana/bootstrap/caddy/root.crt');
   await expect(results).toHaveCount(1);
