@@ -5,137 +5,7 @@ window.addEventListener('beforeunload', () => {
   history.replaceState({...history.state, scrollX, scrollY}, '');
 });
 
-const fileSearch = document.querySelector('#file-search');
 const fileSearchInput = document.querySelector('#file-search-input');
-const fileSearchPanel = document.querySelector('#file-search-panel');
-const fileSearchStatus = document.querySelector('#file-search-status');
-const fileSearchResults = document.querySelector('#file-search-results');
-let fileSearchTimer = null;
-let fileSearchRequest = 0;
-let fileSearchSelected = -1;
-const fileSearchLinks = () => Array.from(fileSearchResults.querySelectorAll('.file-search-result'));
-const selectFileSearchResult = index => {
-  const links = fileSearchLinks();
-  fileSearchSelected = links.length && index >= 0 ? Math.min(index, links.length - 1) : -1;
-  links.forEach((link, itemIndex) => link.setAttribute('aria-selected', String(itemIndex === fileSearchSelected)));
-  links[fileSearchSelected]?.scrollIntoView({block: 'nearest'});
-};
-const openFileSearch = () => {
-  fileSearchPanel.hidden = false;
-  fileSearchInput.setAttribute('aria-expanded', 'true');
-};
-const closeFileSearch = () => {
-  fileSearchPanel.hidden = true;
-  fileSearchInput.setAttribute('aria-expanded', 'false');
-  selectFileSearchResult(-1);
-};
-const renderFileSearchResults = (results, scope = 'tree', pathQuery = false) => {
-  fileSearchResults.replaceChildren();
-  fileSearchSelected = -1;
-  if (scope === 'directory') {
-    closeFileSearch();
-    return;
-  }
-  fileSearchStatus.textContent = results.length ? `${results.length} 个匹配结果` : '没有找到匹配的文件或文件夹';
-  results.forEach(result => {
-    const link = document.createElement('a');
-    link.className = 'file-search-result';
-    link.href = result.open_href;
-    link.role = 'option';
-    link.setAttribute('aria-selected', 'false');
-    const icon = document.createElement('span');
-    icon.className = 'file-search-result-icon';
-    if (result.is_dir) {
-      icon.textContent = '目录';
-    } else if (result.thumbnail_href) {
-      icon.classList.add('image');
-      const thumbnail = document.createElement('img');
-      thumbnail.src = result.thumbnail_href;
-      thumbnail.alt = '';
-      thumbnail.loading = 'lazy';
-      thumbnail.decoding = 'async';
-      thumbnail.addEventListener('error', () => {
-        thumbnail.remove();
-        icon.classList.remove('image');
-        icon.textContent = 'IMG';
-      });
-      icon.append(thumbnail);
-    } else {
-      icon.textContent = result.name.split('.').pop()?.slice(0, 4).toUpperCase() || 'FILE';
-    }
-    const copy = document.createElement('span');
-    copy.className = 'file-search-result-copy';
-    const name = document.createElement('span');
-    name.className = 'file-search-result-name';
-    name.textContent = result.name;
-    const path = document.createElement('span');
-    path.className = 'file-search-result-path';
-    path.textContent = pathQuery
-      ? `/${result.directory}`
-      : (result.directory ? `./${result.directory}` : '当前目录');
-    copy.append(name, path);
-    link.append(icon, copy);
-    if (!pathQuery && result.depth === 0) {
-      const current = document.createElement('span');
-      current.className = 'file-search-result-current';
-      current.textContent = '当前';
-      link.append(current);
-    }
-    fileSearchResults.append(link);
-  });
-};
-const runFileSearch = async () => {
-  const query = fileSearchInput.value.trim();
-  const request = ++fileSearchRequest;
-  if (!query) {
-    fileSearchResults.replaceChildren();
-    fileSearchStatus.textContent = '输入文件、文件夹名或路径开始搜索';
-    return;
-  }
-  fileSearchStatus.textContent = query.includes('/') ? '正在按路径搜索…' : '正在搜索当前文件夹及子文件夹…';
-  try {
-    const url = new URL(location.pathname, location.origin);
-    url.searchParams.set('mode', 'file-search');
-    url.searchParams.set('q', query);
-    const response = await fetch(url);
-    if (!response.ok) {
-      const message = response.headers.get('content-type')?.startsWith('text/plain')
-        ? (await response.text()).trim() : '';
-      throw new Error(message || `搜索失败（HTTP ${response.status}）`);
-    }
-    const payload = await response.json();
-    if (request !== fileSearchRequest) return;
-    renderFileSearchResults(payload.results, payload.scope, query.includes('/'));
-  } catch (error) {
-    if (request !== fileSearchRequest) return;
-    fileSearchResults.replaceChildren();
-    fileSearchStatus.textContent = error.message;
-  }
-};
-fileSearchInput.addEventListener('focus', openFileSearch);
-fileSearchInput.addEventListener('input', () => {
-  fileSearchRequest++;
-  openFileSearch();
-  clearTimeout(fileSearchTimer);
-  fileSearchTimer = setTimeout(runFileSearch, 220);
-});
-fileSearchInput.addEventListener('keydown', event => {
-  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-    event.preventDefault();
-    const delta = event.key === 'ArrowDown' ? 1 : -1;
-    selectFileSearchResult(fileSearchSelected < 0 ? (delta > 0 ? 0 : fileSearchLinks().length - 1) : fileSearchSelected + delta);
-  } else if (event.key === 'Enter' && fileSearchSelected >= 0) {
-    event.preventDefault();
-    fileSearchLinks()[fileSearchSelected]?.click();
-  } else if (event.key === 'Escape') {
-    event.preventDefault();
-    closeFileSearch();
-    fileSearchInput.blur();
-  }
-});
-document.addEventListener('click', event => {
-  if (!fileSearch.contains(event.target)) closeFileSearch();
-});
 const directoryNotice = document.querySelector('#directory-notice');
 const directoryFavouriteToggle = document.querySelector('#directory-favourite-toggle');
 const favouritePathname = path => new URL(path, location.origin).pathname;
@@ -552,7 +422,7 @@ const sortDirectory = async () => {
   directoryViewModel.schedule(true);
 };
 const filterDirectory = () => {
-  const query = fileSearchInput.value.trim().toLowerCase().split('/').pop();
+  const query = fileSearchInput.value.trim().toLowerCase();
   const markedOnly = !!imageFilter && selectedImageFilter !== 'all';
   let directoryCount = 0;
   let fileCount = 0;
@@ -587,7 +457,6 @@ directorySort.addEventListener('change', () => {
 if (directorySort.value === 'similarity') directoryEntries.sort(compareEntryNames);
 sortDirectory();
 filterDirectory();
-if (fileSearchInput.value.trim()) runFileSearch();
 
 const scrollJumps = document.querySelector('#scroll-jumps');
 const scrollToTop = scrollJumps.querySelector('#scroll-to-top');
