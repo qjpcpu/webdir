@@ -36,7 +36,7 @@ const renderFileSearchResults = (results, scope = 'tree', pathQuery = false) => 
     closeFileSearch();
     return;
   }
-  fileSearchStatus.textContent = results.length ? `${results.length} 个匹配文件` : '没有找到匹配的文件';
+  fileSearchStatus.textContent = results.length ? `${results.length} 个匹配结果` : '没有找到匹配的文件或文件夹';
   results.forEach(result => {
     const link = document.createElement('a');
     link.className = 'file-search-result';
@@ -45,7 +45,9 @@ const renderFileSearchResults = (results, scope = 'tree', pathQuery = false) => 
     link.setAttribute('aria-selected', 'false');
     const icon = document.createElement('span');
     icon.className = 'file-search-result-icon';
-    if (result.thumbnail_href) {
+    if (result.is_dir) {
+      icon.textContent = '目录';
+    } else if (result.thumbnail_href) {
       icon.classList.add('image');
       const thumbnail = document.createElement('img');
       thumbnail.src = result.thumbnail_href;
@@ -87,7 +89,7 @@ const runFileSearch = async () => {
   const request = ++fileSearchRequest;
   if (!query) {
     fileSearchResults.replaceChildren();
-    fileSearchStatus.textContent = '输入文件名或路径开始搜索';
+    fileSearchStatus.textContent = '输入文件、文件夹名或路径开始搜索';
     return;
   }
   fileSearchStatus.textContent = query.includes('/') ? '正在按路径搜索…' : '正在搜索当前文件夹及子文件夹…';

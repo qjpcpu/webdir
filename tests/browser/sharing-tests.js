@@ -91,7 +91,7 @@ module.exports = () => {
       await expect(shared.locator('.path-search-result')).toContainText('sub');
       await shared.locator('#path-search-input').fill('private');
       await expect(shared.locator('.path-search-result')).toHaveCount(0);
-      await expect(shared.locator('#path-search-status')).toHaveText('没有找到匹配的文件');
+      await expect(shared.locator('#path-search-status')).toHaveText('没有找到匹配的文件或文件夹');
       await shared.locator('#path-search-input').fill(path.join(directory, 'docs/project/sub/child.txt'));
       await expect(shared.locator('.path-search-result')).toHaveCount(1);
       await expect(shared.locator('.path-search-path')).toHaveText('/sub');
@@ -100,7 +100,7 @@ module.exports = () => {
       await expect(shared.locator('.path-search-result')).toHaveAttribute('href', '/docs/project/sub/child.txt');
       await shared.locator('#path-search-input').fill(path.join(directory, 'docs/other/private.md'));
       await expect(shared.locator('.path-search-result')).toHaveCount(0);
-      await expect(shared.locator('#path-search-status')).toHaveText('没有找到匹配的文件');
+      await expect(shared.locator('#path-search-status')).toHaveText('没有找到匹配的文件或文件夹');
       await shared.locator('#path-search-input').press('Escape');
       await shared.locator('.file-breadcrumbs a').click();
       await expect(shared.locator('.breadcrumbs a')).toHaveCount(1);
@@ -114,7 +114,7 @@ module.exports = () => {
       await expect(shared.locator('.path-search-result')).toHaveAttribute('href', '/docs/project/note.md');
       await shared.locator('#path-search-input').fill('private');
       await expect(shared.locator('.path-search-result')).toHaveCount(0);
-      await expect(shared.locator('#path-search-status')).toHaveText('没有找到匹配的文件');
+      await expect(shared.locator('#path-search-status')).toHaveText('没有找到匹配的文件或文件夹');
       for (const target of ['/docs/', '/docs/other/private.md']) {
         expect((await recipient.request.get(`${origin}${target}`)).status()).toBe(403);
       }

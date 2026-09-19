@@ -64,7 +64,7 @@
       requestId++;
       input.value = '';
       results.replaceChildren();
-      status.textContent = '输入文件名或路径开始搜索';
+      status.textContent = '输入文件、文件夹名或路径开始搜索';
       backdrop.hidden = false;
       panel.hidden = false;
       toggle.setAttribute('aria-expanded', 'true');
@@ -79,7 +79,7 @@
     const render = items => {
       results.replaceChildren();
       selected = -1;
-      status.textContent = items.length ? `${items.length} 个匹配文件` : '没有找到匹配的文件';
+      status.textContent = items.length ? `${items.length} 个匹配结果` : '没有找到匹配的文件或文件夹';
       items.forEach(result => {
         const link = document.createElement('a');
         link.className = 'path-search-result';
@@ -89,7 +89,9 @@
         link.setAttribute('aria-selected', 'false');
         const icon = document.createElement('span');
         icon.className = 'path-search-icon';
-        if (result.thumbnail_href) {
+        if (result.is_dir) {
+          icon.textContent = '目录';
+        } else if (result.thumbnail_href) {
           const thumbnail = document.createElement('img');
           thumbnail.src = result.thumbnail_href;
           thumbnail.alt = '';
@@ -121,7 +123,7 @@
       const currentRequest = ++requestId;
       if (!query) {
         results.replaceChildren();
-        status.textContent = '输入文件名或路径开始搜索';
+        status.textContent = '输入文件、文件夹名或路径开始搜索';
         return;
       }
       status.textContent = query.includes('/') ? '正在按路径搜索…' : '正在从根目录搜索…';

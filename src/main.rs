@@ -1727,7 +1727,7 @@ fn send_empty(stream: &mut TcpStream, status: u16, reason: &str) -> io::Result<(
 
 const FILE_SHORTCUT_JS: &str = include_str!("../assets/file-shortcuts.js");
 
-const PATH_SEARCH_CONTROL: &str = r#"<div class="path-search"><button class="path-search-toggle" id="path-search-toggle" type="button" aria-label="从根目录搜索文件" aria-expanded="false" aria-controls="path-search-panel"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6.5"></circle><path d="m14.8 14.8 5.2 5.2"></path></svg></button><section class="path-search-panel" id="path-search-panel" aria-label="文件搜索" hidden><label class="path-search-box"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6.5"></circle><path d="m14.8 14.8 5.2 5.2"></path></svg><input class="path-search-input" id="path-search-input" type="search" placeholder="输入文件名或路径…" autocomplete="off" aria-label="从根目录搜索文件" aria-controls="path-search-results"></label><div class="path-search-status" id="path-search-status" role="status">输入文件名或路径开始搜索</div><div class="path-search-results" id="path-search-results" role="listbox"></div></section></div>"#;
+const PATH_SEARCH_CONTROL: &str = r#"<div class="path-search"><button class="path-search-toggle" id="path-search-toggle" type="button" aria-label="从根目录搜索文件和文件夹" aria-expanded="false" aria-controls="path-search-panel"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6.5"></circle><path d="m14.8 14.8 5.2 5.2"></path></svg></button><section class="path-search-panel" id="path-search-panel" aria-label="文件和文件夹搜索" hidden><label class="path-search-box"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6.5"></circle><path d="m14.8 14.8 5.2 5.2"></path></svg><input class="path-search-input" id="path-search-input" type="search" placeholder="输入文件、文件夹名或路径…" autocomplete="off" aria-label="从根目录搜索文件和文件夹" aria-controls="path-search-results"></label><div class="path-search-status" id="path-search-status" role="status">输入文件、文件夹名或路径开始搜索</div><div class="path-search-results" id="path-search-results" role="listbox"></div></section></div>"#;
 
 const PATH_SEARCH_CSS: &str = r#"
 .path-search { position:relative; flex:0 0 auto; margin-left:auto; font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans-serif; }
@@ -1919,6 +1919,7 @@ struct FileSearchResult {
     open_href: String,
     thumbnail_href: Option<String>,
     is_image: bool,
+    is_dir: bool,
     depth: usize,
 }
 
@@ -1936,8 +1937,9 @@ fn file_search_result(
     let name = local_path.file_name()?.to_str()?;
     let parent = local_path.parent().unwrap_or(Path::new(""));
     let file_path = directory.join(local_path);
-    let href = url_for_path(&relative.join(local_path), false);
-    let is_image = is_image_file(&file_path);
+    let is_dir = file_path.is_dir();
+    let href = url_for_path(&relative.join(local_path), is_dir);
+    let is_image = !is_dir && is_image_file(&file_path);
     let thumbnail_href = is_image.then(|| {
         if has_extension(&file_path, "svg") {
             format!("{href}?mode=asset")
@@ -1960,6 +1962,7 @@ fn file_search_result(
         open_href,
         thumbnail_href,
         is_image,
+        is_dir,
         depth: parent.components().count(),
     })
 }
@@ -1993,7 +1996,7 @@ fn search_path_files(
         let target = root.join(&target_relative);
         match fs::canonicalize(&target) {
             Ok(canonical) => {
-                if !canonical.is_file()
+                if !(canonical.is_file() || canonical.is_dir())
                     || !(canonical.starts_with(root)
                         || traverses_directory_symlink(root, &target_relative))
                 {
@@ -2016,11 +2019,7 @@ fn search_path_files(
         }
         depth_arguments = &["--max-depth", "1"];
     }
-    let Some(name) = path
-        .file_name()
-        .and_then(OsStr::to_str)
-        .filter(|_| !query.ends_with('/'))
-    else {
+    let Some(name) = path.file_name().and_then(OsStr::to_str) else {
         return Ok(Some(Vec::new()));
     };
     for command in commands {
@@ -2044,7 +2043,7 @@ fn search_path_files(
                 result.depth = parent.components().count();
             }
             if !path.is_absolute() {
-                let query = query.to_lowercase();
+                let query = query.trim_end_matches('/').to_lowercase();
                 let contains_path = |result: &FileSearchResult| {
                     format!("{}/{}", result.directory, result.name)
                         .to_lowercase()
@@ -2108,6 +2107,8 @@ fn search_files_with_command(
         .args([
             "--type",
             "file",
+            "--type",
+            "directory",
             "--fixed-strings",
             "--ignore-case",
             "--no-ignore",
@@ -2716,7 +2717,7 @@ fn render_directory_page_with_access(
         "<button class=\"directory-favourite-toggle\" id=\"directory-favourite-toggle\" type=\"button\" aria-pressed=\"false\">添加到收藏夹</button>"
     };
     let body = format!(
-        "<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">\n<title>{title} · 文件浏览</title>\n<style>{DIRECTORY_CSS}{DIRECTORY_LOADING_CSS}</style>\n</head>\n<body data-can-share=\"{can_share}\" data-directory-view=\"{initial_view}\"><script>const initialDirectoryView = new URLSearchParams(location.search).get('view') ?? localStorage.getItem(`webdir-directory-view:${{location.pathname}}`) ?? 'list'; document.body.classList.toggle('gallery-mode', initialDirectoryView === 'gallery');</script>\n<main><nav class=\"breadcrumbs\" aria-label=\"当前位置\">{breadcrumbs}</nav>{directory_favourites}<header><p class=\"eyebrow\">WEBDIR / DIRECTORY</p><h1>{title}</h1><p class=\"summary\">正在加载目录…</p>{directory_favourite_toggle}{gallery_toggle}<div class=\"directory-browser-tools\"><div class=\"file-search\" id=\"file-search\"><label class=\"file-search-box\" for=\"file-search-input\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"10\" cy=\"10\" r=\"6.5\"></circle><path d=\"m14.8 14.8 5.2 5.2\"></path></svg><input id=\"file-search-input\" type=\"search\" aria-label=\"搜索当前文件夹及子文件夹中的文件\" aria-controls=\"file-search-results\" aria-expanded=\"false\" placeholder=\"输入文件名或路径…\" autocomplete=\"off\"></label><section class=\"file-search-panel\" id=\"file-search-panel\" aria-label=\"文件搜索结果\" hidden><div class=\"file-search-status\" id=\"file-search-status\" role=\"status\">输入文件名或路径开始搜索</div><div class=\"file-search-results\" id=\"file-search-results\" role=\"listbox\"></div></section></div><label class=\"directory-sort\">排序<select id=\"directory-sort\" aria-label=\"目录排序\"><option value=\"name\">按名称</option><option value=\"modified\">按修改时间</option></select></label></div>{gallery_tools}<p class=\"directory-notice\" id=\"directory-notice\" role=\"status\" hidden></p></header><section class=\"listing\" aria-busy=\"true\" aria-label=\"目录内容\">{rows}</section></main><nav class=\"scroll-jumps\" id=\"scroll-jumps\" aria-label=\"页面快速跳转\" hidden><button id=\"scroll-to-top\" type=\"button\" aria-label=\"回到顶部\" title=\"回到顶部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 14 6-6 6 6\"></path><path d=\"M6 19h12\"></path></svg></button><button id=\"scroll-to-bottom\" type=\"button\" aria-label=\"回到底部\" title=\"回到底部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 10 6 6 6-6\"></path><path d=\"M6 5h12\"></path></svg></button></nav><div class=\"image-lightbox\" id=\"image-lightbox\" role=\"dialog\" aria-modal=\"true\" aria-label=\"图片预览\" hidden><button class=\"lightbox-close\" type=\"button\" aria-label=\"关闭图片预览\">×</button><div class=\"lightbox-shell\"><div class=\"lightbox-position\" id=\"lightbox-position\" aria-live=\"polite\"></div><nav class=\"lightbox-filmstrip\" id=\"lightbox-filmstrip\" aria-label=\"图片缩略图导航\"></nav><figure><div class=\"lightbox-stage\"><img class=\"lightbox-image\" alt=\"\"><div class=\"favourite-burst\" id=\"favourite-burst\" aria-hidden=\"true\" hidden><svg viewBox=\"0 0 24 24\"><path d=\"M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21l7.7-7.5 1.1-1.1a5.5 5.5 0 0 0 0-7.8Z\"></path></svg></div></div><figcaption><span class=\"lightbox-name\"></span><span class=\"lightbox-controls\"><button class=\"preview-step\" id=\"preview-previous\" type=\"button\" aria-label=\"上一张\" title=\"上一张\">←</button><button class=\"favourite-toggle\" id=\"favourite-toggle\" type=\"button\" aria-label=\"点赞 (f)\" aria-pressed=\"false\" title=\"点赞 (f)\">♡</button><button class=\"preview-step\" id=\"preview-next\" type=\"button\" aria-label=\"下一张\" title=\"下一张\">→</button><button class=\"carousel-toggle\" id=\"carousel-toggle\" type=\"button\" aria-label=\"进入轮播 (p)\" aria-pressed=\"false\" title=\"进入轮播 (p)\">轮播</button></span></figcaption><p class=\"lightbox-error\" id=\"favourite-error\" role=\"status\" hidden></p><p class=\"lightbox-error\" id=\"image-tag-error\" role=\"status\" hidden></p></figure></div>{GALLERY_DELETE_DIALOG}</div>{GALLERY_BATCH_DELETE_DIALOG}\n<script>{DIRECTORY_VIEW_JS}</script><script>{FILE_SHORTCUT_JS}</script><script>{DIRECTORY_JS}</script>\n</body>\n</html>"
+        "<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">\n<title>{title} · 文件浏览</title>\n<style>{DIRECTORY_CSS}{DIRECTORY_LOADING_CSS}</style>\n</head>\n<body data-can-share=\"{can_share}\" data-directory-view=\"{initial_view}\"><script>const initialDirectoryView = new URLSearchParams(location.search).get('view') ?? localStorage.getItem(`webdir-directory-view:${{location.pathname}}`) ?? 'list'; document.body.classList.toggle('gallery-mode', initialDirectoryView === 'gallery');</script>\n<main><nav class=\"breadcrumbs\" aria-label=\"当前位置\">{breadcrumbs}</nav>{directory_favourites}<header><p class=\"eyebrow\">WEBDIR / DIRECTORY</p><h1>{title}</h1><p class=\"summary\">正在加载目录…</p>{directory_favourite_toggle}{gallery_toggle}<div class=\"directory-browser-tools\"><div class=\"file-search\" id=\"file-search\"><label class=\"file-search-box\" for=\"file-search-input\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"10\" cy=\"10\" r=\"6.5\"></circle><path d=\"m14.8 14.8 5.2 5.2\"></path></svg><input id=\"file-search-input\" type=\"search\" aria-label=\"搜索当前文件夹及子文件夹中的文件和文件夹\" aria-controls=\"file-search-results\" aria-expanded=\"false\" placeholder=\"输入文件、文件夹名或路径…\" autocomplete=\"off\"></label><section class=\"file-search-panel\" id=\"file-search-panel\" aria-label=\"文件和文件夹搜索结果\" hidden><div class=\"file-search-status\" id=\"file-search-status\" role=\"status\">输入文件、文件夹名或路径开始搜索</div><div class=\"file-search-results\" id=\"file-search-results\" role=\"listbox\"></div></section></div><label class=\"directory-sort\">排序<select id=\"directory-sort\" aria-label=\"目录排序\"><option value=\"name\">按名称</option><option value=\"modified\">按修改时间</option></select></label></div>{gallery_tools}<p class=\"directory-notice\" id=\"directory-notice\" role=\"status\" hidden></p></header><section class=\"listing\" aria-busy=\"true\" aria-label=\"目录内容\">{rows}</section></main><nav class=\"scroll-jumps\" id=\"scroll-jumps\" aria-label=\"页面快速跳转\" hidden><button id=\"scroll-to-top\" type=\"button\" aria-label=\"回到顶部\" title=\"回到顶部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 14 6-6 6 6\"></path><path d=\"M6 19h12\"></path></svg></button><button id=\"scroll-to-bottom\" type=\"button\" aria-label=\"回到底部\" title=\"回到底部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 10 6 6 6-6\"></path><path d=\"M6 5h12\"></path></svg></button></nav><div class=\"image-lightbox\" id=\"image-lightbox\" role=\"dialog\" aria-modal=\"true\" aria-label=\"图片预览\" hidden><button class=\"lightbox-close\" type=\"button\" aria-label=\"关闭图片预览\">×</button><div class=\"lightbox-shell\"><div class=\"lightbox-position\" id=\"lightbox-position\" aria-live=\"polite\"></div><nav class=\"lightbox-filmstrip\" id=\"lightbox-filmstrip\" aria-label=\"图片缩略图导航\"></nav><figure><div class=\"lightbox-stage\"><img class=\"lightbox-image\" alt=\"\"><div class=\"favourite-burst\" id=\"favourite-burst\" aria-hidden=\"true\" hidden><svg viewBox=\"0 0 24 24\"><path d=\"M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21l7.7-7.5 1.1-1.1a5.5 5.5 0 0 0 0-7.8Z\"></path></svg></div></div><figcaption><span class=\"lightbox-name\"></span><span class=\"lightbox-controls\"><button class=\"preview-step\" id=\"preview-previous\" type=\"button\" aria-label=\"上一张\" title=\"上一张\">←</button><button class=\"favourite-toggle\" id=\"favourite-toggle\" type=\"button\" aria-label=\"点赞 (f)\" aria-pressed=\"false\" title=\"点赞 (f)\">♡</button><button class=\"preview-step\" id=\"preview-next\" type=\"button\" aria-label=\"下一张\" title=\"下一张\">→</button><button class=\"carousel-toggle\" id=\"carousel-toggle\" type=\"button\" aria-label=\"进入轮播 (p)\" aria-pressed=\"false\" title=\"进入轮播 (p)\">轮播</button></span></figcaption><p class=\"lightbox-error\" id=\"favourite-error\" role=\"status\" hidden></p><p class=\"lightbox-error\" id=\"image-tag-error\" role=\"status\" hidden></p></figure></div>{GALLERY_DELETE_DIALOG}</div>{GALLERY_BATCH_DELETE_DIALOG}\n<script>{DIRECTORY_VIEW_JS}</script><script>{FILE_SHORTCUT_JS}</script><script>{DIRECTORY_JS}</script>\n</body>\n</html>"
     )
     .replacen(
         "</head>",
@@ -7182,7 +7183,7 @@ mod tests {
     }
 
     #[test]
-    fn absolute_path_search_locates_files_without_commands() {
+    fn absolute_path_search_locates_files_and_directories_without_commands() {
         let directory = tempfile::tempdir().unwrap();
         let root = fs::canonicalize(directory.path()).unwrap();
         fs::create_dir(root.join("docs")).unwrap();
@@ -7205,7 +7206,17 @@ mod tests {
             image[0].thumbnail_href.as_deref(),
             Some("/docs/photo.svg?mode=asset")
         );
-        assert!(search(&root.join("docs")).is_empty());
+        let folders = search(&root.join("docs/"));
+        assert_eq!(folders.len(), 1);
+        assert_eq!(folders[0].open_href, "/docs/");
+        assert!(folders[0].is_dir);
+        assert_eq!(folders[0].directory, "");
+        fs::create_dir(root.join("photos.svg")).unwrap();
+        let folders = search(&root.join("photos.svg"));
+        assert!(folders[0].is_dir);
+        assert!(!folders[0].is_image);
+        assert!(folders[0].thumbnail_href.is_none());
+        assert_eq!(folders[0].open_href, "/photos.svg/");
         assert!(search(&root.join("missing/note.txt")).is_empty());
         assert!(search(&root.with_extension("other").join("docs/note.txt")).is_empty());
     }

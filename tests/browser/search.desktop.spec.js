@@ -3,6 +3,41 @@ const path = require('node:path');
 const fs = require('node:fs');
 const fixtures = fs.realpathSync(path.join(__dirname, 'fixtures'));
 
+test('finds folders by name and path and opens them from both search controls', async ({page}) => {
+  await page.goto('/');
+  const input = page.locator('#file-search-input');
+  const results = page.locator('.file-search-result');
+  await input.fill('search-nested');
+  await expect(results).toHaveCount(1);
+  await expect(results.locator('.file-search-result-icon')).toHaveText('目录');
+  await expect(results.locator('.file-search-result-current')).toHaveText('当前');
+  await results.click();
+  await expect(page).toHaveURL(/\/search-nested\/$/);
+
+  await input.fill('caddy');
+  await expect(results).toHaveCount(2);
+  await expect(results.locator('.file-search-result-icon')).toHaveText(['目录', '目录']);
+  for (const query of ['tiana/bootstrap/caddy/', path.join(fixtures, 'search-nested/tiana/bootstrap/cad'), path.join(fixtures, 'search-nested/tiana/bootstrap/caddy') + '/']) {
+    await input.fill(query);
+    await expect(results).toHaveCount(1);
+    await expect(results).toHaveAttribute('href', '/search-nested/tiana/bootstrap/caddy/');
+  }
+  await input.press('ArrowDown');
+  await input.press('Enter');
+  await expect(page).toHaveURL(/\/search-nested\/tiana\/bootstrap\/caddy\/$/);
+
+  await page.locator('#path-search-toggle').click();
+  await page.locator('#path-search-input').fill('other/caddy/');
+  const rootResults = page.locator('.path-search-result');
+  await expect(rootResults).toHaveCount(1);
+  await expect(rootResults.locator('.path-search-icon')).toHaveText('目录');
+  const opened = page.waitForEvent('popup');
+  await rootResults.click();
+  const popup = await opened;
+  await expect(popup).toHaveURL(/\/search-nested\/other\/caddy\/$/);
+  await popup.close();
+});
+
 test('searches the root after the current directory is removed', async ({page}) => {
   const directory = fs.mkdtempSync(path.join(fixtures, 'removed-search-'));
   try {
@@ -203,6 +238,6 @@ test('searches partial absolute filenames only in their parent directory', async
   for (const query of [path.join(fixtures, 'missing/root.crt'), path.join(fixtures, '../root.crt')]) {
     await page.locator('#file-search-input').fill(query);
     await expect(page.locator('.file-search-result')).toHaveCount(0);
-    await expect(page.locator('#file-search-status')).toHaveText('没有找到匹配的文件');
+    await expect(page.locator('#file-search-status')).toHaveText('没有找到匹配的文件或文件夹');
   }
 });
