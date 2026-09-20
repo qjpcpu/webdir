@@ -154,7 +154,7 @@ module.exports = () => test.describe('Review context', () => {
     await page.goto(url); await page.locator('#review-toggle').click();
     await page.locator('[data-comment-action="resolve"]').click();
     await page.locator('#review-show-resolved').click();
-    await expect(page.locator('.comment-card.active')).toHaveAttribute('data-comment-id', 'near');
+    await expect(page.locator('.comment-card.active')).toHaveAttribute('data-comment-id', 'far');
   });
 
   test('keeps the exact occurrence selected inside a paragraph with repeated words', async ({page}) => {

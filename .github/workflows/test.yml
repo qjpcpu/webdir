@@ -24,6 +24,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - run: sudo apt-get update && sudo apt-get install -y fd-find
       - run: npm ci
       - run: npx playwright install --with-deps chromium webkit
       - run: npm run test:browser

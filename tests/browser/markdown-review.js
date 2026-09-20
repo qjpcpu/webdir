@@ -67,13 +67,14 @@ module.exports = () => test.describe('submitted review comments', () => {
         await expect(card).toHaveClass(/submitted/);
         await expect(card).toHaveCSS('animation-name', 'comment-submitted');
         await expect.poll(() => page.locator('#comment-list').evaluate(element => element.scrollTop)).toBeGreaterThan(0);
-        const bounds = await card.locator('.message p').evaluate(element => {
+        await expect.poll(() => page.evaluate(body => {
+          const list = document.querySelector('#comment-list');
+          const element = [...list.querySelectorAll('.message p')].find(element => element.textContent === body);
+          if (!element) return false;
           const message = element.getBoundingClientRect();
-          const list = element.closest('.comment-list').getBoundingClientRect();
-          return {top: message.top, bottom: message.bottom, listTop: list.top, listBottom: list.bottom};
-        });
-        expect(bounds.top).toBeGreaterThanOrEqual(bounds.listTop);
-        expect(bounds.bottom).toBeLessThanOrEqual(bounds.listBottom);
+          const bounds = list.getBoundingClientRect();
+          return message.top >= bounds.top && message.bottom <= bounds.bottom;
+        }, body)).toBe(true);
         await expect(card).not.toHaveClass(/submitted/);
         await expect(card).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
         await expect(card.locator('[data-comment-action="delete-comment"]')).toHaveText(scope === 'document' ? '删除全文评论' : '删除整条评论');

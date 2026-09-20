@@ -101,7 +101,7 @@ test('opens a filtered file from the directory listing with the keyboard', async
   await page.goto('/search-nested/');
   await page.locator('#file-search-input').fill('portrait-not');
   const result = page.locator('.listing > .entry.file');
-  await expect(result.locator('.entry-name')).toHaveText('portrait-notes.txt');
+  await expect(result.locator('.entry-name')).toHaveText(['portrait-notes.txt']);
   await result.focus();
   await page.keyboard.press('Enter');
   await expect(page).toHaveURL(/\/search-nested\/portrait-notes\.txt$/);
