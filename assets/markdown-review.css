@@ -1,0 +1,30 @@
+#review-summary { color:var(--muted); font:500 .7rem/1.5 ui-sans-serif,-apple-system,sans-serif; letter-spacing:0; }
+.review-panel { border-radius:.7rem; box-shadow:none; }
+.review-navigation { display:flex; align-items:center; gap:.4rem; padding:.5rem .8rem; border-bottom:1px solid var(--line); }
+.review-navigation button,.review-resolved-notice button { min-height:2rem; padding:.35rem .6rem; border:1px solid var(--line); border-radius:.35rem; background:var(--surface); color:var(--ink); font:600 .7rem/1.3 ui-sans-serif,-apple-system,sans-serif; cursor:pointer; }
+#review-position { flex:1; text-align:right; color:var(--muted); font-size:.68rem; font-variant-numeric:tabular-nums; }
+.review-navigation button:disabled { opacity:.45; cursor:default; }
+.review-resolved-notice { display:flex; align-items:center; justify-content:space-between; gap:.5rem; padding:.55rem 1rem; color:var(--success); background:color-mix(in srgb,var(--success) 8%,var(--surface)); font-size:.72rem; }
+.review-complete { border-left:0; border-radius:.4rem; }
+.comment-card { scroll-margin:0; overflow-wrap:anywhere; }
+.comment-card.active { border-radius:.5rem; }
+.comment-location { display:flex; align-items:center; justify-content:space-between; gap:.5rem; margin-bottom:.5rem; font-size:.66rem; color:var(--muted); }
+.comment-location[data-anchor-state="missing"] { color:light-dark(#a83a4c,#f0a4b0); }
+.comment-location button { flex-shrink:0; border:0; padding:.3rem 0; color:var(--accent); background:transparent; font:600 .68rem/1.5 ui-sans-serif,-apple-system,sans-serif; cursor:pointer; }
+.comment-location button:hover { text-decoration:underline; }
+.comment-scope { border-left-width:1px; font-family:inherit; font-size:.73rem; }
+.comment-reference { display:block; margin-bottom:.2rem; color:var(--muted); font-size:.62rem; }
+.comment-anchor-help { margin:0 0 .2rem; color:var(--muted); font-size:.7rem; }
+.comment-history { margin-top:.4rem; }
+.comment-history summary { padding:.5rem 0; color:var(--muted); font-size:.72rem; cursor:pointer; }
+.comment-history[open] summary { color:var(--ink); }
+.comment-meta > span:last-child { color:var(--muted); font-size:.65rem; }
+.message header strong { font-family:inherit; font-size:.74rem; }
+.message header time { font-variant-numeric:tabular-nums; }
+.source-run.has-review,.source-run.has-addressed-review,.source-run.has-resolved-review,.source-run.review-target { background:transparent; box-shadow:none; cursor:pointer; }
+::highlight(review-open) { background-color:color-mix(in srgb,var(--comment) 72%,transparent); }
+::highlight(review-addressed) { background-color:var(--accent-soft); }
+::highlight(review-resolved) { text-decoration:underline dotted var(--muted); }
+::highlight(review-selected) { background-color:color-mix(in srgb,var(--comment-line) 42%,var(--surface)); color:var(--ink); text-decoration:underline solid var(--comment-line); }
+.review-return { position:fixed; z-index:6; right:1rem; bottom:max(1rem,env(safe-area-inset-bottom)); min-height:2.75rem; padding:.65rem 1rem; border:1px solid var(--accent); border-radius:.5rem; color:var(--accent); background:var(--surface); font:600 .8rem/1.5 ui-sans-serif,-apple-system,sans-serif; cursor:pointer; }
+@media (max-width:900px) { .review-navigation { padding-block:.3rem; } .comment-location button { min-height:2rem; } }

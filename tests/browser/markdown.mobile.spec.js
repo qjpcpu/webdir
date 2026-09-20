@@ -2,6 +2,7 @@ const { test, expect } = require('@playwright/test');
 
 require('./markdown-review')();
 require('./markdown-loading')();
+require('./review-context')();
 
 test('review file copy button copies only the filename', async ({page}) => {
   await page.addInitScript(() => {

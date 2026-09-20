@@ -45,6 +45,8 @@ const DRAWIO_VIEWER_JS: &[u8] = include_bytes!("../assets/drawio-viewer-static-3
 const MERMAID_PATH: &str = "/__webdir/mermaid-11.17.2.min.js";
 const MERMAID_JS: &[u8] = include_bytes!("../assets/mermaid-11.17.2.min.js");
 const MARKDOWN_MERMAID_JS: &str = include_str!("../assets/markdown-mermaid.js");
+const MARKDOWN_REVIEW_JS: &str = include_str!("../assets/markdown-review.js");
+const MARKDOWN_REVIEW_CSS: &str = include_str!("../assets/markdown-review.css");
 const THEME_JS: &str = include_str!("../assets/theme.js");
 const THEME_CSS: &str = include_str!("../assets/theme.css");
 const YJS_PATH: &str = "/__webdir/yjs-13.6.32.min.js";
@@ -3419,7 +3421,7 @@ fn render_markdown_page(markdown: &str, title: &str) -> String {
     let title = escape_html(title);
     let source = escape_html(markdown);
     format!(
-        "<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">\n<title>{title}</title>\n<style>{MARKDOWN_CSS}</style>\n</head>\n<body class=\"review-closed\">\n<header class=\"topbar\"><button class=\"home\" id=\"history-back\" type=\"button\" aria-label=\"返回上一页\">←</button><span class=\"mark\">MD</span><span class=\"filename\">{title}</span><span class=\"word-count\" title=\"正文非空白字符数（含标点，不含 Markdown 格式标记）\">{word_count} 字</span><span class=\"top-actions\"><button class=\"identity-button\" id=\"identity-button\" type=\"button\" title=\"切换审阅身份\"></button><button class=\"button ghost review-toggle\" id=\"review-toggle\" type=\"button\" aria-expanded=\"false\">评论 <b id=\"review-count\">0</b></button><a class=\"button ghost raw-button\" href=\"?mode=raw\">Raw</a><button class=\"button\" id=\"edit-button\" type=\"button\">编辑</button></span></header>\n<div id=\"reader\" class=\"reader-layout\"><aside id=\"toc\" aria-label=\"文档目录\"></aside><main class=\"paper\"><article id=\"article\">{article}</article></main><aside id=\"review-panel\" class=\"review-panel\" aria-label=\"审阅评论\"><header class=\"review-header\"><div><span>REVIEW</span><strong>审阅讨论</strong></div><button id=\"review-close\" type=\"button\" aria-label=\"收起评论\">×</button></header><div class=\"review-file-actions\"><a id=\"open-review-file\" target=\"_blank\">打开评论文件</a><button id=\"copy-review-path\" type=\"button\">复制评论文件名</button></div><div class=\"review-presence\"><i aria-hidden=\"true\"></i><span id=\"review-users\">正在连接…</span></div><button class=\"document-comment\" id=\"document-comment\" type=\"button\">＋ 全文评论</button><div class=\"review-composer\" id=\"review-composer\" hidden><p id=\"composer-scope\"></p><label for=\"comment-body\">写下需要讨论或修改的内容</label><textarea id=\"comment-body\" rows=\"4\"></textarea><div><button class=\"text-button\" id=\"composer-cancel\" type=\"button\">取消</button><button class=\"button\" id=\"composer-submit\" type=\"button\">提交评论</button></div></div><nav class=\"review-filters\" aria-label=\"评论状态\"><button class=\"active\" type=\"button\" data-review-filter=\"open\">待处理 <b>0</b></button><button type=\"button\" data-review-filter=\"addressed\">待确认 <b>0</b></button><button type=\"button\" data-review-filter=\"resolved\">已解决 <b>0</b></button></nav><div class=\"review-complete\" id=\"review-complete\" hidden><strong>审阅已完成</strong><span>可以交给 AI 执行</span></div><div class=\"review-error\" id=\"review-error\" role=\"status\" hidden></div><div class=\"comment-list\" id=\"comment-list\"></div></aside></div>\n<button class=\"selection-comment\" id=\"selection-comment\" type=\"button\" hidden>＋ 添加批注</button><div class=\"toast\" id=\"review-toast\" role=\"status\" hidden></div><dialog class=\"identity-dialog\" id=\"identity-dialog\"><form method=\"dialog\"><span class=\"dialog-kicker\">REVIEW IDENTITY</span><h2>你以什么身份参与审阅？</h2><p>输入一个方便其他审阅者辨认的名称，浏览器会在此设备上记住它。</p><label for=\"identity-input\">审阅人名称</label><input id=\"identity-input\" name=\"identity\" autocomplete=\"username\" placeholder=\"例如：小明、Alice、dev-01\" required><span class=\"identity-error\" id=\"identity-error\"></span><button class=\"button\" id=\"identity-submit\" value=\"confirm\">进入审阅</button></form></dialog>\n<section id=\"editor\" class=\"editor-shell\" hidden><div class=\"editor-toolbar\"><div class=\"format-tools\" role=\"toolbar\" aria-label=\"Markdown 格式\"><button type=\"button\" data-format=\"heading\" title=\"标题\">H</button><button type=\"button\" data-format=\"bold\" title=\"粗体\"><strong>B</strong></button><button type=\"button\" data-format=\"italic\" title=\"斜体\"><em>I</em></button><button type=\"button\" data-format=\"link\" title=\"链接\">↗</button><button type=\"button\" data-format=\"quote\" title=\"引用\">❯</button><button type=\"button\" data-format=\"code\" title=\"代码\">&lt;/&gt;</button><button type=\"button\" data-format=\"list\" title=\"列表\">≡</button><button type=\"button\" data-format=\"task\" title=\"任务\">☑</button></div><span class=\"collaboration-status\" role=\"status\"><i id=\"connection-dot\" aria-hidden=\"true\"></i><span id=\"save-status\">未连接</span><span id=\"presence\"></span></span><button class=\"button ghost\" id=\"cancel-button\" type=\"button\">退出编辑</button><button class=\"button\" id=\"save-button\" type=\"button\">立即保存</button></div><div class=\"editor-panes\"><div class=\"pane preview-pane\"><span>PREVIEW</span><iframe id=\"preview\" title=\"Markdown 实时预览\"></iframe></div><label class=\"pane source-pane\"><span>MARKDOWN</span><textarea id=\"source\" spellcheck=\"false\" disabled>{source}</textarea></label></div></section>\n<script data-yjs-src=\"{YJS_PATH}\">{MARKDOWN_JS}</script>\n<script data-mermaid-src=\"{MERMAID_PATH}\">{MARKDOWN_MERMAID_JS}</script>\n</body>\n</html>"
+        "<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">\n<title>{title}</title>\n<style>{MARKDOWN_CSS}{MARKDOWN_REVIEW_CSS}</style>\n</head>\n<body class=\"review-closed\">\n<header class=\"topbar\"><button class=\"home\" id=\"history-back\" type=\"button\" aria-label=\"返回上一页\">←</button><span class=\"mark\">MD</span><span class=\"filename\">{title}</span><span class=\"word-count\" title=\"正文非空白字符数（含标点，不含 Markdown 格式标记）\">{word_count} 字</span><span class=\"top-actions\"><button class=\"identity-button\" id=\"identity-button\" type=\"button\" title=\"切换审阅身份\"></button><button class=\"button ghost review-toggle\" id=\"review-toggle\" type=\"button\" aria-expanded=\"false\">评论 <b id=\"review-count\">0</b></button><a class=\"button ghost raw-button\" href=\"?mode=raw\">Raw</a><button class=\"button\" id=\"edit-button\" type=\"button\">编辑</button></span></header>\n<div id=\"reader\" class=\"reader-layout\"><aside id=\"toc\" aria-label=\"文档目录\"></aside><main class=\"paper\"><article id=\"article\">{article}</article></main><aside id=\"review-panel\" class=\"review-panel\" aria-label=\"审阅评论\"><header class=\"review-header\"><div><strong>审阅讨论</strong><span id=\"review-summary\"></span></div><button id=\"review-close\" type=\"button\" aria-label=\"收起评论\">×</button></header><div class=\"review-file-actions\"><a id=\"open-review-file\" target=\"_blank\">打开评论文件</a><button id=\"copy-review-path\" type=\"button\">复制评论文件名</button></div><div class=\"review-presence\"><i aria-hidden=\"true\"></i><span id=\"review-users\">正在连接…</span></div><button class=\"document-comment\" id=\"document-comment\" type=\"button\">＋ 全文评论</button><div class=\"review-composer\" id=\"review-composer\" hidden><p id=\"composer-scope\"></p><label for=\"comment-body\">写下需要讨论或修改的内容</label><textarea id=\"comment-body\" rows=\"4\"></textarea><div><button class=\"text-button\" id=\"composer-cancel\" type=\"button\">取消</button><button class=\"button\" id=\"composer-submit\" type=\"button\">提交评论</button></div></div><nav class=\"review-filters\" aria-label=\"评论状态\"><button class=\"active\" type=\"button\" data-review-filter=\"open\">待处理 <b>0</b></button><button type=\"button\" data-review-filter=\"addressed\">待确认 <b>0</b></button><button type=\"button\" data-review-filter=\"resolved\">已解决 <b>0</b></button></nav><nav class=\"review-navigation\" aria-label=\"讨论导航\"><span id=\"review-position\"></span><button id=\"review-previous\" type=\"button\" aria-label=\"上一条讨论\">↑</button><button id=\"review-next\" type=\"button\" aria-label=\"下一条讨论\">↓</button></nav><div id=\"review-resolved-notice\" class=\"review-resolved-notice\" role=\"status\" hidden>评论已解决<button id=\"review-show-resolved\" type=\"button\">查看已解决</button></div><div class=\"review-complete\" id=\"review-complete\" hidden><strong>审阅已完成</strong><span>所有讨论均已解决，可在“已解决”中回查</span></div><div class=\"review-error\" id=\"review-error\" role=\"status\" hidden></div><div class=\"comment-list\" id=\"comment-list\"></div></aside></div>\n<button id=\"review-return\" class=\"review-return\" type=\"button\" hidden>返回讨论</button><button class=\"selection-comment\" id=\"selection-comment\" type=\"button\" hidden>＋ 添加批注</button><div class=\"toast\" id=\"review-toast\" role=\"status\" hidden></div><dialog class=\"identity-dialog\" id=\"identity-dialog\"><form method=\"dialog\"><span class=\"dialog-kicker\">REVIEW IDENTITY</span><h2>你以什么身份参与审阅？</h2><p>输入一个方便其他审阅者辨认的名称，浏览器会在此设备上记住它。</p><label for=\"identity-input\">审阅人名称</label><input id=\"identity-input\" name=\"identity\" autocomplete=\"username\" placeholder=\"例如：小明、Alice、dev-01\" required><span class=\"identity-error\" id=\"identity-error\"></span><button class=\"button\" id=\"identity-submit\" value=\"confirm\">进入审阅</button></form></dialog>\n<section id=\"editor\" class=\"editor-shell\" hidden><div class=\"editor-toolbar\"><div class=\"format-tools\" role=\"toolbar\" aria-label=\"Markdown 格式\"><button type=\"button\" data-format=\"heading\" title=\"标题\">H</button><button type=\"button\" data-format=\"bold\" title=\"粗体\"><strong>B</strong></button><button type=\"button\" data-format=\"italic\" title=\"斜体\"><em>I</em></button><button type=\"button\" data-format=\"link\" title=\"链接\">↗</button><button type=\"button\" data-format=\"quote\" title=\"引用\">❯</button><button type=\"button\" data-format=\"code\" title=\"代码\">&lt;/&gt;</button><button type=\"button\" data-format=\"list\" title=\"列表\">≡</button><button type=\"button\" data-format=\"task\" title=\"任务\">☑</button></div><span class=\"collaboration-status\" role=\"status\"><i id=\"connection-dot\" aria-hidden=\"true\"></i><span id=\"save-status\">未连接</span><span id=\"presence\"></span></span><button class=\"button ghost\" id=\"cancel-button\" type=\"button\">退出编辑</button><button class=\"button\" id=\"save-button\" type=\"button\">立即保存</button></div><div class=\"editor-panes\"><div class=\"pane preview-pane\"><span>PREVIEW</span><iframe id=\"preview\" title=\"Markdown 实时预览\"></iframe></div><label class=\"pane source-pane\"><span>MARKDOWN</span><textarea id=\"source\" spellcheck=\"false\" disabled>{source}</textarea></label></div></section>\n<script>{MARKDOWN_REVIEW_JS}</script><script data-yjs-src=\"{YJS_PATH}\">{MARKDOWN_JS}</script>\n<script data-mermaid-src=\"{MERMAID_PATH}\">{MARKDOWN_MERMAID_JS}</script>\n</body>\n</html>"
     )
 }
 
@@ -4756,147 +4758,6 @@ function connectReview() {
     if (reviewSocket === socket) reviewUsers.textContent = '审阅连接失败';
   });
 }
-function findUnique(haystack, needle) {
-  if (!needle) return -1;
-  const first = haystack.indexOf(needle);
-  if (first < 0 || haystack.indexOf(needle, first + 1) >= 0) return -1;
-  return first;
-}
-function resolveReviewScope(scope) {
-  if (!scope || scope.type !== 'range') return null;
-  const text = source.value;
-  const quote = String(scope.quote || '');
-  let start = Number(scope.start);
-  let end = Number(scope.end);
-  if (Number.isFinite(start) && Number.isFinite(end) && text.slice(start, end) === quote) {
-    return {start, end, stale: false};
-  }
-  const prefix = String(scope.prefix || '');
-  const suffix = String(scope.suffix || '');
-  const contextual = `${prefix}${quote}${suffix}`;
-  let found = findUnique(text, contextual);
-  if (found >= 0) {
-    start = found + prefix.length;
-    return {start, end: start + quote.length, stale: false};
-  }
-  found = findUnique(text, quote);
-  if (found >= 0) return {start: found, end: found + quote.length, stale: false};
-  return {start: -1, end: -1, stale: true};
-}
-function markReviewRanges(resolvedScopes) {
-  article.querySelectorAll('.source-run').forEach(run => {
-    run.classList.remove('has-review', 'has-addressed-review');
-    delete run.dataset.commentIds;
-  });
-  reviewDocument.comments.forEach(comment => {
-    if (comment.status === 'resolved') return;
-    const resolved = resolvedScopes.get(comment.id);
-    if (!resolved || resolved.stale) return;
-    article.querySelectorAll('.source-run').forEach(run => {
-      const start = Number(run.dataset.sourceStart);
-      const end = Number(run.dataset.sourceEnd);
-      if (end <= resolved.start || start >= resolved.end) return;
-      run.classList.add(comment.status === 'addressed' ? 'has-addressed-review' : 'has-review');
-      const ids = run.dataset.commentIds ? run.dataset.commentIds.split(',') : [];
-      if (!ids.includes(comment.id)) ids.push(comment.id);
-      run.dataset.commentIds = ids.join(',');
-    });
-  });
-}
-function scrollToCommentSource(commentId) {
-  const comment = reviewDocument.comments.find(item => item.id === commentId);
-  if (!comment) return;
-  const reduceMotion = matchMedia('(prefers-reduced-motion:reduce)').matches;
-  if (overlayReviewLayout.matches) closeReviewPanel();
-  if (comment.scope?.type === 'document') {
-    article.scrollIntoView({behavior: reduceMotion ? 'auto' : 'smooth', block: 'start'});
-    return;
-  }
-  const resolved = resolveReviewScope(comment.scope);
-  if (!resolved || resolved.stale) {
-    showReviewToast('原文已变化，无法定位这条评论');
-    return;
-  }
-  const runs = Array.from(article.querySelectorAll('.source-run')).filter(run => {
-    const start = Number(run.dataset.sourceStart);
-    const end = Number(run.dataset.sourceEnd);
-    return end > resolved.start && start < resolved.end;
-  });
-  if (!runs.length) {
-    showReviewToast('没有找到对应的正文文本');
-    return;
-  }
-  article.querySelectorAll('.review-target').forEach(run => run.classList.remove('review-target'));
-  runs.forEach(run => run.classList.add('review-target'));
-  runs[0].scrollIntoView({behavior: reduceMotion ? 'auto' : 'smooth', block: 'center'});
-  setTimeout(() => runs.forEach(run => run.classList.remove('review-target')), 1800);
-}
-function messageMarkup(message, index, commentId) {
-  const date = new Date(message.created_at);
-  const shownDate = Number.isNaN(date.getTime()) ? message.created_at : date.toLocaleString();
-  const edited = message.edited_at ? ' · 已编辑' : '';
-  return `<section class="message" data-comment-id="${escapeReviewHtml(commentId)}" data-message-id="${escapeReviewHtml(message.id || '')}" data-message-index="${index}"><header><strong>${escapeReviewHtml(message.author)}</strong><span><time>${escapeReviewHtml(shownDate)}</time>${edited}</span></header><p>${escapeReviewHtml(message.body)}</p><div class="message-tools"><button type="button" data-message-action="edit">修改</button><button type="button" data-message-action="delete">删除</button></div></section>`;
-}
-function commentMarkup(comment, resolved, showDeleteButton) {
-  const documentScope = comment.scope?.type === 'document';
-  const quote = documentScope
-    ? '全文评论'
-    : (comment.scope?.display_quote || comment.scope?.quote || '选区评论');
-  const stale = !documentScope && resolved?.stale;
-  let buttons = documentScope
-    ? '<button type="button" data-comment-action="edit-comment">编辑全文评论</button>'
-    : '';
-  buttons += '<button type="button" data-comment-action="reply">回复</button>';
-  if (comment.status === 'open') {
-    buttons += '<button class="primary" type="button" data-comment-action="resolve">标记解决</button>';
-  } else if (comment.status === 'addressed') {
-    buttons += '<button class="primary" type="button" data-comment-action="resolve">确认解决</button><button type="button" data-comment-action="reopen">重新打开</button>';
-  } else if (comment.status === 'resolved') {
-    buttons += '<button type="button" data-comment-action="reopen">重新打开</button>';
-  }
-  if (showDeleteButton) {
-    buttons += `<button type="button" data-comment-action="delete-comment">${documentScope ? '删除全文评论' : '删除整条评论'}</button>`;
-  }
-  return `<article class="comment-card${selectedCommentId === comment.id ? ' active' : ''}" data-comment-id="${escapeReviewHtml(comment.id)}" title="双击定位正文"><div class="comment-meta"><span class="comment-status ${escapeReviewHtml(comment.status)}">${escapeReviewHtml(reviewStatusLabel(comment.status))}</span><span>${comment.messages.length} 条消息</span></div><p class="comment-scope${stale ? ' stale' : ''}">${stale ? '原文已变化 · ' : ''}${escapeReviewHtml(quote)}</p>${comment.messages.map((message, index) => messageMarkup(message, index, comment.id)).join('')}<div class="comment-actions">${buttons}</div></article>`;
-}
-function renderReview() {
-  const comments = reviewDocument.comments || [];
-  const counts = {open: 0, addressed: 0, resolved: 0};
-  comments.forEach(comment => { if (counts[comment.status] !== undefined) counts[comment.status] += 1; });
-  document.querySelectorAll('[data-review-filter]').forEach(button => {
-    button.classList.toggle('active', button.dataset.reviewFilter === reviewFilter);
-    button.querySelector('b').textContent = counts[button.dataset.reviewFilter] || 0;
-  });
-  document.querySelector('#review-count').textContent = counts.open + counts.addressed;
-  document.querySelector('#review-complete').hidden = comments.length === 0 || counts.open + counts.addressed > 0;
-  const resolvedScopes = new Map(comments.map(comment => [comment.id, resolveReviewScope(comment.scope)]));
-  const visible = comments
-    .map((comment, index) => ({comment, index, resolved: resolvedScopes.get(comment.id)}))
-    .filter(item => item.comment.status === reviewFilter)
-    .sort((left, right) => {
-      const position = item => {
-        if (item.comment.scope?.type === 'document') return -1;
-        if (!item.resolved || item.resolved.stale) return Number.POSITIVE_INFINITY;
-        return item.resolved.start;
-      };
-      return position(left) - position(right) || left.index - right.index;
-    });
-  const lastDocumentComment = visible.findLast(item => item.comment.scope?.type === 'document');
-  const lastRangeComment = visible.findLast(item => item.comment.scope?.type !== 'document');
-  commentList.innerHTML = visible.length
-    ? visible.map(item => commentMarkup(item.comment, item.resolved, item === lastDocumentComment || item === lastRangeComment)).join('')
-    : `<div class="comment-empty">${reviewFilter === 'open' ? '暂无待处理评论。划选正文即可添加批注。' : `暂无${reviewStatusLabel(reviewFilter)}评论。`}</div>`;
-  markReviewRanges(resolvedScopes);
-  const revealCommentId = submittedCommentId || selectedCommentId;
-  if (revealCommentId) {
-    const card = commentList.querySelector(`.comment-card[data-comment-id="${CSS.escape(revealCommentId)}"]`);
-    if (card && revealCommentId === submittedCommentId) card.classList.add('submitted');
-    requestAnimationFrame(() => {
-      if (!card?.isConnected) return;
-      card.scrollIntoView({block: 'nearest'});
-    });
-  }
-}
 function sourceRunForBoundary(node) {
   const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
   return element?.closest?.('.source-run');
@@ -4931,6 +4792,7 @@ function scopeFromSelection() {
     scope: {
       type: 'range', start, end, quote,
       display_quote: selection.toString(),
+      paragraph: captureReviewParagraph(startRun, endRun),
       prefix: source.value.slice(Math.max(0, start - 64), start),
       suffix: source.value.slice(end, end + 64)
     },
@@ -4953,8 +4815,10 @@ function updateSelectionComment() {
   selectionComment.hidden = false;
 }
 function openReviewPanel() {
+  document.querySelector('#review-return').hidden = true;
   document.body.classList.remove('review-closed');
   document.querySelector('#review-toggle').setAttribute('aria-expanded', 'true');
+  scheduleReviewFollow();
 }
 function closeReviewPanel() {
   document.body.classList.add('review-closed');
@@ -5019,7 +4883,11 @@ async function handleCommentAction(button) {
   const commentId = card?.dataset.commentId;
   if (!commentId) return;
   const action = button.dataset.commentAction;
-  if (action === 'reply') return requireReviewIdentity(() => openReply(card));
+  if (action === 'locate') return activateReview(commentId, true);
+  if (action === 'reply') {
+    activateReview(commentId);
+    return requireReviewIdentity(() => openReply(card));
+  }
   if (action === 'edit-comment') {
     const message = card.querySelector('.message');
     if (message) return requireReviewIdentity(() => openMessageEditor(message));
@@ -5047,6 +4915,10 @@ async function handleCommentAction(button) {
   const status = action === 'resolve' ? 'resolved' : 'open';
   try {
     await postReviewAction({type: 'set-status', comment_id: commentId, status});
+    if (status === 'resolved') {
+      lastResolvedCommentId = commentId;
+      document.querySelector('#review-resolved-notice').hidden = false;
+    } else activateReview(commentId);
     showReviewToast(status === 'resolved' ? '已确认解决' : '评论已重新打开');
   } catch (error) { showReviewError(error.message); }
 }
@@ -5062,6 +4934,7 @@ async function submitReply(card) {
       message: {id: newReviewId(), author: reviewIdentity, body, created_at: new Date().toISOString()},
       status: comment?.status === 'open' ? null : 'open'
     });
+    textarea.closest('.reply-box')?.remove();
     showReviewToast('回复已保存');
   } catch (error) { showReviewError(error.message); }
 }
@@ -5082,13 +4955,15 @@ function openMessageEditor(messageElement) {
   editor.querySelector('textarea').focus();
 }
 async function submitMessageEdit(messageElement) {
-  const body = messageElement.querySelector('.message-editor textarea')?.value.trim();
+  const messageEditor = messageElement.querySelector('.message-editor');
+  const body = messageEditor?.querySelector('textarea')?.value.trim();
   if (!body) return;
   try {
     await postReviewAction({
       type: 'edit-message', ...messageReference(messageElement), body,
       edited_at: new Date().toISOString()
     });
+    messageEditor?.remove();
     showReviewToast('消息已修改');
   } catch (error) { showReviewError(error.message); }
 }
@@ -5100,9 +4975,8 @@ async function deleteMessage(messageElement) {
 }
 document.querySelector('#edit-button').addEventListener('click', openEditor);
 document.querySelector('#review-toggle').addEventListener('click', () => {
-  const closing = !document.body.classList.contains('review-closed');
-  document.body.classList.toggle('review-closed', closing);
-  document.querySelector('#review-toggle').setAttribute('aria-expanded', String(!closing));
+  if (document.body.classList.contains('review-closed')) openReviewPanel();
+  else closeReviewPanel();
 });
 document.querySelector('#review-close').addEventListener('click', () => {
   closeReviewPanel();
@@ -5130,7 +5004,9 @@ document.querySelector('#document-comment').addEventListener('click', () => {
 function activateSelectionComment() {
   const scope = pendingCommentScope;
   const label = pendingSelectionLabel;
-  if (scope) requireReviewIdentity(() => openComposer(scope, label));
+  if (scope) {
+    requireReviewIdentity(() => openComposer(scope, label));
+  }
   selectionComment.hidden = true;
 }
 selectionComment.addEventListener('touchend', event => {
@@ -5152,6 +5028,7 @@ document.querySelector('.review-filters').addEventListener('click', event => {
   if (!filter) return;
   reviewFilter = filter;
   selectedCommentId = null;
+  document.querySelector('#review-resolved-notice').hidden = true;
   renderReview();
 });
 commentList.addEventListener('click', event => {
@@ -5209,20 +5086,14 @@ document.addEventListener('selectionchange', () => {
 });
 article.addEventListener('click', event => {
   const selection = window.getSelection();
-  if (touchReviewDevice.matches
-      && !document.body.classList.contains('review-closed')
-      && selection?.isCollapsed) {
-    closeReviewPanel();
-    return;
-  }
+  if (!selection?.isCollapsed) return;
   const ids = event.target.closest('.source-run[data-comment-ids]')?.dataset.commentIds?.split(',');
-  if (!ids?.length || !selection?.isCollapsed) return;
-  const comment = reviewDocument.comments.find(item => item.id === ids[0]);
-  if (!comment) return;
-  selectedCommentId = comment.id;
-  reviewFilter = comment.status;
-  openReviewPanel();
-  renderReview();
+  if (ids?.length) {
+    const containing = ids.filter(id => [...(reviewLocations.get(id)?.range.getClientRects() || [])]
+      .some(rect => event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom));
+    const matches = containing.length ? containing : ids;
+    activateReview(matches[(matches.indexOf(selectedCommentId) + 1) % matches.length]);
+  } else if (touchReviewDevice.matches && !document.body.classList.contains('review-closed')) closeReviewPanel();
 });
 document.addEventListener('pointerdown', event => {
   if (!selectionComment.contains(event.target) && !article.contains(event.target)) {
@@ -5292,6 +5163,7 @@ window.addEventListener('beforeunload', event => {
     event.returnValue = '';
   }
 });
+initializeReviewContext();
 buildViewerTools();
 loadReview();
 ensureReviewIdentity();
