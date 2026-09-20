@@ -3419,7 +3419,7 @@ fn render_markdown_page(markdown: &str, title: &str) -> String {
     let title = escape_html(title);
     let source = escape_html(markdown);
     format!(
-        "<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">\n<title>{title}</title>\n<style>{MARKDOWN_CSS}</style>\n</head>\n<body class=\"review-closed\">\n<header class=\"topbar\"><button class=\"home\" id=\"history-back\" type=\"button\" aria-label=\"返回上一页\">←</button><span class=\"mark\">MD</span><span class=\"filename\">{title}</span><span class=\"word-count\" title=\"正文非空白字符数（含标点，不含 Markdown 格式标记）\">{word_count} 字</span><span class=\"top-actions\"><button class=\"identity-button\" id=\"identity-button\" type=\"button\" title=\"切换审阅身份\"></button><button class=\"button ghost review-toggle\" id=\"review-toggle\" type=\"button\" aria-expanded=\"false\">评论 <b id=\"review-count\">0</b></button><a class=\"button ghost raw-button\" href=\"?mode=raw\">Raw</a><button class=\"button\" id=\"edit-button\" type=\"button\">编辑</button></span></header>\n<div id=\"reader\" class=\"reader-layout\"><aside id=\"toc\" aria-label=\"文档目录\"></aside><main class=\"paper\"><article id=\"article\">{article}</article></main><aside id=\"review-panel\" class=\"review-panel\" aria-label=\"审阅评论\"><header class=\"review-header\"><div><span>REVIEW</span><strong>审阅讨论</strong></div><button id=\"review-close\" type=\"button\" aria-label=\"收起评论\">×</button></header><div class=\"review-file-actions\"><a id=\"open-review-file\" target=\"_blank\">打开评论文件</a><button id=\"copy-review-path\" type=\"button\">复制评论文件名</button></div><div class=\"review-presence\"><i aria-hidden=\"true\"></i><span id=\"review-users\">正在连接…</span></div><button class=\"document-comment\" id=\"document-comment\" type=\"button\">＋ 全文评论</button><div class=\"review-composer\" id=\"review-composer\" hidden><p id=\"composer-scope\"></p><label for=\"comment-body\">写下需要讨论或修改的内容</label><textarea id=\"comment-body\" rows=\"4\"></textarea><div><button class=\"text-button\" id=\"composer-cancel\" type=\"button\">取消</button><button class=\"button\" id=\"composer-submit\" type=\"button\">提交评论</button></div></div><nav class=\"review-filters\" aria-label=\"评论状态\"><button class=\"active\" type=\"button\" data-review-filter=\"open\">待处理 <b>0</b></button><button type=\"button\" data-review-filter=\"addressed\">待确认 <b>0</b></button><button type=\"button\" data-review-filter=\"resolved\">已解决 <b>0</b></button></nav><div class=\"review-complete\" id=\"review-complete\" hidden><strong>审阅已完成</strong><span>可以交给 AI 执行</span></div><div class=\"review-error\" id=\"review-error\" role=\"status\" hidden></div><div class=\"comment-list\" id=\"comment-list\"></div></aside></div>\n<button class=\"selection-comment\" id=\"selection-comment\" type=\"button\" hidden>＋ 添加批注</button><div class=\"toast\" id=\"review-toast\" role=\"status\" hidden></div><dialog class=\"identity-dialog\" id=\"identity-dialog\"><form method=\"dialog\"><span class=\"dialog-kicker\">REVIEW IDENTITY</span><h2>你以什么身份参与审阅？</h2><p>输入一个方便其他审阅者辨认的名称，浏览器会在此设备上记住它。</p><label for=\"identity-input\">审阅人名称</label><input id=\"identity-input\" name=\"identity\" autocomplete=\"username\" placeholder=\"例如：小明、Alice、dev-01\" required><span class=\"identity-error\" id=\"identity-error\"></span><button class=\"button\" id=\"identity-submit\" value=\"confirm\">进入审阅</button></form></dialog>\n<section id=\"editor\" class=\"editor-shell\" hidden><div class=\"editor-toolbar\"><div class=\"format-tools\" role=\"toolbar\" aria-label=\"Markdown 格式\"><button type=\"button\" data-format=\"heading\" title=\"标题\">H</button><button type=\"button\" data-format=\"bold\" title=\"粗体\"><strong>B</strong></button><button type=\"button\" data-format=\"italic\" title=\"斜体\"><em>I</em></button><button type=\"button\" data-format=\"link\" title=\"链接\">↗</button><button type=\"button\" data-format=\"quote\" title=\"引用\">❯</button><button type=\"button\" data-format=\"code\" title=\"代码\">&lt;/&gt;</button><button type=\"button\" data-format=\"list\" title=\"列表\">≡</button><button type=\"button\" data-format=\"task\" title=\"任务\">☑</button></div><span class=\"collaboration-status\" role=\"status\"><i id=\"connection-dot\" aria-hidden=\"true\"></i><span id=\"save-status\">未连接</span><span id=\"presence\"></span></span><button class=\"button ghost\" id=\"cancel-button\" type=\"button\">退出编辑</button><button class=\"button\" id=\"save-button\" type=\"button\">立即保存</button></div><div class=\"editor-panes\"><div class=\"pane preview-pane\"><span>PREVIEW</span><iframe id=\"preview\" title=\"Markdown 实时预览\"></iframe></div><label class=\"pane source-pane\"><span>MARKDOWN</span><textarea id=\"source\" spellcheck=\"false\" disabled>{source}</textarea></label></div></section>\n<script src=\"{MERMAID_PATH}\"></script><script>{MARKDOWN_MERMAID_JS}</script>\n<script src=\"{YJS_PATH}\"></script><script>{MARKDOWN_JS}</script>\n</body>\n</html>"
+        "<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">\n<title>{title}</title>\n<style>{MARKDOWN_CSS}</style>\n</head>\n<body class=\"review-closed\">\n<header class=\"topbar\"><button class=\"home\" id=\"history-back\" type=\"button\" aria-label=\"返回上一页\">←</button><span class=\"mark\">MD</span><span class=\"filename\">{title}</span><span class=\"word-count\" title=\"正文非空白字符数（含标点，不含 Markdown 格式标记）\">{word_count} 字</span><span class=\"top-actions\"><button class=\"identity-button\" id=\"identity-button\" type=\"button\" title=\"切换审阅身份\"></button><button class=\"button ghost review-toggle\" id=\"review-toggle\" type=\"button\" aria-expanded=\"false\">评论 <b id=\"review-count\">0</b></button><a class=\"button ghost raw-button\" href=\"?mode=raw\">Raw</a><button class=\"button\" id=\"edit-button\" type=\"button\">编辑</button></span></header>\n<div id=\"reader\" class=\"reader-layout\"><aside id=\"toc\" aria-label=\"文档目录\"></aside><main class=\"paper\"><article id=\"article\">{article}</article></main><aside id=\"review-panel\" class=\"review-panel\" aria-label=\"审阅评论\"><header class=\"review-header\"><div><span>REVIEW</span><strong>审阅讨论</strong></div><button id=\"review-close\" type=\"button\" aria-label=\"收起评论\">×</button></header><div class=\"review-file-actions\"><a id=\"open-review-file\" target=\"_blank\">打开评论文件</a><button id=\"copy-review-path\" type=\"button\">复制评论文件名</button></div><div class=\"review-presence\"><i aria-hidden=\"true\"></i><span id=\"review-users\">正在连接…</span></div><button class=\"document-comment\" id=\"document-comment\" type=\"button\">＋ 全文评论</button><div class=\"review-composer\" id=\"review-composer\" hidden><p id=\"composer-scope\"></p><label for=\"comment-body\">写下需要讨论或修改的内容</label><textarea id=\"comment-body\" rows=\"4\"></textarea><div><button class=\"text-button\" id=\"composer-cancel\" type=\"button\">取消</button><button class=\"button\" id=\"composer-submit\" type=\"button\">提交评论</button></div></div><nav class=\"review-filters\" aria-label=\"评论状态\"><button class=\"active\" type=\"button\" data-review-filter=\"open\">待处理 <b>0</b></button><button type=\"button\" data-review-filter=\"addressed\">待确认 <b>0</b></button><button type=\"button\" data-review-filter=\"resolved\">已解决 <b>0</b></button></nav><div class=\"review-complete\" id=\"review-complete\" hidden><strong>审阅已完成</strong><span>可以交给 AI 执行</span></div><div class=\"review-error\" id=\"review-error\" role=\"status\" hidden></div><div class=\"comment-list\" id=\"comment-list\"></div></aside></div>\n<button class=\"selection-comment\" id=\"selection-comment\" type=\"button\" hidden>＋ 添加批注</button><div class=\"toast\" id=\"review-toast\" role=\"status\" hidden></div><dialog class=\"identity-dialog\" id=\"identity-dialog\"><form method=\"dialog\"><span class=\"dialog-kicker\">REVIEW IDENTITY</span><h2>你以什么身份参与审阅？</h2><p>输入一个方便其他审阅者辨认的名称，浏览器会在此设备上记住它。</p><label for=\"identity-input\">审阅人名称</label><input id=\"identity-input\" name=\"identity\" autocomplete=\"username\" placeholder=\"例如：小明、Alice、dev-01\" required><span class=\"identity-error\" id=\"identity-error\"></span><button class=\"button\" id=\"identity-submit\" value=\"confirm\">进入审阅</button></form></dialog>\n<section id=\"editor\" class=\"editor-shell\" hidden><div class=\"editor-toolbar\"><div class=\"format-tools\" role=\"toolbar\" aria-label=\"Markdown 格式\"><button type=\"button\" data-format=\"heading\" title=\"标题\">H</button><button type=\"button\" data-format=\"bold\" title=\"粗体\"><strong>B</strong></button><button type=\"button\" data-format=\"italic\" title=\"斜体\"><em>I</em></button><button type=\"button\" data-format=\"link\" title=\"链接\">↗</button><button type=\"button\" data-format=\"quote\" title=\"引用\">❯</button><button type=\"button\" data-format=\"code\" title=\"代码\">&lt;/&gt;</button><button type=\"button\" data-format=\"list\" title=\"列表\">≡</button><button type=\"button\" data-format=\"task\" title=\"任务\">☑</button></div><span class=\"collaboration-status\" role=\"status\"><i id=\"connection-dot\" aria-hidden=\"true\"></i><span id=\"save-status\">未连接</span><span id=\"presence\"></span></span><button class=\"button ghost\" id=\"cancel-button\" type=\"button\">退出编辑</button><button class=\"button\" id=\"save-button\" type=\"button\">立即保存</button></div><div class=\"editor-panes\"><div class=\"pane preview-pane\"><span>PREVIEW</span><iframe id=\"preview\" title=\"Markdown 实时预览\"></iframe></div><label class=\"pane source-pane\"><span>MARKDOWN</span><textarea id=\"source\" spellcheck=\"false\" disabled>{source}</textarea></label></div></section>\n<script data-yjs-src=\"{YJS_PATH}\">{MARKDOWN_JS}</script>\n<script data-mermaid-src=\"{MERMAID_PATH}\">{MARKDOWN_MERMAID_JS}</script>\n</body>\n</html>"
     )
 }
 
@@ -3503,7 +3503,7 @@ fn render_markdown_article(markdown: &str) -> String {
 fn render_markdown_preview_page(markdown: &str) -> String {
     let article = render_markdown_article(markdown);
     format!(
-        "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\"><style>{MARKDOWN_CSS}</style></head><body class=\"preview-body\"><main class=\"paper preview-paper\"><article>{article}</article></main><script src=\"{MERMAID_PATH}\"></script><script>{MARKDOWN_MERMAID_JS}</script></body></html>"
+        "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\"><style>{MARKDOWN_CSS}</style></head><body class=\"preview-body\"><main class=\"paper preview-paper\"><article>{article}</article></main><script data-mermaid-src=\"{MERMAID_PATH}\">{MARKDOWN_MERMAID_JS}</script></body></html>"
     )
 }
 
@@ -4228,6 +4228,7 @@ body.editing .word-count { display:none; }
 "#;
 
 const MARKDOWN_JS: &str = r#"
+const editorLibraryPath = document.currentScript.dataset.yjsSrc;
 const reader = document.querySelector('#reader');
 const editor = document.querySelector('#editor');
 const source = document.querySelector('#source');
@@ -4254,8 +4255,8 @@ const REVIEW_IDENTITY_KEY = 'webdir-review-identity';
 commentBody.placeholder = 'Enter 提交 · ⌘ Enter 换行';
 const LOCAL_ORIGIN = Symbol('local-input');
 const REMOTE_ORIGIN = Symbol('remote-update');
-let documentState = new Y.Doc();
-let sharedText = documentState.getText('source');
+let documentState;
+let sharedText;
 let socket, reconnectTimer, previewTimer;
 let roomId = null;
 let reconnectDelay = 400;
@@ -4569,6 +4570,32 @@ function connect() {
   socket.addEventListener('error', () => setStatus('协作连接失败', 'error'));
 }
 async function openEditor() {
+  const button = document.querySelector('#edit-button');
+  button.disabled = true;
+  button.textContent = '加载中…';
+  try {
+    if (!window.Y) {
+      await new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = editorLibraryPath;
+        script.onload = resolve;
+        script.onerror = () => {
+          script.remove();
+          reject(new Error('无法加载编辑器，请重试'));
+        };
+        document.head.append(script);
+      });
+    }
+    documentState = new Y.Doc();
+    sharedText = documentState.getText('source');
+    observeDocumentState();
+  } catch (error) {
+    showReviewToast(error.message);
+    return;
+  } finally {
+    button.disabled = false;
+    button.textContent = '编辑';
+  }
   editing = true;
   reader.hidden = true;
   editor.hidden = false;
@@ -4594,7 +4621,6 @@ function syncTextareaChange() {
   }, LOCAL_ORIGIN);
   schedulePreview();
 }
-observeDocumentState();
 function wrapSelection(prefix, suffix = prefix, placeholder = '文本') {
   const start = source.selectionStart;
   const end = source.selectionEnd;

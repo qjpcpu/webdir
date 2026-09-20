@@ -1,4 +1,23 @@
 (() => {
+  const libraryPath = document.currentScript.dataset.mermaidSrc;
+  let libraryLoading;
+  function loadMermaid() {
+    if (!libraryLoading) {
+      libraryLoading = new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = libraryPath;
+        script.onload = resolve;
+        script.onerror = () => {
+          libraryLoading = null;
+          script.remove();
+          reject(new Error('无法加载 Mermaid 图表库'));
+        };
+        document.head.append(script);
+      });
+    }
+    return libraryLoading;
+  }
+
   function configureTheme() {
     const dark = document.documentElement.dataset.theme === 'dark';
     const ink = dark ? '#edf0f7' : '#30364f';
@@ -36,8 +55,9 @@
   let renderQueue = Promise.resolve();
 
   window.renderMarkdownMermaid = (reset = false) => renderQueue = renderQueue.then(async () => {
-    configureTheme();
     const blocks = document.querySelectorAll('article pre > code.language-mermaid');
+    if (!blocks.length) return;
+    let ready;
     for (const code of blocks) {
       const block = code.parentElement;
       if (reset) {
@@ -51,6 +71,7 @@
       diagram.className = 'mermaid-diagram';
       block.append(diagram);
       try {
+        await (ready ||= loadMermaid().then(configureTheme));
         const {svg, bindFunctions} = await mermaid.render(
           `markdown-mermaid-${++diagramId}`, code.textContent, diagram
         );
