@@ -18,3 +18,4 @@ tempfile = "3.23"
 time = { version = "0.3", features = ["formatting", "local-offset"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
+flate2 = "1.1"

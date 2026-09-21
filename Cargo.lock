@@ -1666,6 +1666,7 @@ dependencies = [
 name = "webdir"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "image",
  "jsonwebtoken",
  "pulldown-cmark",

@@ -7,6 +7,8 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use pulldown_cmark::{html, CowStr, Event, Options, Parser, Tag};
 use sha1::{Digest, Sha1};
 use syntect::easy::HighlightLines;
@@ -71,6 +73,7 @@ struct PortConfig {
 struct RequestHeaders {
     content_length: usize,
     accept: String,
+    accept_encoding: String,
     range: String,
     if_none_match: String,
     fetch_dest: String,
@@ -953,7 +956,12 @@ fn handle_connection_with_auth(
         }
         if mode.as_deref() == Some("directory-entries") {
             return match read_directory_entries(root, &canonical, &relative, state, &access) {
-                Ok(entries) => send_json(&mut stream, &entries, head_only),
+                Ok(entries) => send_json_encoded(
+                    &mut stream,
+                    &entries,
+                    head_only,
+                    accepts_gzip(&headers.accept_encoding),
+                ),
                 Err(_) => send_text(
                     &mut stream,
                     500,
@@ -971,7 +979,12 @@ fn handle_connection_with_auth(
             query_parameter(query, "view").as_deref() == Some("gallery"),
             &access,
         )?;
-        return send_html(&mut stream, &body, head_only);
+        return send_html_encoded(
+            &mut stream,
+            &body,
+            head_only,
+            accepts_gzip(&headers.accept_encoding),
+        );
     }
     if !metadata.is_file() {
         let body = access.not_found(&decoded);
@@ -1624,6 +1637,13 @@ fn read_request_headers<R: BufRead>(reader: &mut R) -> io::Result<RequestHeaders
                 headers.if_none_match = value.trim().to_owned();
             } else if name.eq_ignore_ascii_case("accept") {
                 headers.accept = value.trim().to_ascii_lowercase();
+            } else if name.eq_ignore_ascii_case("accept-encoding") {
+                if !headers.accept_encoding.is_empty() {
+                    headers.accept_encoding.push(',');
+                }
+                headers
+                    .accept_encoding
+                    .push_str(&value.trim().to_ascii_lowercase());
             } else if name.eq_ignore_ascii_case("range") {
                 headers.range = value.trim().to_ascii_lowercase();
             } else if name.eq_ignore_ascii_case("sec-fetch-dest") {
@@ -1838,6 +1858,22 @@ fn send_html(stream: &mut TcpStream, body: &str, head_only: bool) -> io::Result<
     )
 }
 
+fn send_html_encoded(
+    stream: &mut TcpStream,
+    body: &str,
+    head_only: bool,
+    gzip: bool,
+) -> io::Result<()> {
+    let body = themed_html(body);
+    send_content_encoded(
+        stream,
+        body.as_bytes(),
+        "text/html; charset=utf-8",
+        head_only,
+        gzip,
+    )
+}
+
 fn send_html_status(
     stream: &mut TcpStream,
     status: u16,
@@ -1874,6 +1910,38 @@ fn send_content(
     Ok(())
 }
 
+fn send_content_encoded(
+    stream: &mut TcpStream,
+    body: &[u8],
+    content_type: &str,
+    head_only: bool,
+    gzip: bool,
+) -> io::Result<()> {
+    if !gzip {
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: {content_type}\r\nVary: Accept-Encoding\r\nConnection: close\r\n\r\n",
+            body.len(),
+        )?;
+        if !head_only {
+            stream.write_all(body)?;
+        }
+        return Ok(());
+    }
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+    encoder.write_all(body)?;
+    let compressed = encoder.finish()?;
+    write!(
+        stream,
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: {content_type}\r\nContent-Encoding: gzip\r\nVary: Accept-Encoding\r\nConnection: close\r\n\r\n",
+        compressed.len(),
+    )?;
+    if !head_only {
+        stream.write_all(&compressed)?;
+    }
+    Ok(())
+}
+
 fn send_json<T: serde::Serialize>(
     stream: &mut TcpStream,
     value: &T,
@@ -1882,6 +1950,47 @@ fn send_json<T: serde::Serialize>(
     let body = serde_json::to_vec(value)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     send_content(stream, &body, "application/json; charset=utf-8", head_only)
+}
+
+fn send_json_encoded<T: serde::Serialize>(
+    stream: &mut TcpStream,
+    value: &T,
+    head_only: bool,
+    gzip: bool,
+) -> io::Result<()> {
+    let body = serde_json::to_vec(value)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    send_content_encoded(
+        stream,
+        &body,
+        "application/json; charset=utf-8",
+        head_only,
+        gzip,
+    )
+}
+
+fn accepts_gzip(value: &str) -> bool {
+    let mut gzip = None;
+    let mut wildcard = None;
+    for encoding in value.split(',') {
+        let mut parts = encoding.split(';').map(str::trim);
+        let name = parts.next().unwrap_or_default();
+        let quality = parts
+            .find_map(|parameter| {
+                parameter
+                    .split_once('=')
+                    .filter(|(name, _)| name.trim() == "q")
+                    .map(|(_, quality)| quality.trim().parse::<f32>().unwrap_or(0.0))
+            })
+            .unwrap_or(1.0);
+        let target = match name {
+            "gzip" => &mut gzip,
+            "*" => &mut wildcard,
+            _ => continue,
+        };
+        *target = Some(target.unwrap_or(0.0_f32).max(quality));
+    }
+    gzip.or(wildcard).is_some_and(|quality| quality > 0.0)
 }
 
 fn send_redirect(stream: &mut TcpStream, location: &str) -> io::Result<()> {
@@ -5284,6 +5393,7 @@ fn mime_type(path: &Path) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flate2::read::GzDecoder;
 
     fn test_http_request(
         address: std::net::SocketAddr,
@@ -5301,6 +5411,166 @@ mod tests {
         let mut response = String::new();
         client.read_to_string(&mut response).unwrap();
         response
+    }
+
+    fn test_http_request_bytes(
+        address: std::net::SocketAddr,
+        method: &str,
+        target: &str,
+        headers: &str,
+    ) -> Vec<u8> {
+        let mut client = TcpStream::connect(address).unwrap();
+        write!(
+            client,
+            "{method} {target} HTTP/1.1\r\nHost: localhost\r\n{headers}Connection: close\r\n\r\n"
+        )
+        .unwrap();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).unwrap();
+        response
+    }
+
+    #[test]
+    fn directory_responses_use_gzip_when_accepted() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("photo.jpg"), "image bytes").unwrap();
+        let root = fs::canonicalize(directory.path()).unwrap();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let state = StateStore::new(None).unwrap();
+            for _ in 0..3 {
+                let (stream, _) = listener.accept().unwrap();
+                handle_connection(
+                    stream,
+                    &root,
+                    &CollaborationHub::default(),
+                    &ReviewHub::default(),
+                    false,
+                    None,
+                    &state,
+                )
+                .unwrap();
+            }
+        });
+
+        for (target, expected) in [
+            ("/?view=gallery", "<!doctype html>"),
+            ("/?mode=directory-entries", "\"name\":\"photo.jpg\""),
+        ] {
+            let response =
+                test_http_request_bytes(address, "GET", target, "Accept-Encoding: br, gzip\r\n");
+            let boundary = response
+                .windows(4)
+                .position(|bytes| bytes == b"\r\n\r\n")
+                .unwrap();
+            let headers = std::str::from_utf8(&response[..boundary]).unwrap();
+            assert!(headers.contains("Content-Encoding: gzip\r\n"));
+            assert!(headers.contains("Vary: Accept-Encoding\r\n"));
+            let mut decoder = GzDecoder::new(&response[boundary + 4..]);
+            let mut body = String::new();
+            decoder.read_to_string(&mut body).unwrap();
+            assert!(body.contains(expected));
+        }
+        let head = test_http_request_bytes(
+            address,
+            "HEAD",
+            "/?mode=directory-entries",
+            "Accept-Encoding: gzip\r\n",
+        );
+        let boundary = head
+            .windows(4)
+            .position(|bytes| bytes == b"\r\n\r\n")
+            .unwrap();
+        let headers = std::str::from_utf8(&head[..boundary]).unwrap();
+        assert!(headers.contains("Content-Encoding: gzip\r\n"));
+        assert!(headers.contains("Content-Length: "));
+        assert_eq!(head.len(), boundary + 4);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn directory_response_keeps_identity_when_gzip_is_disabled() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("note.txt"), "hello").unwrap();
+        let root = fs::canonicalize(directory.path()).unwrap();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            handle_connection(
+                stream,
+                &root,
+                &CollaborationHub::default(),
+                &ReviewHub::default(),
+                false,
+                None,
+                &StateStore::new(None).unwrap(),
+            )
+            .unwrap();
+        });
+
+        let response = test_http_request_bytes(
+            address,
+            "GET",
+            "/?mode=directory-entries",
+            "Accept-Encoding: gzip;q=0\r\n",
+        );
+        let boundary = response
+            .windows(4)
+            .position(|bytes| bytes == b"\r\n\r\n")
+            .unwrap();
+        let headers = std::str::from_utf8(&response[..boundary]).unwrap();
+        assert!(!headers.contains("Content-Encoding: gzip"));
+        assert!(headers.contains("Vary: Accept-Encoding\r\n"));
+        assert!(std::str::from_utf8(&response[boundary + 4..])
+            .unwrap()
+            .ends_with(']'));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn directory_response_follows_accept_encoding_precedence() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(directory.path()).unwrap();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let state = StateStore::new(None).unwrap();
+            for _ in 0..3 {
+                let (stream, _) = listener.accept().unwrap();
+                handle_connection(
+                    stream,
+                    &root,
+                    &CollaborationHub::default(),
+                    &ReviewHub::default(),
+                    false,
+                    None,
+                    &state,
+                )
+                .unwrap();
+            }
+        });
+
+        for (headers, compressed) in [
+            ("Accept-Encoding: *;q=0.5\r\n", true),
+            ("Accept-Encoding: gzip\r\nAccept-Encoding: br\r\n", true),
+            ("Accept-Encoding: gzip;q=0, *;q=1\r\n", false),
+        ] {
+            let response =
+                test_http_request_bytes(address, "GET", "/?mode=directory-entries", headers);
+            let boundary = response
+                .windows(4)
+                .position(|bytes| bytes == b"\r\n\r\n")
+                .unwrap();
+            let response_headers = std::str::from_utf8(&response[..boundary]).unwrap();
+            assert_eq!(
+                response_headers.contains("Content-Encoding: gzip\r\n"),
+                compressed,
+                "unexpected negotiation for {headers:?}",
+            );
+        }
+        server.join().unwrap();
     }
 
     #[test]
