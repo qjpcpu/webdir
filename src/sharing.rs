@@ -476,21 +476,21 @@ mod tests {
             "POST",
             "/docs/project/?mode=batch-images",
             &cookie,
-            r#"{"action":"move","files":["猫.svg"],"directory":"sub"}"#,
+            r#"{"action":"move","files":["猫.svg"],"directory":"/docs/project/sub/"}"#,
         );
         assert!(moved.contains("\"affected\":1"), "{moved}");
         let blocked = server.request(
             "POST",
             "/docs/project/sub/?mode=batch-images",
             &cookie,
-            r#"{"action":"move","files":["猫.svg"],"directory":".."}"#,
+            r#"{"action":"move","files":["猫.svg"],"directory":"/docs/project/"}"#,
         );
         assert!(blocked.contains("\"affected\":1"), "{blocked}");
         let blocked = server.request(
             "POST",
             "/docs/project/?mode=batch-images",
             &cookie,
-            r#"{"action":"move","files":["猫.svg"],"directory":".."}"#,
+            r#"{"action":"move","files":["猫.svg"],"directory":"/docs/"}"#,
         );
         assert!(blocked.contains("\"affected\":0"), "{blocked}");
         assert!(server
@@ -534,6 +534,13 @@ mod tests {
         assert!(!listing.contains("\"listHref\":\"/docs/project/outside/\""));
         assert!(!listing.contains("leak.svg"));
         assert!(listing.contains("\"listHref\":\"/docs/project/inside/\""));
+        let picker = server.request("GET", "/docs/project/?mode=move-directories", &cookie, "");
+        assert!(picker.contains("\"root\":\"/docs/project/\""));
+        assert!(picker.contains("\"path\":\"/docs/project/inside/\""));
+        assert!(!picker.contains("/docs/project/outside/"));
+        assert!(server
+            .request("GET", "/docs/?mode=move-directories", &cookie, "")
+            .starts_with("HTTP/1.1 403"));
         assert!(server
             .request("GET", "/docs/project/inside/child.md", &cookie, "")
             .starts_with("HTTP/1.1 200"));
@@ -549,7 +556,7 @@ mod tests {
             "POST",
             "/docs/project/?mode=batch-images",
             &cookie,
-            r#"{"action":"move","files":["猫.svg"],"directory":"outside"}"#,
+            r#"{"action":"move","files":["猫.svg"],"directory":"/docs/project/outside/"}"#,
         );
         assert!(moved.contains("\"affected\":0"));
         let sorted = server.request("GET", "/docs/project/?mode=similarity-order", &cookie, "");

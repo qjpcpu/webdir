@@ -24,6 +24,7 @@ module.exports = () => test.describe('gallery image actions', () => {
   const reloadAfter = async (page, action) => {
     await Promise.all([page.waitForEvent('load'), action()]);
   };
+  const moveNode = (page, folderUrl) => page.locator(`.move-node[data-path="${folderUrl}"] > .move-tree-row > .move-tree-label`);
 
   test.beforeEach(async () => {
     directory = fs.mkdtempSync(path.join(__dirname, 'fixtures', 'image-actions-'));
@@ -127,6 +128,7 @@ module.exports = () => test.describe('gallery image actions', () => {
 
   for (const action of ['move', 'delete', 'clear-mark']) {
     test(`multi-select batch ${action} operates on the chosen photos`, async ({page}) => {
+      if (action === 'move') fs.mkdirSync(path.join(directory, 'chosen'));
       for (const name of names) {
         await like(page, name);
         await tag(page, name, 3);
@@ -143,7 +145,9 @@ module.exports = () => test.describe('gallery image actions', () => {
       const [button, description, confirm] = controls[action];
       await page.locator(button).click();
       await expect(page.locator(description)).toContainText('已选的 2 张图片');
-      if (action === 'move') await page.locator('.move-dialog input').fill('chosen');
+      if (action === 'move') {
+        await moveNode(page, `${url}chosen/`).click();
+      }
       const request = page.waitForRequest(request => request.url().includes('mode=batch-images'));
       await reloadAfter(page, () => page.locator(confirm).click());
       expect((await request).postDataJSON().files).toEqual([names[0], names[2]]);
@@ -356,9 +360,9 @@ module.exports = () => test.describe('gallery image actions', () => {
     await choose(page, 'favourite');
     await page.locator('#file-search-input').fill('01');
     await page.locator('#move-images').click();
-    await expect(page.locator('.move-dialog input')).toHaveValue('favourite');
+    await expect(page.locator('.move-tree [aria-selected="true"]')).toContainText(path.basename(directory));
     await expect(page.locator('.move-description')).toContainText('1 张');
-    await page.locator('.move-dialog input').fill('chosen');
+    await moveNode(page, `${url}chosen/`).click();
     await reloadAfter(page, () => page.locator('[data-move-confirm]').click());
     await expect(page.locator('#image-filter')).toHaveValue('favourite');
     await expect(page.locator('#file-search-input')).toHaveValue('01');
@@ -376,7 +380,7 @@ module.exports = () => test.describe('gallery image actions', () => {
     await expect(entry(page, movedName)).toHaveAttribute('data-image-tag', '3');
     await choose(page, 'tag3');
     await page.locator('#move-images').click();
-    await page.locator('.move-dialog input').fill('..');
+    await moveNode(page, url).click();
     await expect(page.locator('.move-description')).toContainText('1 张');
     await reloadAfter(page, () => page.locator('[data-move-confirm]').click());
     await expect(page.locator('#directory-notice')).toContainText('已移动 1 张图片');
@@ -387,6 +391,23 @@ module.exports = () => test.describe('gallery image actions', () => {
     await expect(entry(page, movedName)).toHaveAttribute('data-image-tag', '3');
     const parentComments = await (await page.request.get(`${imageUrl(movedName)}?mode=gallery-comments`)).json();
     expect(parentComments.comments).toMatchObject([{image: movedName, body: 'keep this comment'}]);
+  });
+
+  test('move picker opens the current folder and creates and renames a child before moving', async ({page}) => {
+    fs.mkdirSync(path.join(directory, 'nested'));
+    fs.mkdirSync(path.join(directory, 'other'));
+    fs.copyFileSync(path.join(directory, names[0]), path.join(directory, 'nested', 'inside.svg'));
+    await page.goto(`${url}nested/?view=gallery`);
+    await page.locator('#move-images').click();
+    await expect(page.locator('.move-tree [aria-selected="true"]')).toContainText('nested');
+    await expect(page.locator('[data-move-confirm]')).toBeDisabled();
+    await moveNode(page, `${url}other/`).click();
+    await page.locator('[data-move-new-folder]').click();
+    await page.locator('[data-move-rename-input]').fill('Holiday photos');
+    await page.locator('[data-move-rename-input]').press('Enter');
+    await expect(page.locator('.move-tree [aria-selected="true"]')).toContainText('Holiday photos');
+    await reloadAfter(page, () => page.locator('[data-move-confirm]').click());
+    expect(fs.existsSync(path.join(directory, 'other', 'Holiday photos', 'inside.svg'))).toBe(true);
   });
 
   test('moving to the parent removes empty organising folders and returns to the parent gallery', async ({page}) => {
@@ -401,7 +422,7 @@ module.exports = () => test.describe('gallery image actions', () => {
       await choose(page, 'tag3');
       await page.locator('#file-search-input').fill(`from-${folder}`);
       await page.locator('#move-images').click();
-      await page.locator('.move-dialog input').fill('..');
+      await moveNode(page, url).click();
       await reloadAfter(page, () => page.locator('[data-move-confirm]').click());
       await expect(page).toHaveURL(`${url}?view=gallery`);
       await expect(page.locator('.listing')).toHaveClass(/gallery/);
@@ -477,7 +498,7 @@ module.exports = () => test.describe('gallery image actions', () => {
   test('batch delete confirms the visible count and retains gallery controls when emptied', async ({page}) => {
     await page.goto(`${url}?view=gallery`);
     await page.locator('#move-images').click();
-    await expect(page.locator('.move-dialog input')).toHaveValue('all');
+    await expect(page.locator('.move-tree [aria-selected="true"]')).toContainText(path.basename(directory));
     await page.locator('[data-move-cancel]').click();
     await page.locator('#file-search-input').fill('01');
     await page.locator('#delete-images').click();
@@ -516,7 +537,7 @@ module.exports = () => test.describe('gallery image actions', () => {
     await expect(page.locator('#file-path-toast')).toHaveText('已复制 2 个文件名');
     await choose(page, 'tag3');
     await page.locator('#move-images').click();
-    await expect(page.locator('.move-dialog input')).toHaveValue('tag3');
+    await expect(page.locator('.move-tree [aria-selected="true"]')).toContainText(path.basename(directory));
     await page.locator('[data-move-cancel]').click();
     await page.locator('#file-search-input').fill('01');
     await page.locator('#file-search-input').blur();

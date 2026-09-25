@@ -711,7 +711,7 @@ fn linked_sidecars_and_batch_sources_and_destinations_preserve_private_data() {
     }
     for action in [
         serde_json::json!({"action":"delete", "files":["猫.svg"]}),
-        serde_json::json!({"action":"move", "files":["猫.svg"], "directory":"sub"}),
+        serde_json::json!({"action":"move", "files":["猫.svg"], "directory":"/docs/project/sub/"}),
     ] {
         let response = server.request(
             "POST",
@@ -731,7 +731,7 @@ fn linked_sidecars_and_batch_sources_and_destinations_preserve_private_data() {
         "POST",
         "/docs/project/?mode=batch-images",
         &cookie,
-        r#"{"action":"move","files":["猫.svg"],"directory":"sub"}"#,
+        r#"{"action":"move","files":["猫.svg"],"directory":"/docs/project/sub/"}"#,
     );
     let json: serde_json::Value = serde_json::from_str(body(&response)).unwrap();
     assert_eq!(json["affected"], 0);

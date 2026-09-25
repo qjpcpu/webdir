@@ -900,9 +900,50 @@ fn handle_connection_with_auth(
         };
         return send_json(
             &mut stream,
-            &batch_images_with_access(&canonical, state, action, &access),
+            &batch_images_with_access(root, &canonical, state, action, &access),
             false,
         );
+    }
+    if mode.as_deref() == Some("move-directories") {
+        if !metadata.is_dir() || !matches!(method, "GET" | "POST") {
+            return send_text(
+                &mut stream,
+                405,
+                "Method Not Allowed",
+                "请选择目录\n",
+                head_only,
+            );
+        }
+        if method == "GET" {
+            return match move_directories(&canonical, &relative, &access) {
+                Ok(listing) => send_json(&mut stream, &listing, head_only),
+                Err(_) => send_text(
+                    &mut stream,
+                    500,
+                    "Internal Server Error",
+                    "目录加载失败\n",
+                    head_only,
+                ),
+            };
+        }
+        let body = match read_request_body(&mut reader, headers.content_length) {
+            Ok(body) => body,
+            Err(error) => return send_text(&mut stream, 400, "Bad Request", &error, false),
+        };
+        let action = match serde_json::from_str::<MoveDirectoryAction>(&body) {
+            Ok(action) => action,
+            Err(_) => return send_text(&mut stream, 400, "Bad Request", "无效的目录操作\n", false),
+        };
+        return match edit_move_directory(root, &canonical, &relative, &access, action) {
+            Ok(entry) => send_json(&mut stream, &entry, false),
+            Err(error) => send_text(
+                &mut stream,
+                400,
+                "Bad Request",
+                &format!("{error}\n"),
+                false,
+            ),
+        };
     }
     if method == "DELETE" {
         if !metadata.is_file() || !is_image_file(&canonical) {
@@ -2382,6 +2423,118 @@ enum BatchImageAction {
     },
 }
 
+#[derive(serde::Serialize)]
+struct MoveDirectoryEntry {
+    name: String,
+    path: String,
+}
+
+#[derive(serde::Serialize)]
+struct MoveDirectoryListing {
+    root: String,
+    entries: Vec<MoveDirectoryEntry>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(tag = "action", rename_all = "lowercase")]
+enum MoveDirectoryAction {
+    Create,
+    Rename { name: String },
+}
+
+fn move_directories(
+    directory: &Path,
+    relative: &Path,
+    access: &Access,
+) -> io::Result<MoveDirectoryListing> {
+    let mut entries = Vec::new();
+    for item in fs::read_dir(directory)? {
+        let item = item?;
+        let path = item.path();
+        if !path.is_dir()
+            || !access.allows(&path)
+            || !access.allows(&path.join("gallery-comments.json"))
+        {
+            continue;
+        }
+        let name = item.file_name().to_string_lossy().into_owned();
+        entries.push(MoveDirectoryEntry {
+            path: url_for_path(&relative.join(&name), true),
+            name,
+        });
+    }
+    entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    let root_relative = access
+        .scope
+        .as_ref()
+        .map_or(Path::new(""), |scope| scope.relative.as_path());
+    Ok(MoveDirectoryListing {
+        root: url_for_path(root_relative, true),
+        entries,
+    })
+}
+
+fn edit_move_directory(
+    root: &Path,
+    directory: &Path,
+    relative: &Path,
+    access: &Access,
+    action: MoveDirectoryAction,
+) -> io::Result<MoveDirectoryEntry> {
+    let creating = matches!(&action, MoveDirectoryAction::Create);
+    let name = match action {
+        MoveDirectoryAction::Create => {
+            let mut name = "新建文件夹".to_string();
+            let mut index = 2;
+            while directory.join(&name).exists() {
+                name = format!("新建文件夹 {index}");
+                index += 1;
+            }
+            let target = directory.join(&name);
+            if !access.allows(&target) {
+                return Err(io::Error::other("没有权限在此新建文件夹"));
+            }
+            fs::create_dir(&target)?;
+            name
+        }
+        MoveDirectoryAction::Rename { name } => {
+            if !is_file_name(&name) {
+                return Err(io::Error::other("请输入有效的文件夹名"));
+            }
+            let logical = root.join(relative);
+            let parent = logical
+                .parent()
+                .ok_or_else(|| io::Error::other("不能重命名根目录"))?;
+            if directory == root
+                || access
+                    .scope
+                    .as_ref()
+                    .is_some_and(|scope| directory == scope.canonical)
+            {
+                return Err(io::Error::other("不能重命名根目录"));
+            }
+            let target = parent.join(&name);
+            if target.exists() {
+                return Err(io::Error::other("同名文件夹已存在"));
+            }
+            if !access.allows(&target) {
+                return Err(io::Error::other("没有权限重命名文件夹"));
+            }
+            fs::rename(logical, &target)?;
+            name
+        }
+    };
+    let path = if creating {
+        relative.join(&name)
+    } else {
+        relative.parent().unwrap_or(Path::new("")).join(&name)
+    };
+    Ok(MoveDirectoryEntry {
+        name,
+        path: url_for_path(&path, true),
+    })
+}
+
 #[derive(Default, serde::Serialize)]
 struct BatchImagesResult {
     affected: usize,
@@ -2396,14 +2549,16 @@ fn is_file_name(name: &str) -> bool {
 
 #[cfg(test)]
 fn batch_images(
+    root: &Path,
     directory: &Path,
     state: &StateStore,
     action: BatchImageAction,
 ) -> BatchImagesResult {
-    batch_images_with_access(directory, state, action, &Access::default())
+    batch_images_with_access(root, directory, state, action, &Access::default())
 }
 
 fn batch_images_with_access(
+    root: &Path,
     directory: &Path,
     state: &StateStore,
     action: BatchImageAction,
@@ -2437,17 +2592,23 @@ fn batch_images_with_access(
                     directory: destination,
                     ..
                 } => {
-                    if destination != ".." && !is_file_name(destination) {
-                        return Err(io::Error::other("请输入目标文件夹名或 .."));
-                    }
-                    let target_directory = directory.join(destination);
-                    if !access.allows(&target_directory)
+                    let target_relative = percent_decode(destination)
+                        .and_then(|path| safe_relative_path(&path))
+                        .ok_or_else(|| io::Error::other("无效的目标目录"))?;
+                    let target_directory = root.join(&target_relative);
+                    if !access.allows_request(root, &target_relative)
+                        || !access.allows(&target_directory)
                         || !access.allows(&target_directory.join("gallery-comments.json"))
                     {
                         return Err(io::Error::other("目标目录或评论文件超出分享范围"));
                     }
-                    fs::create_dir_all(&target_directory)?;
+                    if !target_directory.is_dir() {
+                        return Err(io::Error::other("目标目录不存在"));
+                    }
                     let target_directory = fs::canonicalize(target_directory)?;
+                    if target_directory == directory {
+                        return Err(io::Error::other("请选择其他目录"));
+                    }
                     let target = available_destination_path(&target_directory, OsStr::new(name))?;
                     let liked = state.is_favourite(&source_key)?;
                     let tag = state.image_tag(&source_key)?;
@@ -2522,7 +2683,7 @@ fn batch_images_with_access(
         });
     if result.affected > 0
         && organise_directory
-        && matches!(&action, BatchImageAction::Move { directory, .. } if directory == "..")
+        && matches!(&action, BatchImageAction::Move { directory: destination, .. } if percent_decode(destination).and_then(|path| safe_relative_path(&path)).is_some_and(|path| root.join(path) == directory.parent().unwrap_or(root)))
     {
         let cleanup = (|| -> io::Result<()> {
             if fs::read_dir(directory)?.next().transpose()?.is_none() {
@@ -3513,7 +3674,9 @@ fn render_markdown_page(markdown: &str, title: &str) -> String {
     let word_count: usize = Parser::new_ext(markdown, markdown_options())
         .map(|event| match event {
             Event::Text(text) | Event::Code(text) | Event::Html(text) | Event::InlineHtml(text) => {
-                text.chars().filter(|character| !character.is_whitespace()).count()
+                text.chars()
+                    .filter(|character| !character.is_whitespace())
+                    .count()
             }
             _ => 0,
         })
@@ -3927,7 +4090,35 @@ h1 { position:relative; z-index:1; margin:0; overflow-wrap:anywhere; font-family
 .image-filter-control select:hover { border-color:var(--accent); background:var(--accent-soft); }
 .image-filter-control select:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 .image-filter-control svg { position:absolute; right:.55rem; width:.85rem; height:.85rem; fill:none; stroke:currentColor; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; pointer-events:none; }
-.move-dialog input { display:block; width:100%; box-sizing:border-box; margin-top:.5rem; padding:.65rem; border:1px solid var(--line); border-radius:.5rem; font:inherit; color:inherit; background:var(--surface); }
+.delete-dialog.move-dialog { width:min(calc(100% - 1.5rem),34rem); padding:0; overflow:hidden; }
+.move-heading { display:flex; align-items:center; gap:.85rem; padding:1.35rem 1.5rem 1.15rem; border-bottom:1px solid var(--line); }
+.move-heading-icon { display:grid; place-items:center; width:2.7rem; height:2.7rem; border-radius:.75rem; color:var(--accent); background:var(--accent-soft); font-size:1.45rem; }
+.move-heading h2 { margin:0; font-size:1.13rem; }
+.move-heading .move-description { margin:.25rem 0 0; color:var(--muted); font-size:.8rem; }
+.move-browser-heading { display:flex; align-items:center; justify-content:space-between; gap:.5rem; padding:1rem 1.5rem .65rem; font-size:.77rem; font-weight:700; }
+.move-browser-heading button { padding:.45rem .65rem; border:1px solid var(--line); border-radius:.5rem; color:var(--accent); background:var(--surface); font-family:inherit; font-size:.72rem; font-weight:700; cursor:pointer; }
+.move-browser-heading button:hover:not(:disabled) { border-color:var(--accent); background:var(--accent-soft); }
+.move-browser-heading button:disabled { opacity:.5; cursor:not-allowed; }
+.move-tree { height:min(45vh,22rem); min-height:12rem; margin:0 1.5rem; padding:.35rem 0; overflow:auto; border:1px solid var(--line); border-radius:.75rem; background:color-mix(in srgb,var(--paper) 65%,var(--surface)); color:var(--muted); font-size:.78rem; }
+.move-tree-row { display:flex; align-items:center; min-height:2.45rem; padding-right:.5rem; }
+.move-tree-expand { flex:0 0 1.65rem; height:1.8rem; padding:0; border:0; border-radius:.3rem; color:var(--muted); background:transparent; font-size:1.3rem; cursor:pointer; transition:transform .15s ease; }
+.move-tree-expand[aria-expanded="true"] { transform:rotate(90deg); }
+.move-tree-expand.loading { opacity:.4; }
+.move-tree-label { display:flex; align-items:center; gap:.55rem; flex:1; min-width:0; min-height:2rem; padding:.3rem .5rem; border:1px solid transparent; border-radius:.5rem; color:var(--ink); background:transparent; text-align:left; font-family:inherit; font-size:.8rem; font-weight:600; cursor:pointer; }
+.move-tree-label:hover { background:var(--surface); }
+.move-tree-label[aria-selected="true"] { border-color:color-mix(in srgb,var(--accent) 35%,transparent); color:var(--accent); background:var(--accent-soft); }
+.move-folder-icon { position:relative; flex:none; width:1rem; height:.72rem; margin-top:.18rem; border-radius:.15rem; background:var(--folder); }
+.move-folder-icon::before { position:absolute; bottom:calc(100% - .08rem); left:0; width:.5rem; height:.2rem; border-radius:.12rem .12rem 0 0; background:inherit; content:""; }
+.move-tree-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.move-tree-label input { width:min(100%,15rem); min-width:0; padding:.2rem .4rem; border:1px solid var(--accent); border-radius:.3rem; color:var(--ink); background:var(--surface); font:inherit; }
+.move-error { margin:.55rem 1.5rem 0 !important; color:#b42336; font-size:.76rem; }
+.move-footer { padding:1rem 1.5rem 1.35rem; }
+.move-target { margin:0 !important; overflow:hidden; color:var(--ink); font-size:.78rem; font-weight:700; text-overflow:ellipsis; white-space:nowrap; }
+.move-hint { margin:.2rem 0 .8rem !important; color:var(--muted); font-size:.72rem; }
+.move-footer .delete-actions { margin:0; }
+.move-dialog :focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+@media (max-width:600px) { .move-heading { padding:1.1rem 1rem; } .move-browser-heading { padding:.85rem 1rem .55rem; } .move-tree { margin:0 1rem; height:45dvh; } .move-footer { padding:.85rem 1rem 1rem; } }
+@media (prefers-reduced-motion:reduce) { .move-tree-expand { transition:none; } }
 .gallery-organise { position:relative; z-index:1; display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:.4rem; margin-top:.75rem; }
 .gallery-organise button { display:inline-flex; align-items:center; gap:.4rem; min-height:2rem; padding:.35rem .6rem; border:1px solid var(--line); border-radius:.45rem; color:var(--muted); background:var(--surface); font:500 .72rem/1.3 ui-sans-serif,-apple-system,sans-serif; cursor:pointer; transition:color .15s ease,border-color .15s ease,background .15s ease; }
 .gallery-organise button:hover:not(:disabled) { border-color:var(--accent); color:var(--ink); background:var(--accent-soft); }
@@ -6421,6 +6612,7 @@ mod tests {
             let keeps_tag = matches!(filter, ImageFilter::Favourite);
             let result = batch_images(
                 &root,
+                &root,
                 &state,
                 BatchImageAction::ClearMark {
                     files: vec!["cat.svg".into(), "second.svg".into(), "missing.svg".into()],
@@ -6469,10 +6661,11 @@ mod tests {
             state.set_image_tag(&root.join("猫.svg"), Some(3)).unwrap();
             let result = batch_images(
                 &root,
+                &root,
                 &state,
                 BatchImageAction::Move {
                     files: vec!["猫.svg".into()],
-                    directory: "tag3".into(),
+                    directory: "/tag3/".into(),
                 },
             );
             assert_eq!(result.affected, 1);
@@ -6503,11 +6696,12 @@ mod tests {
             assert_eq!(target.comments[1].body, "keep");
             fs::write(root.join("猫_3.svg"), "parent image").unwrap();
             let result = batch_images(
+                &root,
                 &root.join("tag3"),
                 &state,
                 BatchImageAction::Move {
                     files: vec!["猫_3.svg".into()],
-                    directory: "..".into(),
+                    directory: "/".into(),
                 },
             );
             assert_eq!(result.affected, 1);
@@ -6538,12 +6732,14 @@ mod tests {
                     Some(3)
                 );
             }
+            fs::create_dir(root.join("new folder")).unwrap();
             let result = batch_images(
+                &root,
                 &root,
                 &state,
                 BatchImageAction::Move {
                     files: vec!["other.svg".into()],
-                    directory: "new folder".into(),
+                    directory: "/new%20folder/".into(),
                 },
             );
             assert_eq!(result.affected, 1);
@@ -6562,11 +6758,12 @@ mod tests {
             fs::write(directory.join("photo.svg"), "<svg/>").unwrap();
             state.set_directory_favourite(&directory, true).unwrap();
             let result = batch_images(
+                &root,
                 &directory,
                 &state,
                 BatchImageAction::Move {
                     files: vec!["photo.svg".into()],
-                    directory: "..".into(),
+                    directory: "/".into(),
                 },
             );
             assert_eq!(result.affected, 1);
@@ -6590,11 +6787,12 @@ mod tests {
             fs::write(directory.join("photo.svg"), "<svg/>").unwrap();
             fs::write(directory.join("notes.txt"), "keep").unwrap();
             let result = batch_images(
+                &root,
                 &directory,
                 &state,
                 BatchImageAction::Move {
                     files: vec!["photo.svg".into()],
-                    directory: "..".into(),
+                    directory: "/".into(),
                 },
             );
             assert_eq!(result.affected, 1);
@@ -6619,6 +6817,7 @@ mod tests {
         state.set_favourite(&root.join("cat.svg"), true).unwrap();
         state.set_image_tag(&root.join("cat.svg"), Some(2)).unwrap();
         let result = batch_images(
+            &root,
             &root,
             &state,
             BatchImageAction::Delete {

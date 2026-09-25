@@ -1310,8 +1310,157 @@ if (galleryToggle) {
 
   const moveDialog = document.createElement('dialog');
   moveDialog.className = 'delete-dialog move-dialog';
-  moveDialog.innerHTML = '<form><h2>移动这些图片</h2><p class="move-description"></p><label>目标文件夹名<input name="directory" required autocomplete="off"></label><p>同名文件会自动重命名。</p><div class="delete-actions"><button type="button" data-move-cancel>取消</button><button type="submit" data-move-confirm>确认移动</button></div></form>';
+  moveDialog.setAttribute('aria-labelledby', 'move-title');
+  moveDialog.innerHTML = '<div class="move-heading"><span class="move-heading-icon" aria-hidden="true">↗</span><div><h2 id="move-title">移动这些图片</h2><p class="move-description"></p></div></div><div class="move-browser-heading"><span>选择目标文件夹</span><button type="button" data-move-new-folder disabled>＋ 新建文件夹</button></div><div class="move-tree" role="tree" aria-label="目标文件夹"></div><p class="move-error" role="alert" hidden></p><div class="move-footer"><p class="move-target">请选择目标文件夹</p><p class="move-hint">同名文件会自动重命名</p><div class="delete-actions"><button type="button" data-move-cancel>取消</button><button type="button" data-move-confirm disabled>移动图片</button></div></div>';
   document.body.append(moveDialog);
+  const moveTree = moveDialog.querySelector('.move-tree');
+  const moveError = moveDialog.querySelector('.move-error');
+  const moveConfirm = moveDialog.querySelector('[data-move-confirm]');
+  const moveNewFolder = moveDialog.querySelector('[data-move-new-folder]');
+  const moveTarget = moveDialog.querySelector('.move-target');
+  let selectedMovePath = null;
+  let moveBusy = false;
+  const moveRequest = async (path, action) => {
+    const response = await fetch(`${path}?mode=move-directories`, action ? {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(action)
+    } : undefined);
+    if (!response.ok) throw new Error(await response.text());
+    return response.json();
+  };
+  const moveMessage = error => {
+    moveError.textContent = error.message || '目录操作失败，请重试。';
+    moveError.hidden = false;
+  };
+  const selectMoveNode = node => {
+    moveTree.querySelector('[aria-selected="true"]')?.setAttribute('aria-selected', 'false');
+    node.querySelector('.move-tree-label').setAttribute('aria-selected', 'true');
+    selectedMovePath = node.dataset.path;
+    moveTarget.textContent = `目标位置  ${decodeURIComponent(selectedMovePath)}`;
+    const renaming = Boolean(moveTree.querySelector('[data-move-rename-input]'));
+    moveConfirm.disabled = selectedMovePath === location.pathname || moveBusy || renaming;
+    moveNewFolder.disabled = moveBusy || renaming;
+    moveError.hidden = true;
+  };
+  const renderMoveNode = (entry, depth = 0) => {
+    const node = document.createElement('div');
+    node.className = 'move-node';
+    node.dataset.path = entry.path;
+    node.innerHTML = '<div class="move-tree-row"><button type="button" class="move-tree-expand" aria-expanded="false">›</button><button type="button" class="move-tree-label" role="treeitem" aria-selected="false"><span class="move-folder-icon" aria-hidden="true"></span><span class="move-tree-name"></span></button></div><div class="move-tree-children" role="group" hidden></div>';
+    node.querySelector('.move-tree-row').style.paddingLeft = `${depth * 18 + 8}px`;
+    node.querySelector('.move-tree-name').textContent = entry.name;
+    node.querySelector('.move-tree-expand').setAttribute('aria-label', `展开 ${entry.name}`);
+    node.querySelector('.move-tree-label').addEventListener('click', () => selectMoveNode(node));
+    node.querySelector('.move-tree-expand').addEventListener('click', () => {
+      expandMoveNode(node, depth).catch(moveMessage);
+    });
+    return node;
+  };
+  const expandMoveNode = async (node, depth, refresh = false) => {
+    const children = node.querySelector('.move-tree-children');
+    const expand = node.querySelector('.move-tree-expand');
+    if (!children.hidden && !refresh) {
+      children.hidden = true;
+      expand.setAttribute('aria-expanded', 'false');
+      return;
+    }
+    if (!node.dataset.loaded || refresh) {
+      expand.classList.add('loading');
+      try {
+        const listing = await moveRequest(node.dataset.path);
+        children.replaceChildren(...listing.entries.map(entry => renderMoveNode(entry, depth + 1)));
+        node.dataset.loaded = 'true';
+      } finally {
+        expand.classList.remove('loading');
+      }
+    }
+    children.hidden = false;
+    expand.setAttribute('aria-expanded', 'true');
+  };
+  const showMovePicker = async () => {
+    const listing = await moveRequest(location.pathname);
+    if (!moveDialog.open) return;
+    const rootPath = listing.root;
+    const root = renderMoveNode({name: rootPath === '/' ? '根目录' : '分享目录', path: rootPath});
+    moveTree.replaceChildren(root);
+    let node = root;
+    const segments = location.pathname.slice(rootPath.length).split('/').filter(Boolean);
+    for (const [index, segment] of segments.entries()) {
+      await expandMoveNode(node, index);
+      node = [...node.querySelector('.move-tree-children').children].find(child => child.dataset.path === `${node.dataset.path}${segment}/`);
+      if (!node) throw new Error('当前目录无法在目录树中打开');
+    }
+    await expandMoveNode(node, segments.length);
+    selectMoveNode(node);
+    node.querySelector('.move-tree-label').scrollIntoView({block: 'nearest'});
+  };
+  const renameNewMoveFolder = node => {
+    const label = node.querySelector('.move-tree-label');
+    const name = label.querySelector('.move-tree-name');
+    const input = document.createElement('input');
+    input.dataset.moveRenameInput = '';
+    input.setAttribute('aria-label', '重命名新文件夹');
+    input.value = name.textContent;
+    name.replaceWith(input);
+    moveConfirm.disabled = true;
+    moveNewFolder.disabled = true;
+    input.focus();
+    input.select();
+    let saving = false;
+    let cancelled = false;
+    const save = async () => {
+      if (saving || cancelled) return;
+      const value = input.value.trim();
+      if (!value || value === decodeURIComponent(node.dataset.path.split('/').at(-2))) {
+        input.replaceWith(name);
+        moveConfirm.disabled = selectedMovePath === location.pathname;
+        moveNewFolder.disabled = false;
+        return;
+      }
+      saving = true;
+      try {
+        const renamed = await moveRequest(node.dataset.path, {action: 'rename', name: value});
+        node.dataset.path = renamed.path;
+        name.textContent = renamed.name;
+        input.replaceWith(name);
+        selectMoveNode(node);
+      } catch (error) {
+        saving = false;
+        moveMessage(error);
+        input.focus();
+      }
+    };
+    input.addEventListener('keydown', event => {
+      if (event.key === 'Enter') { event.preventDefault(); save(); }
+      if (event.key === 'Escape') {
+        event.stopPropagation();
+        cancelled = true;
+        input.replaceWith(name);
+        moveConfirm.disabled = selectedMovePath === location.pathname;
+        moveNewFolder.disabled = false;
+      }
+    });
+    input.addEventListener('blur', save);
+  };
+  moveNewFolder.addEventListener('click', async () => {
+    const parent = [...moveTree.querySelectorAll('.move-node')].find(node => node.dataset.path === selectedMovePath);
+    if (!parent || moveBusy) return;
+    moveBusy = true;
+    moveNewFolder.disabled = true;
+    moveConfirm.disabled = true;
+    try {
+      const created = await moveRequest(selectedMovePath, {action: 'create'});
+      const depth = selectedMovePath.split('/').filter(Boolean).length - moveTree.firstElementChild.dataset.path.split('/').filter(Boolean).length;
+      await expandMoveNode(parent, depth, true);
+      const node = [...parent.querySelector('.move-tree-children').children].find(child => child.dataset.path === created.path);
+      selectMoveNode(node);
+      renameNewMoveFolder(node);
+    } catch (error) { moveMessage(error); }
+    finally {
+      moveBusy = false;
+      moveNewFolder.disabled = !selectedMovePath || Boolean(moveTree.querySelector('[data-move-rename-input]'));
+      moveConfirm.disabled = selectedMovePath === location.pathname || Boolean(moveTree.querySelector('[data-move-rename-input]'));
+    }
+  });
   const clearMarksDialog = document.createElement('dialog');
   clearMarksDialog.className = 'delete-dialog';
   clearMarksDialog.id = 'clear-marks-dialog';
@@ -1360,14 +1509,19 @@ if (galleryToggle) {
     batchFiles = captureBatchFiles();
     if (!batchFiles.length || moving) return;
     moveDialog.querySelector('.move-description').textContent = `移动${batchScope()} ${batchFiles.length} 张图片`;
-    moveDialog.querySelector('input').value = selectedImageFilter;
+    selectedMovePath = null;
+    moveTree.textContent = '正在打开目录…';
+    moveTarget.textContent = '请选择目标文件夹';
+    moveConfirm.disabled = true;
+    moveNewFolder.disabled = true;
+    moveError.hidden = true;
     moveDialog.showModal();
-    moveDialog.querySelector('input').select();
+    showMovePicker().catch(moveMessage);
   });
   moveDialog.querySelector('[data-move-cancel]').addEventListener('click', () => moveDialog.close());
-  moveDialog.querySelector('form').addEventListener('submit', event => {
-    event.preventDefault();
-    const directory = moveDialog.querySelector('input').value;
+  moveConfirm.addEventListener('click', () => {
+    if (!selectedMovePath || selectedMovePath === location.pathname) return;
+    const directory = selectedMovePath;
     moveDialog.close();
     runBatch({action: 'move', files: batchFiles, directory});
   });
