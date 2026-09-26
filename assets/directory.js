@@ -651,6 +651,8 @@ if (galleryToggle) {
   let mouseInChromeZone = false;
   let carouselPaused = false;
   let carouselQueue = [];
+  let carouselHistory = [];
+  let carouselHistoryIndex = -1;
   let lastCarouselEffect = null;
   let zoom = {scale: 1, x: 0, y: 0, mode: 'fit', originalLoaded: false};
   let pointerGesture = null;
@@ -1647,11 +1649,15 @@ if (galleryToggle) {
     clearCarouselTimer();
     if (!lightbox.classList.contains('carousel-mode') || carouselPaused || lightbox.hidden || document.hidden || deleteDialog.open) return;
     const entries = visibleImages();
-    carouselQueue = carouselQueue.filter(entry => entries.includes(entry) && entry !== previewTrigger);
-    if (!carouselQueue.length) carouselQueue = shuffle(entries.filter(entry => entry !== previewTrigger));
-    if (carouselQueue[0]) {
+    let nextEntry = carouselHistory.slice(carouselHistoryIndex + 1).find(entry => entries.includes(entry) && entry !== previewTrigger);
+    if (!nextEntry) {
+      carouselQueue = carouselQueue.filter(entry => entries.includes(entry) && entry !== previewTrigger);
+      if (!carouselQueue.length) carouselQueue = shuffle(entries.filter(entry => entry !== previewTrigger));
+      nextEntry = carouselQueue[0];
+    }
+    if (nextEntry) {
       const next = new Image();
-      next.src = carouselQueue[0].previewSrc;
+      next.src = nextEntry.previewSrc;
       adjacentPreloads.push(next);
     }
     carouselTimer = setTimeout(advanceCarousel, 5000);
@@ -1665,18 +1671,33 @@ if (galleryToggle) {
     return values;
   };
 
-  const advanceCarousel = () => {
+  const stepCarousel = (direction) => {
+    if (deleting || deleteDialog.open) return false;
     const entries = visibleImages();
-    if (entries.length < 2) return scheduleCarousel();
-    const currentIndex = entries.indexOf(previewTrigger);
-    carouselQueue = carouselQueue.filter(entry => entries.includes(entry) && entry !== previewTrigger);
-    if (!carouselQueue.length) carouselQueue = shuffle(entries.filter(entry => entry !== previewTrigger));
-    const nextEntry = carouselQueue.shift();
-    const nextIndex = entries.indexOf(nextEntry);
+    let nextHistoryIndex = carouselHistoryIndex + direction;
+    while (nextHistoryIndex >= 0 && nextHistoryIndex < carouselHistory.length
+      && (!entries.includes(carouselHistory[nextHistoryIndex]) || carouselHistory[nextHistoryIndex] === previewTrigger)) {
+      nextHistoryIndex += direction;
+    }
+    let nextEntry = carouselHistory[nextHistoryIndex];
+    if (!nextEntry) {
+      if (direction < 0 || entries.length < 2) return false;
+      carouselQueue = carouselQueue.filter(entry => entries.includes(entry) && entry !== previewTrigger);
+      if (!carouselQueue.length) carouselQueue = shuffle(entries.filter(entry => entry !== previewTrigger));
+      nextEntry = carouselQueue.shift();
+      nextHistoryIndex = carouselHistory.length;
+      carouselHistory.push(nextEntry);
+    }
+    carouselHistoryIndex = nextHistoryIndex;
     const choices = carouselEffects.filter(effect => effect !== lastCarouselEffect);
     const effect = choices[Math.floor(Math.random() * choices.length)];
     lastCarouselEffect = effect;
-    switchPreview(nextEntry, nextIndex > currentIndex ? 1 : -1, effect);
+    switchPreview(nextEntry, direction, effect);
+    return true;
+  };
+
+  const advanceCarousel = () => {
+    if (!stepCarousel(1)) scheduleCarousel();
   };
 
   const showDeleteDialog = () => {
@@ -1740,6 +1761,8 @@ if (galleryToggle) {
     if (enabled) {
       carouselPaused = false;
       carouselQueue = [];
+      carouselHistory = [previewTrigger];
+      carouselHistoryIndex = 0;
       document.activeElement?.blur();
       try {
         if (!fullscreenElement()) await enterFullscreen(lightbox);
@@ -2402,7 +2425,8 @@ if (galleryToggle) {
     else if (event.key === 'ArrowDown' || event.key === 'ArrowRight' || event.key === 'k') direction = 1;
     else return;
     event.preventDefault();
-    stepPreview(direction);
+    if (lightbox.classList.contains('carousel-mode')) stepCarousel(direction);
+    else stepPreview(direction);
   });
 
   document.addEventListener('visibilitychange', () => {
