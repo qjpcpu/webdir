@@ -674,6 +674,7 @@ if (galleryToggle) {
   const galleryCommentDeleteAll = commentsDrawer.querySelector('[data-comment-delete-all]');
   const commentCount = commentToggle.querySelector('b');
   const showGalleryToast = message => {
+    (lightbox.hidden ? document.body : lightbox).append(galleryToast);
     galleryToast.textContent = message;
     galleryToast.hidden = false;
     clearTimeout(showGalleryToast.timer);
@@ -2073,6 +2074,7 @@ if (galleryToggle) {
         previewTrigger = null;
         closeLightbox();
       }
+      showGalleryToast(`${entry.name}已删除`);
     } catch (error) {
       if (!deleteDialog.open) showDeleteDialog();
       deleteError.textContent = error.message;
