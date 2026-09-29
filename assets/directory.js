@@ -61,6 +61,7 @@ const ensureDirectoryFavourites = () => {
   nav.setAttribute('aria-label', '收藏目录');
   nav.innerHTML = '<span class="directory-favourites-label">收藏夹</span><div class="directory-favourites-list"></div>';
   document.querySelector('.breadcrumbs').insertAdjacentElement('afterend', nav);
+  directoryFavouritesResizeObserver.observe(nav);
   return nav;
 };
 const ensureDirectoryFavouritesMore = nav => {
@@ -75,22 +76,45 @@ const ensureDirectoryFavouritesMore = nav => {
 const directoryFavouriteItems = () => Array.from(
   document.querySelectorAll('.directory-favourites-list .directory-favourite, .directory-favourites-menu .directory-favourite')
 );
-const directoryFavouriteVisibleLimit = () => window.matchMedia('(max-width:650px)').matches ? 1 : 3;
 const renderDirectoryFavouriteOrder = items => {
   const nav = document.querySelector('.directory-favourites');
   if (!nav) return;
-  const visibleLimit = directoryFavouriteVisibleLimit();
-  nav.querySelector('.directory-favourites-list').replaceChildren(...items.slice(0, visibleLimit));
-  if (items.length > visibleLimit) {
-    ensureDirectoryFavouritesMore(nav).replaceChildren(...items.slice(visibleLimit));
-  } else {
-    nav.querySelector('.directory-favourites-more')?.remove();
+  const list = nav.querySelector('.directory-favourites-list');
+  list.replaceChildren(...items);
+  const menu = ensureDirectoryFavouritesMore(nav);
+  const more = menu.parentElement;
+  more.style.display = 'none';
+  const gap = parseFloat(getComputedStyle(list).columnGap);
+  const widths = items.map(item => item.getBoundingClientRect().width);
+  const totalWidth = widths.reduce((total, width) => total + width, 0)
+    + Math.max(0, items.length - 1) * gap;
+  if (totalWidth <= list.getBoundingClientRect().width) {
+    more.remove();
+    return;
   }
+  more.style.display = '';
+  const availableWidth = list.getBoundingClientRect().width;
+  let usedWidth = 0;
+  let visibleCount = 0;
+  for (const width of widths) {
+    const nextWidth = usedWidth + (visibleCount ? gap : 0) + width;
+    if (nextWidth > availableWidth) break;
+    usedWidth = nextWidth;
+    visibleCount++;
+  }
+  menu.replaceChildren(...items.slice(visibleCount));
 };
-renderDirectoryFavouriteOrder(directoryFavouriteItems());
-window.matchMedia('(max-width:650px)').addEventListener('change', () => {
+let directoryFavouritesWidth = 0;
+const directoryFavouritesResizeObserver = new ResizeObserver(entries => {
+  const width = entries[0].contentRect.width;
+  if (width === directoryFavouritesWidth) return;
+  directoryFavouritesWidth = width;
   renderDirectoryFavouriteOrder(directoryFavouriteItems());
 });
+const directoryFavouritesNav = document.querySelector('.directory-favourites');
+if (directoryFavouritesNav) directoryFavouritesResizeObserver.observe(directoryFavouritesNav);
+renderDirectoryFavouriteOrder(directoryFavouriteItems());
+document.fonts.ready.then(() => renderDirectoryFavouriteOrder(directoryFavouriteItems()));
 const moveDirectoryFavourite = (dragged, target) => {
   const items = directoryFavouriteItems();
   const from = items.indexOf(dragged);
@@ -129,11 +153,11 @@ document.addEventListener('dragstart', event => {
   event.dataTransfer.setData('text/plain', draggedDirectoryFavourite.dataset.directoryFavouritePath);
 });
 document.addEventListener('dragover', event => {
-  if (!draggedDirectoryFavourite) return;
-  const target = event.target.closest?.('.directory-favourite');
-  if (!target || target === draggedDirectoryFavourite) return;
+  if (!draggedDirectoryFavourite || !event.target.closest?.('.directory-favourites')) return;
   event.preventDefault();
   event.dataTransfer.dropEffect = 'move';
+  const target = event.target.closest?.('.directory-favourite');
+  if (!target || target === draggedDirectoryFavourite) return;
   moveDirectoryFavourite(draggedDirectoryFavourite, target);
 });
 document.addEventListener('drop', event => {
@@ -227,10 +251,12 @@ const renameDirectoryFavourite = item => {
     item.draggable = true;
     if (!save || !label) {
       link.innerHTML = original;
+      renderDirectoryFavouriteOrder(directoryFavouriteItems());
       return;
     }
     link.textContent = label;
     link.title = label;
+    renderDirectoryFavouriteOrder(directoryFavouriteItems());
     item.querySelector('.directory-favourite-drag').setAttribute('aria-label', `拖动排序：${label}`);
     item.querySelector('[data-directory-favourite-remove]').setAttribute('aria-label', `移出收藏夹：${label}`);
     try {
@@ -241,6 +267,7 @@ const renameDirectoryFavourite = item => {
     } catch (error) {
       link.innerHTML = original;
       link.title = originalLabel;
+      renderDirectoryFavouriteOrder(directoryFavouriteItems());
       directoryNotice.textContent = error.message;
       directoryNotice.hidden = false;
     }
@@ -282,20 +309,17 @@ const setDirectoryFavouriteState = (path, favourite) => {
     .filter(button => favouritePathname(button.dataset.directoryFavouriteRemove) === pathname)
     .map(button => button.closest('.directory-favourite'));
   if (favourite && !existing.length) {
-    const nav = ensureDirectoryFavourites();
-    const list = nav.querySelector('.directory-favourites-list');
-    if (list.children.length < directoryFavouriteVisibleLimit()) list.append(createDirectoryFavouriteItem(path));
-    else ensureDirectoryFavouritesMore(nav).append(createDirectoryFavouriteItem(path));
+    ensureDirectoryFavourites();
+    renderDirectoryFavouriteOrder([...directoryFavouriteItems(), createDirectoryFavouriteItem(path)]);
   } else if (!favourite && existing.length) {
     const nav = existing[0].closest('.directory-favourites');
-    const removedFromList = existing.some(item => item.closest('.directory-favourites-list'));
     existing.forEach(item => item.remove());
-    const menu = nav.querySelector('.directory-favourites-menu');
-    if (removedFromList && menu?.firstElementChild) {
-      nav.querySelector('.directory-favourites-list').append(menu.firstElementChild);
+    const items = directoryFavouriteItems();
+    if (items.length) renderDirectoryFavouriteOrder(items);
+    else {
+      directoryFavouritesResizeObserver.unobserve(nav);
+      nav.remove();
     }
-    if (menu && !menu.children.length) nav.querySelector('.directory-favourites-more').remove();
-    if (!nav.querySelector('[data-directory-favourite-remove]')) nav.remove();
   }
 };
 const updateDirectoryFavourite = async (path, method, button) => {

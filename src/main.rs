@@ -2787,8 +2787,7 @@ fn render_directory_favourites_with_access(
         return Ok(String::new());
     }
     let mut items = String::new();
-    let mut more_items = String::new();
-    for (index, path) in favourites.iter().enumerate() {
+    for path in &favourites {
         let relative = path.strip_prefix(root).unwrap_or(Path::new(""));
         let href = url_for_path(relative, true);
         let display_relative = access
@@ -2827,19 +2826,10 @@ fn render_directory_favourites_with_access(
         let item = format!(
             "<span class=\"directory-favourite\" data-directory-favourite-path=\"{href}\" draggable=\"true\"><button class=\"directory-favourite-drag\" type=\"button\" aria-label=\"拖动排序：{label}\" title=\"拖动排序\">⠿</button><a href=\"{href}\"{active} title=\"{label}\">{label_html}</a><button type=\"button\" data-directory-favourite-remove=\"{href}\" aria-label=\"移出收藏夹：{label}\" title=\"移出收藏夹\">×</button></span>"
         );
-        if index < 3 {
-            items.push_str(&item);
-        } else {
-            more_items.push_str(&item);
-        }
+        items.push_str(&item);
     }
-    let more = if favourites.len() > 3 {
-        format!("<details class=\"directory-favourites-more\"><summary aria-label=\"展开更多收藏目录\"><span>更多</span><svg viewBox=\"0 0 16 16\" aria-hidden=\"true\"><path d=\"m4.5 6 3.5 3.5L11.5 6\"/></svg></summary><div class=\"directory-favourites-menu\">{more_items}</div></details>")
-    } else {
-        String::new()
-    };
     Ok(format!(
-        "<nav class=\"directory-favourites\" aria-label=\"收藏目录\"><span class=\"directory-favourites-label\">收藏夹</span><div class=\"directory-favourites-list\">{items}</div>{more}</nav>"
+        "<nav class=\"directory-favourites\" aria-label=\"收藏目录\"><span class=\"directory-favourites-label\">收藏夹</span><div class=\"directory-favourites-list\">{items}</div></nav>"
     ))
 }
 
@@ -7177,7 +7167,7 @@ mod tests {
     }
 
     #[test]
-    fn directory_favourites_put_additional_entries_in_a_more_menu() {
+    fn directory_favourites_render_all_shortcuts() {
         let directory = tempfile::tempdir().unwrap();
         let root = fs::canonicalize(directory.path()).unwrap();
         let state = StateStore::new(None).unwrap();
@@ -7189,9 +7179,6 @@ mod tests {
 
         let page = render_directory_page(&root, &root, &state).unwrap();
 
-        assert!(page.contains("<details class=\"directory-favourites-more\">"));
-        assert!(page.contains("<span>更多</span><svg viewBox=\"0 0 16 16\""));
-        assert!(page.contains("<div class=\"directory-favourites-menu\">"));
         for name in ["one", "two", "three", "four"] {
             assert_eq!(
                 page.matches(&format!("data-directory-favourite-path=\"/{name}/\""))
@@ -7199,14 +7186,6 @@ mod tests {
                 1
             );
         }
-        let menu = page
-            .split("class=\"directory-favourites-menu\"")
-            .nth(1)
-            .unwrap();
-        assert!(!menu.contains("data-directory-favourite-path=\"/one/\""));
-        assert!(!menu.contains("data-directory-favourite-path=\"/two/\""));
-        assert!(!menu.contains("data-directory-favourite-path=\"/three/\""));
-        assert!(menu.contains("data-directory-favourite-path=\"/four/\""));
     }
 
     #[cfg(unix)]

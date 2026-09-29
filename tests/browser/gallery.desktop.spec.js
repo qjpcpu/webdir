@@ -87,12 +87,28 @@ test('folder stars update favourites without reloading the directory', async ({p
     await page.locator(`[data-directory-favourite-toggle="/shortcut-folder${suffix}/"]`).click();
   }
   await page.reload();
+  await expect(page.locator('.directory-favourites-list .directory-favourite')).toHaveCount(4);
+  await expect(page.locator('.directory-favourites-more')).toHaveCount(0);
+  await page.setViewportSize({width: 800, height: 900});
+  await expect(page.locator('.directory-favourites-list .directory-favourite')).toHaveCount(3);
+  await page.setViewportSize({width: 390, height: 844});
+  await expect(page.locator('.directory-favourites-list .directory-favourite')).toHaveCount(1);
+  await page.setViewportSize({width: 1440, height: 900});
+  await expect(page.locator('.directory-favourites-list .directory-favourite')).toHaveCount(4);
+  await expect(page.locator('.directory-favourites-more')).toHaveCount(0);
+  await page.setViewportSize({width: 800, height: 900});
   await expect(page.locator('.directory-favourites-more')).toBeVisible();
   await expect(page.locator('.directory-favourites-more summary')).toContainText('更多');
   await expect(page.locator('.directory-favourites-menu .directory-favourite')).toHaveCount(1);
 
+  await page.evaluate(() => {
+    document.addEventListener('dragend', event => {
+      window.directoryFavouriteDropEffect = event.dataTransfer.dropEffect;
+    });
+  });
   await page.locator('[data-directory-favourite-path="/shortcut-folder/"]')
     .dragTo(page.locator('[data-directory-favourite-path="/shortcut-folder-3/"]'));
+  await expect.poll(() => page.evaluate(() => window.directoryFavouriteDropEffect)).toBe('move');
   await expect.poll(() => page.locator('.directory-favourites-list .directory-favourite')
     .evaluateAll(items => items.map(item => item.dataset.directoryFavouritePath)))
     .toEqual(['/shortcut-folder-2/', '/shortcut-folder-3/', '/shortcut-folder/']);
