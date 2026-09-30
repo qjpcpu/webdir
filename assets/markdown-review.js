@@ -309,3 +309,101 @@ function initializeReviewContext() {
   window.addEventListener('resize', scheduleReviewFollow, {passive: true});
   new ResizeObserver(scheduleReviewFollow).observe(article);
 }
+
+(() => {
+  const dialog = document.createElement('dialog');
+  dialog.id = 'markdown-image-preview';
+  dialog.className = 'markdown-image-preview';
+  dialog.setAttribute('aria-label', '图片预览');
+  dialog.innerHTML = '<header class="markdown-image-toolbar"><span>图片预览</span><button type="button" data-image-action="out" aria-label="缩小">−</button><button type="button" data-image-action="fit">适应窗口</button><button type="button" data-image-action="in" aria-label="放大">＋</button><button type="button" data-image-action="close" aria-label="关闭图片预览" autofocus>关闭</button></header><div class="markdown-image-stage"></div><p class="markdown-image-help">拖动移动 · 滚轮缩放 · Esc 关闭</p>';
+  document.body.append(dialog);
+  const stage = dialog.querySelector('.markdown-image-stage');
+  const image = new Image();
+  image.draggable = false;
+  let scale = 1, x = 0, y = 0;
+  let drag = null;
+  let previousOverflow;
+  let pointerType = 'mouse';
+  let lastTap = null;
+
+  function render() {
+    image.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
+  }
+  function fit() {
+    scale = 1; x = y = 0;
+    render();
+  }
+  function zoom(factor, clientX, clientY) {
+    const next = Math.max(.1, Math.min(10, scale * factor));
+    const bounds = stage.getBoundingClientRect();
+    const offsetX = (clientX ?? bounds.left + bounds.width / 2) - bounds.left - bounds.width / 2;
+    const offsetY = (clientY ?? bounds.top + bounds.height / 2) - bounds.top - bounds.height / 2;
+    const ratio = next / scale;
+    x = offsetX - (offsetX - x) * ratio;
+    y = offsetY - (offsetY - y) * ratio;
+    scale = next;
+    render();
+  }
+
+  document.querySelector('#article').addEventListener('pointerdown', event => {
+    pointerType = event.pointerType;
+  });
+  document.querySelector('#article').addEventListener('click', event => {
+    const target = event.target.closest('img');
+    if (!target) return;
+    event.preventDefault();
+    if (pointerType === 'touch') {
+      const doubleTap = lastTap?.target === target && event.timeStamp - lastTap.time < 350;
+      lastTap = {target, time: event.timeStamp};
+      if (!doubleTap) return;
+    }
+    lastTap = null;
+    image.src = target.currentSrc || target.src;
+    image.alt = target.alt;
+    stage.append(image);
+    fit();
+    previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    dialog.showModal();
+  });
+  dialog.querySelector('.markdown-image-toolbar').addEventListener('click', event => {
+    const action = event.target.closest('button')?.dataset.imageAction;
+    if (action === 'close') dialog.close();
+    else if (action === 'fit') fit();
+    else if (action === 'in') zoom(1.25);
+    else if (action === 'out') zoom(1 / 1.25);
+  });
+  dialog.addEventListener('close', () => {
+    document.body.style.overflow = previousOverflow;
+    drag = null;
+    stage.classList.remove('dragging');
+    image.remove();
+  });
+  stage.addEventListener('wheel', event => {
+    event.preventDefault();
+    const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? stage.clientHeight : 1);
+    zoom(Math.exp(-delta * .0015), event.clientX, event.clientY);
+  }, {passive: false});
+  stage.addEventListener('pointerdown', event => {
+    if (event.button !== 0 || drag) return;
+    event.preventDefault();
+    drag = {id: event.pointerId, x: event.clientX, y: event.clientY};
+    stage.setPointerCapture(event.pointerId);
+    stage.classList.add('dragging');
+  });
+  stage.addEventListener('pointermove', event => {
+    if (drag?.id !== event.pointerId) return;
+    x += event.clientX - drag.x; y += event.clientY - drag.y;
+    drag.x = event.clientX; drag.y = event.clientY;
+    render();
+  });
+  function endDrag(event) {
+    if (drag?.id !== event.pointerId) return;
+    drag = null;
+    stage.classList.remove('dragging');
+    if (stage.hasPointerCapture(event.pointerId)) stage.releasePointerCapture(event.pointerId);
+  }
+  stage.addEventListener('pointerup', endDrag);
+  stage.addEventListener('pointercancel', endDrag);
+  stage.addEventListener('lostpointercapture', endDrag);
+})();
