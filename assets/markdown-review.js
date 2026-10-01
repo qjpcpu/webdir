@@ -315,9 +315,10 @@ function initializeReviewContext() {
   dialog.id = 'markdown-image-preview';
   dialog.className = 'markdown-image-preview';
   dialog.setAttribute('aria-label', '图片预览');
-  dialog.innerHTML = '<header class="markdown-image-toolbar"><span>图片预览</span><button type="button" data-image-action="out" aria-label="缩小">−</button><button type="button" data-image-action="fit">适应窗口</button><button type="button" data-image-action="in" aria-label="放大">＋</button><button type="button" data-image-action="close" aria-label="关闭图片预览" autofocus>关闭</button></header><div class="markdown-image-stage"></div><p class="markdown-image-help">拖动移动 · 滚轮缩放 · Esc 关闭</p>';
+  dialog.innerHTML = '<header class="markdown-image-toolbar"><span>图片预览</span><button type="button" data-image-action="out" aria-label="缩小">−</button><button type="button" data-image-action="fit">适应窗口</button><button type="button" data-image-action="in" aria-label="放大">＋</button><a download>下载</a><button type="button" data-image-action="close" aria-label="关闭图片预览" autofocus>关闭</button></header><div class="markdown-image-stage"></div><p class="markdown-image-help">拖动移动 · 滚轮缩放 · Esc 关闭</p>';
   document.body.append(dialog);
   const stage = dialog.querySelector('.markdown-image-stage');
+  const imageDownload = dialog.querySelector('a[download]');
   const image = new Image();
   image.draggable = false;
   let scale = 1, x = 0, y = 0;
@@ -360,6 +361,10 @@ function initializeReviewContext() {
     lastTap = null;
     image.src = target.currentSrc || target.src;
     image.alt = target.alt;
+    const downloadUrl = new URL(image.src);
+    if (downloadUrl.origin === location.origin) downloadUrl.searchParams.set('mode', 'asset');
+    imageDownload.href = downloadUrl.href;
+    imageDownload.download = decodeURIComponent(downloadUrl.pathname.split('/').pop());
     stage.append(image);
     fit();
     previousOverflow = document.body.style.overflow;

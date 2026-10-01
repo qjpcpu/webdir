@@ -591,6 +591,12 @@ if (galleryToggle) {
   commentToggle.setAttribute('aria-expanded', 'false');
   commentToggle.innerHTML = `${svgIcon(strokePath('M6.5 5.5h11a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H11l-4.5 3v-3a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2Z') + strokePath('M8 9.5h8M8 12.5h5'))}<b hidden>0</b>`;
   viewerControls.insertBefore(commentToggle, viewerControls.querySelector('#carousel-toggle'));
+  const imageDownload = document.createElement('a');
+  imageDownload.className = 'image-download';
+  imageDownload.title = '下载';
+  imageDownload.setAttribute('aria-label', imageDownload.title);
+  imageDownload.innerHTML = svgIcon(strokePath('M12 3v12m-5-5 5 5 5-5M5 16v5h14v-5'));
+  viewerControls.append(imageDownload);
   const moreToggle = document.createElement('button');
   moreToggle.type = 'button';
   moreToggle.className = 'viewer-more-toggle';
@@ -2061,6 +2067,8 @@ if (galleryToggle) {
     lightboxBackdrop.style.backgroundImage = `url(${JSON.stringify(thumbnailSource)})`;
     lightboxImage.alt = name;
     lightboxCaption.textContent = name;
+    imageDownload.href = entry.originalSrc;
+    imageDownload.download = name;
     zoom = {scale: 1, x: 0, y: 0, mode: 'fit', originalLoaded: false};
     applyZoom();
     loadPreviewImage(entry);

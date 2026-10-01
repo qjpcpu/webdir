@@ -5,9 +5,9 @@
 .markdown-image-preview::backdrop { background:rgba(0,0,0,.72); }
 .markdown-image-toolbar { display:flex; flex:none; align-items:center; gap:.5rem; padding:.6rem .8rem; border-bottom:1px solid var(--line); font-size:.8rem; }
 .markdown-image-toolbar span { flex:1; }
-.markdown-image-toolbar button { min-height:2.6rem; padding:.4rem .7rem; border:1px solid var(--line); border-radius:.35rem; color:var(--ink); background:var(--surface); font:inherit; cursor:pointer; }
-.markdown-image-toolbar button:hover { background:var(--accent-soft); }
-.markdown-image-toolbar button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.markdown-image-toolbar button,.markdown-image-toolbar a { display:inline-flex; align-items:center; justify-content:center; min-height:2.6rem; padding:.4rem .7rem; border:1px solid var(--line); border-radius:.35rem; color:var(--ink); background:var(--surface); font:inherit; text-decoration:none; cursor:pointer; }
+.markdown-image-toolbar button:hover,.markdown-image-toolbar a:hover { background:var(--accent-soft); }
+.markdown-image-toolbar button:focus-visible,.markdown-image-toolbar a:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 .markdown-image-stage { position:relative; display:grid; place-items:center; flex:1; min-height:0; overflow:hidden; background:var(--paper); touch-action:none; cursor:grab; user-select:none; }
 .markdown-image-stage.dragging { cursor:grabbing; }
 .markdown-image-stage img { display:block; max-width:100%; max-height:100%; min-width:0; min-height:0; object-fit:contain; transform-origin:center; pointer-events:none; }
