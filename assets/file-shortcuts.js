@@ -243,36 +243,40 @@
       return;
     }
     const target = event.target;
-    if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || event.isComposing || event.repeat ||
+    if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey || event.isComposing || event.repeat ||
         target.closest('input, textarea, select') || target.isContentEditable || document.querySelector('dialog[open]')) {
       reset();
       return;
     }
-    if (event.key !== 'y') {
+    if (event.key === 'Shift') return;
+    if (event.key !== 'y' && event.key !== 'Y') {
       reset();
       return;
     }
+    const fullPath = event.key === 'Y';
+    const absolutePath = path => `${document.body.dataset.fileRoot.replace(/\/$/, '')}/${path}`;
     const lightbox = document.querySelector('#image-lightbox:not([hidden])');
     const path = lightbox ? lightbox.dataset.filePath : document.body.dataset.filePath;
     const gallery = document.querySelector('.listing.gallery');
     const filter = document.querySelector('#image-filter')?.value;
     const copyGallery = !lightbox && gallery && filter && filter !== 'all';
-    const names = copyGallery ? (window.webdirDirectory?.visibleImages() || []).map(entry => entry.name) : [];
+    const names = copyGallery ? (window.webdirDirectory?.visibleImages() || []).map(entry => fullPath ? absolutePath(entry.filePath) : entry.name) : [];
     const key = copyGallery ? JSON.stringify([filter, names]) : path;
     if (!key) {
       reset();
       return;
     }
     event.preventDefault();
-    if (pendingCopy === key) {
+    if (pendingCopy?.key === key && pendingCopy.fullPath === fullPath) {
       reset();
       if (copyGallery) {
-        if (names.length) copyText(names.join(','), `已复制 ${names.length} 个文件名`);
+        if (names.length) copyText(names.join(','), `已复制 ${names.length} 个${fullPath ? '完整路径' : '文件名'}`);
         else notify('没有可复制的图片');
-      } else copyName(path);
+      } else if (fullPath) copyText(absolutePath(path), `复制完整路径 ${absolutePath(path)}`);
+      else copyName(path);
     } else {
       reset();
-      pendingCopy = key;
+      pendingCopy = {key, fullPath};
       keyTimer = setTimeout(reset, 500);
     }
   });

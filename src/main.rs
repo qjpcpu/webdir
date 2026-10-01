@@ -1340,7 +1340,14 @@ fn handle_connection_with_auth(
             .and_then(|name| name.to_str())
             .unwrap_or("SVG image");
         let body = render_svg_page(title, metadata.len());
-        return send_file_page_with_access(&mut stream, &body, &relative, head_only, &access);
+        return send_file_page_with_access(
+            &mut stream,
+            &body,
+            &relative,
+            &root,
+            head_only,
+            &access,
+        );
     }
 
     if is_raster_image(&canonical) && request_wants_html(&headers) {
@@ -1354,7 +1361,14 @@ fn handle_connection_with_auth(
             .unwrap_or("IMAGE")
             .to_ascii_uppercase();
         let body = render_image_page(title, &kind, metadata.len());
-        return send_file_page_with_access(&mut stream, &body, &relative, head_only, &access);
+        return send_file_page_with_access(
+            &mut stream,
+            &body,
+            &relative,
+            &root,
+            head_only,
+            &access,
+        );
     }
 
     if has_extension(&canonical, "mp4") && request_wants_html(&headers) {
@@ -1363,7 +1377,14 @@ fn handle_connection_with_auth(
             .and_then(|name| name.to_str())
             .unwrap_or("Video");
         let body = render_video_page(title, metadata.len());
-        return send_file_page_with_access(&mut stream, &body, &relative, head_only, &access);
+        return send_file_page_with_access(
+            &mut stream,
+            &body,
+            &relative,
+            &root,
+            head_only,
+            &access,
+        );
     }
 
     if has_extension(&canonical, "drawio") && request_wants_html(&headers) {
@@ -1394,7 +1415,14 @@ fn handle_connection_with_auth(
             .and_then(|name| name.to_str())
             .unwrap_or("Draw.io diagram");
         let body = render_drawio_page(&diagram, title, metadata.len());
-        return send_file_page_with_access(&mut stream, &body, &relative, head_only, &access);
+        return send_file_page_with_access(
+            &mut stream,
+            &body,
+            &relative,
+            &root,
+            head_only,
+            &access,
+        );
     }
 
     if has_extension(&canonical, "md") {
@@ -1404,7 +1432,14 @@ fn handle_connection_with_auth(
             .and_then(|name| name.to_str())
             .unwrap_or("Markdown");
         let body = render_markdown_page(&markdown, title);
-        return send_file_page_with_access(&mut stream, &body, &relative, head_only, &access);
+        return send_file_page_with_access(
+            &mut stream,
+            &body,
+            &relative,
+            &root,
+            head_only,
+            &access,
+        );
     }
 
     if request_wants_html(&headers) && metadata.len() <= MAX_TEXT_VIEWER_FILE {
@@ -1415,7 +1450,14 @@ fn handle_connection_with_auth(
                 text_file.kind,
                 &canonical,
             );
-            return send_file_page_with_access(&mut stream, &body, &relative, head_only, &access);
+            return send_file_page_with_access(
+                &mut stream,
+                &body,
+                &relative,
+                &root,
+                head_only,
+                &access,
+            );
         }
     }
 
@@ -1848,6 +1890,7 @@ fn send_file_page_with_access(
     stream: &mut TcpStream,
     body: &str,
     relative: &Path,
+    root: &Path,
     head_only: bool,
     access: &Access,
 ) -> io::Result<()> {
@@ -1855,8 +1898,9 @@ fn send_file_page_with_access(
         .replacen(
             "<body",
             &format!(
-                "<body data-file-path=\"{}\"",
-                escape_html(&relative.to_string_lossy())
+                "<body data-file-path=\"{}\" data-file-root=\"{}\"",
+                escape_html(&relative.to_string_lossy()),
+                escape_html(&root.to_string_lossy())
             ),
             1,
         )
@@ -2970,6 +3014,7 @@ fn render_directory_page_with_access(
     let gallery_tools = GALLERY_ORGANISE_TOOLS;
     let rows = "<div class=\"empty\" id=\"directory-empty\" role=\"status\" hidden><span aria-hidden=\"true\">∅</span><p>这个目录是空的</p></div><h2 class=\"gallery-other-heading\" hidden>其他文件</h2><div id=\"directory-loading\" role=\"status\"><p>正在加载目录…</p><div class=\"directory-skeletons\" aria-hidden=\"true\"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div><div id=\"directory-load-error\" role=\"status\" hidden><p>目录加载失败</p><button type=\"button\" id=\"directory-retry\">重新加载</button></div>";
     let can_share = access.can_share;
+    let file_root = escape_html(&root.to_string_lossy());
     let initial_view = if gallery_requested { "gallery" } else { "list" };
     let directory_favourite_toggle = if directory == root {
         ""
@@ -2979,7 +3024,7 @@ fn render_directory_page_with_access(
         "<button class=\"directory-favourite-toggle\" id=\"directory-favourite-toggle\" type=\"button\" aria-pressed=\"false\">添加到收藏夹</button>"
     };
     let body = format!(
-        "<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">\n<title>{title} · 文件浏览</title>\n<style>{DIRECTORY_CSS}{DIRECTORY_LOADING_CSS}</style>\n</head>\n<body data-can-share=\"{can_share}\" data-directory-view=\"{initial_view}\"><script>const initialDirectoryView = new URLSearchParams(location.search).get('view') ?? localStorage.getItem(`webdir-directory-view:${{location.pathname}}`) ?? 'list'; document.body.classList.toggle('gallery-mode', initialDirectoryView === 'gallery');</script>\n<main><nav class=\"breadcrumbs\" aria-label=\"当前位置\">{breadcrumbs}</nav>{directory_favourites}<header><p class=\"eyebrow\">WEBDIR / DIRECTORY</p><h1>{title}</h1><p class=\"summary\">正在加载目录…</p>{directory_favourite_toggle}{gallery_toggle}<div class=\"directory-browser-tools\"><div class=\"file-search\" id=\"file-search\"><label class=\"file-search-box\" for=\"file-search-input\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"10\" cy=\"10\" r=\"6.5\"></circle><path d=\"m14.8 14.8 5.2 5.2\"></path></svg><input id=\"file-search-input\" type=\"search\" aria-label=\"搜索当前目录中的文件和文件夹\" placeholder=\"搜索当前目录…\" autocomplete=\"off\"></label></div><label class=\"directory-sort\">排序<select id=\"directory-sort\" aria-label=\"目录排序\"><option value=\"name\">按名称</option><option value=\"modified\">按修改时间</option></select></label></div>{gallery_tools}<p class=\"directory-notice\" id=\"directory-notice\" role=\"status\" hidden></p></header><section class=\"listing\" aria-busy=\"true\" aria-label=\"目录内容\">{rows}</section></main><nav class=\"scroll-jumps\" id=\"scroll-jumps\" aria-label=\"页面快速跳转\" hidden><button id=\"scroll-to-top\" type=\"button\" aria-label=\"回到顶部\" title=\"回到顶部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 14 6-6 6 6\"></path><path d=\"M6 19h12\"></path></svg></button><button id=\"scroll-to-bottom\" type=\"button\" aria-label=\"回到底部\" title=\"回到底部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 10 6 6 6-6\"></path><path d=\"M6 5h12\"></path></svg></button></nav><div class=\"image-lightbox\" id=\"image-lightbox\" role=\"dialog\" aria-modal=\"true\" aria-label=\"图片预览\" hidden><button class=\"lightbox-close\" type=\"button\" aria-label=\"关闭图片预览\">×</button><div class=\"lightbox-shell\"><div class=\"lightbox-position\" id=\"lightbox-position\" aria-live=\"polite\"></div><nav class=\"lightbox-filmstrip\" id=\"lightbox-filmstrip\" aria-label=\"图片缩略图导航\"></nav><figure><div class=\"lightbox-stage\"><img class=\"lightbox-image\" alt=\"\"><div class=\"favourite-burst\" id=\"favourite-burst\" aria-hidden=\"true\" hidden><svg viewBox=\"0 0 24 24\"><path d=\"M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21l7.7-7.5 1.1-1.1a5.5 5.5 0 0 0 0-7.8Z\"></path></svg></div></div><figcaption><span class=\"lightbox-name\"></span><span class=\"lightbox-controls\"><button class=\"preview-step\" id=\"preview-previous\" type=\"button\" aria-label=\"上一张\" title=\"上一张\">←</button><button class=\"favourite-toggle\" id=\"favourite-toggle\" type=\"button\" aria-label=\"点赞 (f)\" aria-pressed=\"false\" title=\"点赞 (f)\">♡</button><button class=\"preview-step\" id=\"preview-next\" type=\"button\" aria-label=\"下一张\" title=\"下一张\">→</button><button class=\"carousel-toggle\" id=\"carousel-toggle\" type=\"button\" aria-label=\"进入轮播 (p)\" aria-pressed=\"false\" title=\"进入轮播 (p)\">轮播</button></span></figcaption><p class=\"lightbox-error\" id=\"favourite-error\" role=\"status\" hidden></p><p class=\"lightbox-error\" id=\"image-tag-error\" role=\"status\" hidden></p></figure></div>{GALLERY_DELETE_DIALOG}</div>{GALLERY_BATCH_DELETE_DIALOG}\n<script>{DIRECTORY_VIEW_JS}</script><script>{FILE_SHORTCUT_JS}</script><script>{DIRECTORY_JS}</script>\n</body>\n</html>"
+        "<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">\n<title>{title} · 文件浏览</title>\n<style>{DIRECTORY_CSS}{DIRECTORY_LOADING_CSS}</style>\n</head>\n<body data-file-root=\"{file_root}\" data-can-share=\"{can_share}\" data-directory-view=\"{initial_view}\"><script>const initialDirectoryView = new URLSearchParams(location.search).get('view') ?? localStorage.getItem(`webdir-directory-view:${{location.pathname}}`) ?? 'list'; document.body.classList.toggle('gallery-mode', initialDirectoryView === 'gallery');</script>\n<main><nav class=\"breadcrumbs\" aria-label=\"当前位置\">{breadcrumbs}</nav>{directory_favourites}<header><p class=\"eyebrow\">WEBDIR / DIRECTORY</p><h1>{title}</h1><p class=\"summary\">正在加载目录…</p>{directory_favourite_toggle}{gallery_toggle}<div class=\"directory-browser-tools\"><div class=\"file-search\" id=\"file-search\"><label class=\"file-search-box\" for=\"file-search-input\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"10\" cy=\"10\" r=\"6.5\"></circle><path d=\"m14.8 14.8 5.2 5.2\"></path></svg><input id=\"file-search-input\" type=\"search\" aria-label=\"搜索当前目录中的文件和文件夹\" placeholder=\"搜索当前目录…\" autocomplete=\"off\"></label></div><label class=\"directory-sort\">排序<select id=\"directory-sort\" aria-label=\"目录排序\"><option value=\"name\">按名称</option><option value=\"modified\">按修改时间</option></select></label></div>{gallery_tools}<p class=\"directory-notice\" id=\"directory-notice\" role=\"status\" hidden></p></header><section class=\"listing\" aria-busy=\"true\" aria-label=\"目录内容\">{rows}</section></main><nav class=\"scroll-jumps\" id=\"scroll-jumps\" aria-label=\"页面快速跳转\" hidden><button id=\"scroll-to-top\" type=\"button\" aria-label=\"回到顶部\" title=\"回到顶部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 14 6-6 6 6\"></path><path d=\"M6 19h12\"></path></svg></button><button id=\"scroll-to-bottom\" type=\"button\" aria-label=\"回到底部\" title=\"回到底部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 10 6 6 6-6\"></path><path d=\"M6 5h12\"></path></svg></button></nav><div class=\"image-lightbox\" id=\"image-lightbox\" role=\"dialog\" aria-modal=\"true\" aria-label=\"图片预览\" hidden><button class=\"lightbox-close\" type=\"button\" aria-label=\"关闭图片预览\">×</button><div class=\"lightbox-shell\"><div class=\"lightbox-position\" id=\"lightbox-position\" aria-live=\"polite\"></div><nav class=\"lightbox-filmstrip\" id=\"lightbox-filmstrip\" aria-label=\"图片缩略图导航\"></nav><figure><div class=\"lightbox-stage\"><img class=\"lightbox-image\" alt=\"\"><div class=\"favourite-burst\" id=\"favourite-burst\" aria-hidden=\"true\" hidden><svg viewBox=\"0 0 24 24\"><path d=\"M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21l7.7-7.5 1.1-1.1a5.5 5.5 0 0 0 0-7.8Z\"></path></svg></div></div><figcaption><span class=\"lightbox-name\"></span><span class=\"lightbox-controls\"><button class=\"preview-step\" id=\"preview-previous\" type=\"button\" aria-label=\"上一张\" title=\"上一张\">←</button><button class=\"favourite-toggle\" id=\"favourite-toggle\" type=\"button\" aria-label=\"点赞 (f)\" aria-pressed=\"false\" title=\"点赞 (f)\">♡</button><button class=\"preview-step\" id=\"preview-next\" type=\"button\" aria-label=\"下一张\" title=\"下一张\">→</button><button class=\"carousel-toggle\" id=\"carousel-toggle\" type=\"button\" aria-label=\"进入轮播 (p)\" aria-pressed=\"false\" title=\"进入轮播 (p)\">轮播</button></span></figcaption><p class=\"lightbox-error\" id=\"favourite-error\" role=\"status\" hidden></p><p class=\"lightbox-error\" id=\"image-tag-error\" role=\"status\" hidden></p></figure></div>{GALLERY_DELETE_DIALOG}</div>{GALLERY_BATCH_DELETE_DIALOG}\n<script>{DIRECTORY_VIEW_JS}</script><script>{FILE_SHORTCUT_JS}</script><script>{DIRECTORY_JS}</script>\n</body>\n</html>"
     )
     .replacen(
         "</head>",

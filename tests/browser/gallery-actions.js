@@ -560,5 +560,16 @@ module.exports = () => test.describe('gallery image actions', () => {
     await page.keyboard.type('yy');
     await expect.poll(() => page.evaluate(() => window.copiedTexts.at(-1))).toBe(names[0]);
     await expect(page.locator('#file-path-toast')).toHaveText(`复制文件名 ${names[0]}`);
+    await page.keyboard.press('Shift+Y');
+    await page.keyboard.press('Shift+Y');
+    await expect.poll(() => page.evaluate(() => window.copiedTexts.at(-1))).toBe(path.join(directory, names[0]));
+    await page.keyboard.press('Escape');
+    await page.locator('#file-search-input').fill('');
+    await page.locator('#file-search-input').blur();
+    await page.keyboard.type('YY');
+    await expect.poll(() => page.evaluate(() => window.copiedTexts.at(-1))).toBe(names.slice(0, 2).map(name => path.join(directory, name)).join(','));
+    await page.goto(imageUrl(names[0]));
+    await page.keyboard.type('YY');
+    await expect.poll(() => page.evaluate(() => window.copiedTexts.at(-1))).toBe(path.join(directory, names[0]));
   });
 });
