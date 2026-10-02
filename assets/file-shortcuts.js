@@ -260,7 +260,7 @@
     const gallery = document.querySelector('.listing.gallery');
     const filter = document.querySelector('#image-filter')?.value;
     const copyGallery = !lightbox && gallery && filter && filter !== 'all';
-    const names = copyGallery ? (window.webdirDirectory?.visibleImages() || []).map(entry => fullPath ? absolutePath(entry.filePath) : entry.name) : [];
+    const names = copyGallery ? (window.webdirDirectory?.visibleMedia() || []).map(entry => fullPath ? absolutePath(entry.filePath) : entry.name) : [];
     const key = copyGallery ? JSON.stringify([filter, names]) : path;
     if (!key) {
       reset();
@@ -271,7 +271,7 @@
       reset();
       if (copyGallery) {
         if (names.length) copyText(names.join(','), `已复制 ${names.length} 个${fullPath ? '完整路径' : '文件名'}`);
-        else notify('没有可复制的图片');
+        else notify('没有可复制的文件');
       } else if (fullPath) copyText(absolutePath(path), `复制完整路径 ${absolutePath(path)}`);
       else copyName(path);
     } else {

@@ -571,6 +571,75 @@ fn handle_connection_with_auth(
     };
 
     let metadata = fs::metadata(&canonical)?;
+    if matches!(mode.as_deref(), Some("video-thumb" | "video-preview")) {
+        if !metadata.is_file() || !has_extension(&canonical, "mp4") {
+            return send_text(
+                &mut stream,
+                415,
+                "Unsupported Media Type",
+                "该文件不支持视频封面\n",
+                head_only,
+            );
+        }
+        if !matches!(method, "GET" | "HEAD" | "POST") {
+            return send_empty(&mut stream, 405, "Method Not Allowed");
+        }
+        let version = file_version(&metadata);
+        if method == "POST" && requested_image_version.as_deref() != Some(version.as_str()) {
+            return send_text(
+                &mut stream,
+                409,
+                "Conflict",
+                "视频已更新，请刷新后重新生成封面\n",
+                false,
+            );
+        }
+        let source = if method == "POST" {
+            let mut bytes = vec![0; headers.content_length];
+            if reader.read_exact(&mut bytes).is_err() {
+                return send_text(&mut stream, 400, "Bad Request", "请求内容不完整\n", false);
+            }
+            Some(bytes)
+        } else {
+            None
+        };
+        return match thumbnails::uploaded_thumbnail(
+            &canonical,
+            &version,
+            if mode.as_deref() == Some("video-preview") {
+                GALLERY_PREVIEW_MAX_EDGE
+            } else {
+                GALLERY_THUMBNAIL_MAX_EDGE
+            },
+            image_cache,
+            source.as_deref(),
+        ) {
+            Ok(_) if method == "POST" => send_empty(&mut stream, 204, "No Content"),
+            Ok((bytes, content_type)) => {
+                let etag = format!("\"{version}-{}\"", mode.as_deref().unwrap());
+                let modified = send_image_headers(
+                    &mut stream,
+                    bytes.len() as u64,
+                    content_type,
+                    Some(&etag),
+                    &headers.if_none_match,
+                    requested_image_version.as_deref() == Some(version.as_str()),
+                )?;
+                if modified && !head_only {
+                    stream.write_all(&bytes)?;
+                }
+                Ok(())
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => send_text(
+                &mut stream,
+                404,
+                "Not Found",
+                "视频封面尚未生成\n",
+                head_only,
+            ),
+            Err(error) => Err(error),
+        };
+    }
     if mode.as_deref() == Some("share") {
         if !access.can_share {
             return send_text(
@@ -604,7 +673,7 @@ fn handle_connection_with_auth(
     }
     let review_access = review_data_mode || review_action_mode || review_collaboration_mode;
     let image_comments_access =
-        gallery_comments_mode || (method == "DELETE" && is_image_file(&canonical));
+        gallery_comments_mode || (method == "DELETE" && is_gallery_media(&canonical));
     if (review_access && !access.allows(&review::sidecar_path(&canonical)))
         || (image_comments_access && !access.allows(&gallery_comments::comments_path(&canonical)))
     {
@@ -811,13 +880,15 @@ fn handle_connection_with_auth(
         };
     }
     if mode.as_deref() == Some("favourite") {
-        if !matches!(method, "PUT" | "DELETE") || !metadata.is_file() || !is_image_file(&canonical)
+        if !matches!(method, "PUT" | "DELETE")
+            || !metadata.is_file()
+            || !is_gallery_media(&canonical)
         {
             return send_text(
                 &mut stream,
                 405,
                 "Method Not Allowed",
-                "仅支持点赞或取消点赞图片\n",
+                "仅支持点赞或取消点赞图片和视频\n",
                 head_only,
             );
         }
@@ -833,13 +904,15 @@ fn handle_connection_with_auth(
         };
     }
     if mode.as_deref() == Some("image-tag") {
-        if !matches!(method, "PUT" | "DELETE") || !metadata.is_file() || !is_image_file(&canonical)
+        if !matches!(method, "PUT" | "DELETE")
+            || !metadata.is_file()
+            || !is_gallery_media(&canonical)
         {
             return send_text(
                 &mut stream,
                 405,
                 "Method Not Allowed",
-                "仅支持设置或取消图片数字标记\n",
+                "仅支持设置或取消图片和视频数字标记\n",
                 head_only,
             );
         }
@@ -946,12 +1019,12 @@ fn handle_connection_with_auth(
         };
     }
     if method == "DELETE" {
-        if !metadata.is_file() || !is_image_file(&canonical) {
+        if !metadata.is_file() || !is_gallery_media(&canonical) {
             return send_text(
                 &mut stream,
                 405,
                 "Method Not Allowed",
-                "仅支持删除图片文件\n",
+                "仅支持删除图片或视频文件\n",
                 false,
             );
         }
@@ -1033,12 +1106,12 @@ fn handle_connection_with_auth(
     }
 
     if gallery_comments_mode {
-        if !is_image_file(&canonical) {
+        if !is_gallery_media(&canonical) {
             return send_text(
                 &mut stream,
                 405,
                 "Method Not Allowed",
-                "仅支持图片评论\n",
+                "仅支持图片和视频评论\n",
                 head_only,
             );
         }
@@ -2618,11 +2691,11 @@ fn batch_images_with_access(
     for name in files {
         let outcome = (|| -> io::Result<()> {
             if !is_file_name(name) {
-                return Err(io::Error::other("请选择当前目录的图片"));
+                return Err(io::Error::other("请选择当前目录的图片或视频"));
             }
             let source = directory.join(name);
-            if !source.is_file() || !is_image_file(&source) {
-                return Err(io::Error::other("图片文件不存在"));
+            if !source.is_file() || !is_gallery_media(&source) {
+                return Err(io::Error::other("图片或视频文件不存在"));
             }
             let source_key = fs::canonicalize(&source)?;
             if !access.allows(&source_key)
@@ -2924,9 +2997,13 @@ fn read_directory_entries(
             .as_ref()
             .map_or_else(|| file_type.is_dir(), fs::Metadata::is_dir);
         let is_image = metadata.as_ref().is_some_and(|m| m.is_file()) && is_image_file(&path);
-        let canonical = is_image.then(|| fs::canonicalize(&path)).transpose()?;
+        let is_video =
+            metadata.as_ref().is_some_and(|m| m.is_file()) && has_extension(&path, "mp4");
+        let canonical = (is_image || is_video)
+            .then(|| fs::canonicalize(&path))
+            .transpose()?;
         let (favourite, image_tag) = match canonical.as_deref() {
-            Some(path) if is_image => state.directory_image_state(path)?,
+            Some(path) => state.directory_image_state(path)?,
             _ => (false, None),
         };
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -2934,18 +3011,24 @@ fn read_directory_entries(
         let href = url_for_path(&entry_relative, is_dir);
         let size = metadata.as_ref().map_or(0, fs::Metadata::len);
         let version = metadata.as_ref().map(file_version);
-        let original = is_image.then(|| {
+        let original = (is_image || is_video).then(|| {
             format!(
                 "{href}?mode=asset&v={}",
                 version.as_deref().unwrap_or_default()
             )
         });
         let resource = |value: Option<String>| value.map(|url| url.replace("&amp;", "&"));
+        let video_thumb = is_video.then(|| {
+            format!(
+                "{href}?mode=video-thumb&v={}",
+                version.as_deref().unwrap_or_default()
+            )
+        });
         entries.push(DirectoryEntry {
             name,
             is_dir,
             is_image,
-            is_video: !is_dir && has_extension(&path, "mp4"),
+            is_video,
             vector: is_image && has_extension(&path, "svg"),
             kind: if is_dir {
                 "dir".into()
@@ -2970,15 +3053,22 @@ fn read_directory_entries(
             gallery_href: format!("{href}?view=gallery"),
             list_src: is_image
                 .then(|| resource(thumbnail_url(&href, &path, size, false, version.as_deref())))
-                .flatten(),
+                .flatten()
+                .or_else(|| video_thumb.clone()),
             gallery_src: is_image
                 .then(|| resource(thumbnail_url(&href, &path, size, true, version.as_deref())))
-                .flatten(),
+                .flatten()
+                .or_else(|| video_thumb.clone()),
             preview_src: if is_image {
                 resource(gallery_preview_url(&href, &path, size, version.as_deref()))
                     .or_else(|| original.clone())
             } else {
-                None
+                is_video.then(|| {
+                    format!(
+                        "{href}?mode=video-preview&v={}",
+                        version.as_deref().unwrap_or_default()
+                    )
+                })
             },
             original_src: original,
             list_href: href,
@@ -3024,7 +3114,7 @@ fn render_directory_page_with_access(
         "<button class=\"directory-favourite-toggle\" id=\"directory-favourite-toggle\" type=\"button\" aria-pressed=\"false\">添加到收藏夹</button>"
     };
     let body = format!(
-        "<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">\n<title>{title} · 文件浏览</title>\n<style>{DIRECTORY_CSS}{DIRECTORY_LOADING_CSS}</style>\n</head>\n<body data-file-root=\"{file_root}\" data-can-share=\"{can_share}\" data-directory-view=\"{initial_view}\"><script>const initialDirectoryView = new URLSearchParams(location.search).get('view') ?? localStorage.getItem(`webdir-directory-view:${{location.pathname}}`) ?? 'list'; document.body.classList.toggle('gallery-mode', initialDirectoryView === 'gallery');</script>\n<main><nav class=\"breadcrumbs\" aria-label=\"当前位置\">{breadcrumbs}</nav>{directory_favourites}<header><p class=\"eyebrow\">WEBDIR / DIRECTORY</p><h1>{title}</h1><p class=\"summary\">正在加载目录…</p>{directory_favourite_toggle}{gallery_toggle}<div class=\"directory-browser-tools\"><div class=\"file-search\" id=\"file-search\"><label class=\"file-search-box\" for=\"file-search-input\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"10\" cy=\"10\" r=\"6.5\"></circle><path d=\"m14.8 14.8 5.2 5.2\"></path></svg><input id=\"file-search-input\" type=\"search\" aria-label=\"搜索当前目录中的文件和文件夹\" placeholder=\"搜索当前目录…\" autocomplete=\"off\"></label></div><label class=\"directory-sort\">排序<select id=\"directory-sort\" aria-label=\"目录排序\"><option value=\"name\">按名称</option><option value=\"modified\">按修改时间</option></select></label></div>{gallery_tools}<p class=\"directory-notice\" id=\"directory-notice\" role=\"status\" hidden></p></header><section class=\"listing\" aria-busy=\"true\" aria-label=\"目录内容\">{rows}</section></main><nav class=\"scroll-jumps\" id=\"scroll-jumps\" aria-label=\"页面快速跳转\" hidden><button id=\"scroll-to-top\" type=\"button\" aria-label=\"回到顶部\" title=\"回到顶部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 14 6-6 6 6\"></path><path d=\"M6 19h12\"></path></svg></button><button id=\"scroll-to-bottom\" type=\"button\" aria-label=\"回到底部\" title=\"回到底部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 10 6 6 6-6\"></path><path d=\"M6 5h12\"></path></svg></button></nav><div class=\"image-lightbox\" id=\"image-lightbox\" role=\"dialog\" aria-modal=\"true\" aria-label=\"图片预览\" hidden><button class=\"lightbox-close\" type=\"button\" aria-label=\"关闭图片预览\">×</button><div class=\"lightbox-shell\"><div class=\"lightbox-position\" id=\"lightbox-position\" aria-live=\"polite\"></div><nav class=\"lightbox-filmstrip\" id=\"lightbox-filmstrip\" aria-label=\"图片缩略图导航\"></nav><figure><div class=\"lightbox-stage\"><img class=\"lightbox-image\" alt=\"\"><div class=\"favourite-burst\" id=\"favourite-burst\" aria-hidden=\"true\" hidden><svg viewBox=\"0 0 24 24\"><path d=\"M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21l7.7-7.5 1.1-1.1a5.5 5.5 0 0 0 0-7.8Z\"></path></svg></div></div><figcaption><span class=\"lightbox-name\"></span><span class=\"lightbox-controls\"><button class=\"preview-step\" id=\"preview-previous\" type=\"button\" aria-label=\"上一张\" title=\"上一张\">←</button><button class=\"favourite-toggle\" id=\"favourite-toggle\" type=\"button\" aria-label=\"点赞 (f)\" aria-pressed=\"false\" title=\"点赞 (f)\">♡</button><button class=\"preview-step\" id=\"preview-next\" type=\"button\" aria-label=\"下一张\" title=\"下一张\">→</button><button class=\"carousel-toggle\" id=\"carousel-toggle\" type=\"button\" aria-label=\"进入轮播 (p)\" aria-pressed=\"false\" title=\"进入轮播 (p)\">轮播</button></span></figcaption><p class=\"lightbox-error\" id=\"favourite-error\" role=\"status\" hidden></p><p class=\"lightbox-error\" id=\"image-tag-error\" role=\"status\" hidden></p></figure></div>{GALLERY_DELETE_DIALOG}</div>{GALLERY_BATCH_DELETE_DIALOG}\n<script>{DIRECTORY_VIEW_JS}</script><script>{FILE_SHORTCUT_JS}</script><script>{DIRECTORY_JS}</script>\n</body>\n</html>"
+        "<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">\n<title>{title} · 文件浏览</title>\n<style>{DIRECTORY_CSS}{DIRECTORY_LOADING_CSS}</style>\n</head>\n<body data-file-root=\"{file_root}\" data-can-share=\"{can_share}\" data-directory-view=\"{initial_view}\"><script>const initialDirectoryView = new URLSearchParams(location.search).get('view') ?? localStorage.getItem(`webdir-directory-view:${{location.pathname}}`) ?? 'list'; document.body.classList.toggle('gallery-mode', initialDirectoryView === 'gallery');</script>\n<main><nav class=\"breadcrumbs\" aria-label=\"当前位置\">{breadcrumbs}</nav>{directory_favourites}<header><p class=\"eyebrow\">WEBDIR / DIRECTORY</p><h1>{title}</h1><p class=\"summary\">正在加载目录…</p>{directory_favourite_toggle}{gallery_toggle}<div class=\"directory-browser-tools\"><div class=\"file-search\" id=\"file-search\"><label class=\"file-search-box\" for=\"file-search-input\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"10\" cy=\"10\" r=\"6.5\"></circle><path d=\"m14.8 14.8 5.2 5.2\"></path></svg><input id=\"file-search-input\" type=\"search\" aria-label=\"搜索当前目录中的文件和文件夹\" placeholder=\"搜索当前目录…\" autocomplete=\"off\"></label></div><label class=\"directory-sort\">排序<select id=\"directory-sort\" aria-label=\"目录排序\"><option value=\"name\">按名称</option><option value=\"modified\">按修改时间</option></select></label></div>{gallery_tools}<p class=\"directory-notice\" id=\"directory-notice\" role=\"status\" hidden></p></header><section class=\"listing\" aria-busy=\"true\" aria-label=\"目录内容\">{rows}</section></main><nav class=\"scroll-jumps\" id=\"scroll-jumps\" aria-label=\"页面快速跳转\" hidden><button id=\"scroll-to-top\" type=\"button\" aria-label=\"回到顶部\" title=\"回到顶部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 14 6-6 6 6\"></path><path d=\"M6 19h12\"></path></svg></button><button id=\"scroll-to-bottom\" type=\"button\" aria-label=\"回到底部\" title=\"回到底部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 10 6 6 6-6\"></path><path d=\"M6 5h12\"></path></svg></button></nav><div class=\"image-lightbox\" id=\"image-lightbox\" role=\"dialog\" aria-modal=\"true\" aria-label=\"图片预览\" hidden><button class=\"lightbox-close\" type=\"button\" aria-label=\"关闭图片预览\">×</button><div class=\"lightbox-shell\"><div class=\"lightbox-position\" id=\"lightbox-position\" aria-live=\"polite\"></div><nav class=\"lightbox-filmstrip\" id=\"lightbox-filmstrip\" aria-label=\"图片缩略图导航\"></nav><figure><div class=\"lightbox-stage\"><img class=\"lightbox-image\" alt=\"\"><div class=\"favourite-burst\" id=\"favourite-burst\" aria-hidden=\"true\" hidden><svg viewBox=\"0 0 24 24\"><path d=\"M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21l7.7-7.5 1.1-1.1a5.5 5.5 0 0 0 0-7.8Z\"></path></svg></div></div><figcaption><span class=\"lightbox-name\"></span><span class=\"lightbox-controls\"><button class=\"preview-step\" id=\"preview-previous\" type=\"button\" aria-label=\"上一张\" title=\"上一张\">←</button><button class=\"favourite-toggle\" id=\"favourite-toggle\" type=\"button\" aria-label=\"点赞 (f)\" aria-pressed=\"false\" title=\"点赞 (f)\">♡</button><button class=\"preview-step\" id=\"preview-next\" type=\"button\" aria-label=\"下一张\" title=\"下一张\">→</button><button class=\"carousel-toggle\" id=\"carousel-toggle\" type=\"button\" aria-label=\"进入轮播 (p)\" aria-pressed=\"false\" title=\"进入轮播 (p)\">轮播</button></span></figcaption><p class=\"lightbox-error\" id=\"favourite-error\" role=\"status\" hidden></p><p class=\"lightbox-error\" id=\"image-tag-error\" role=\"status\" hidden></p></figure></div>{GALLERY_DELETE_DIALOG}</div>{GALLERY_BATCH_DELETE_DIALOG}\n<script>{DIRECTORY_VIEW_JS}</script><script>{VIDEO_THUMBNAILS_JS}</script><script>{FILE_SHORTCUT_JS}</script><script>{DIRECTORY_JS}</script>\n</body>\n</html>"
     )
     .replacen(
         "</head>",
@@ -3084,6 +3174,10 @@ fn human_size(bytes: u64) -> String {
 
 fn is_image_file(path: &Path) -> bool {
     file_kind(path) == "IMAGE"
+}
+
+fn is_gallery_media(path: &Path) -> bool {
+    is_image_file(path) || has_extension(path, "mp4")
 }
 
 fn is_raster_image(path: &Path) -> bool {
@@ -4051,6 +4145,7 @@ const GALLERY_BATCH_DELETE_DIALOG: &str = r#"
 "#;
 
 const DIRECTORY_JS: &str = include_str!("../assets/directory.js");
+const VIDEO_THUMBNAILS_JS: &str = include_str!("../assets/video-thumbnails.js");
 const DIRECTORY_VIEW_JS: &str = include_str!("../assets/directory-view.js");
 const DIRECTORY_LOADING_CSS: &str = include_str!("../assets/directory.css");
 
@@ -4162,8 +4257,8 @@ h1 { position:relative; z-index:1; margin:0; overflow-wrap:anywhere; font-family
 .image-selection-indicator { display:none; }
 .gallery.selecting-images .image-selection-indicator { position:absolute; z-index:3; top:.5rem; right:.5rem; display:grid; place-items:center; width:1.5rem; height:1.5rem; border:2px solid #fff; border-radius:50%; color:transparent; background:rgba(0,0,0,.4); font:700 .9rem/1 ui-sans-serif,sans-serif; pointer-events:none; }
 .gallery.selecting-images .image-selected .image-selection-indicator { color:#fff; background:var(--accent); }
-.gallery.selecting-images .entry.image.image-selected::before { position:absolute; z-index:3; inset:0; border:3px solid var(--accent); border-radius:inherit; content:""; pointer-events:none; }
-.gallery.selecting-images .entry.image .glyph { cursor:pointer; }
+.gallery.selecting-images .entry:is(.image,.video).image-selected::before { position:absolute; z-index:3; inset:0; border:3px solid var(--accent); border-radius:inherit; content:""; pointer-events:none; }
+.gallery.selecting-images .entry:is(.image,.video) .glyph { cursor:pointer; }
 .gallery-organise #delete-images:not(:disabled) { border-color:color-mix(in srgb,#b42336 55%,var(--line)); color:light-dark(#a51d31,#ff9ba9); }
 .directory-notice { position:relative; z-index:1; margin:.75rem 0 0; color:var(--muted); font-size:.78rem; line-height:1.6; overflow-wrap:anywhere; }
 .listing { overflow:hidden; border:1px solid var(--line); border-top:0; border-radius:0 0 1.1rem 1.1rem; background:var(--surface); box-shadow:0 25px 70px rgba(54,59,92,.09); }
@@ -4188,45 +4283,45 @@ h1 { position:relative; z-index:1; margin:0; overflow-wrap:anywhere; font-family
 .file .glyph::after { position:absolute; right:-2px; top:-2px; width:.42rem; height:.42rem; border-left:2px solid var(--muted); border-bottom:2px solid var(--muted); background:var(--surface); content:""; }
 .video .glyph { width:2.2rem; height:1.65rem; border:0; color:var(--muted); opacity:1; }
 .video .glyph::after { content:none; }
-.video .glyph svg { display:block; width:100%; height:100%; overflow:visible; fill:none; stroke:currentColor; stroke-width:1.5; }
-.video .glyph path { fill:var(--accent); stroke:none; }
+.video .glyph > svg { display:block; width:100%; height:100%; overflow:visible; fill:none; stroke:currentColor; stroke-width:1.5; }
+.video .glyph > svg path { fill:var(--accent); stroke:none; }
 .entry.video:hover .glyph { color:var(--accent); }
-.entry.image .glyph { width:2.55rem; height:2.55rem; overflow:hidden; border:1px solid var(--line); border-radius:.55rem; background-color:var(--surface); background-image:linear-gradient(45deg,var(--grid) 25%,transparent 25%),linear-gradient(-45deg,var(--grid) 25%,transparent 25%),linear-gradient(45deg,transparent 75%,var(--grid) 75%),linear-gradient(-45deg,transparent 75%,var(--grid) 75%); background-position:0 0,0 5px,5px -5px,-5px 0; background-size:10px 10px; box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--line) 65%,transparent); opacity:1; }
-.entry.image .glyph::after { content:none; }
+.entry:is(.image,.video) .glyph { width:2.55rem; height:2.55rem; overflow:hidden; border:1px solid var(--line); border-radius:.55rem; background-color:var(--surface); background-image:linear-gradient(45deg,var(--grid) 25%,transparent 25%),linear-gradient(-45deg,var(--grid) 25%,transparent 25%),linear-gradient(45deg,transparent 75%,var(--grid) 75%),linear-gradient(-45deg,transparent 75%,var(--grid) 75%); background-position:0 0,0 5px,5px -5px,-5px 0; background-size:10px 10px; box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--line) 65%,transparent); opacity:1; }
+.entry:is(.image,.video) .glyph::after { content:none; }
 .favourite-mark { position:absolute; right:.1rem; bottom:.1rem; display:block; width:1rem; height:1rem; color:#ff4f78; filter:drop-shadow(0 2px 4px rgba(0,0,0,.55)); pointer-events:none; }
 .favourite-mark svg { display:block; width:100%; height:100%; overflow:visible; }
 .favourite-mark path { fill:currentColor; stroke:rgba(255,255,255,.9); stroke-width:.75; stroke-linejoin:round; }
 .gallery .favourite-mark { right:.45rem; bottom:.45rem; width:1.35rem; height:1.35rem; }
 .image-tag { position:absolute; left:.15rem; top:.15rem; padding:.15rem .3rem; border-radius:.3rem; color:#fff; background:#b42336; box-shadow:0 2px 7px rgba(0,0,0,.25); font:700 .52rem/1.2 ui-sans-serif,-apple-system,sans-serif; white-space:nowrap; pointer-events:none; }
 .gallery .image-tag { left:.4rem; top:.4rem; padding:.25rem .4rem; font-size:.65rem; }
-.entry.image .glyph img { width:100%; height:100%; object-fit:cover; object-position:center; display:block; pointer-events:none; transition:transform .2s ease; }
-.entry.image .glyph img:not([src]) { visibility:hidden; }
-.entry.image .glyph.thumbnail-error::before { position:absolute; inset:0; display:grid; place-items:center; padding:.5rem; color:var(--muted); content:"预览不可用"; font:600 .62rem/1.35 ui-sans-serif,-apple-system,sans-serif; text-align:center; }
-.entry.image:hover .glyph img { transform:scale(1.06); }
-.entry.image.vector .glyph img { object-fit:contain; padding:.2rem; }
+.entry:is(.image,.video) .glyph img { width:100%; height:100%; object-fit:cover; object-position:center; display:block; pointer-events:none; transition:transform .2s ease; }
+.entry:is(.image,.video) .glyph img:not([src]) { visibility:hidden; }
+.entry:is(.image,.video) .glyph.thumbnail-error::before { position:absolute; inset:0; display:grid; place-items:center; padding:.5rem; color:var(--muted); content:"预览不可用"; font:600 .62rem/1.35 ui-sans-serif,-apple-system,sans-serif; text-align:center; }
+.entry:is(.image,.video):hover .glyph img { transform:scale(1.06); }
+.entry:is(.image,.video).vector .glyph img { object-fit:contain; padding:.2rem; }
 .gallery-other-heading { display:none; }
 .gallery-mode .listing { display:grid; grid-template-columns:repeat(auto-fill,minmax(168px,1fr)); gap:.42rem; padding:.42rem; overflow:visible; background:color-mix(in srgb,var(--surface) 88%,#0b0c12); }
 .gallery .entry { grid-template-columns:minmax(0,1fr) auto; grid-template-rows:11rem auto auto; gap:.65rem .75rem; min-width:0; min-height:0; padding:.75rem; overflow:hidden; border:1px solid var(--line); border-radius:.8rem; background:var(--surface); transition:border-color .18s ease,box-shadow .18s ease,transform .18s ease; }
 .gallery .entry:first-child { border-top:1px solid var(--line); }
 .gallery .entry:hover { padding:.75rem; border-color:color-mix(in srgb,var(--accent) 45%,var(--line)); background:var(--surface); box-shadow:0 14px 30px rgba(54,59,92,.14); transform:translateY(-3px); }
 .gallery .glyph { grid-column:1/-1; grid-row:1; align-self:center; }
-.gallery .entry.image .glyph { width:100%; height:100%; border-radius:.55rem; }
+.gallery .entry:is(.image,.video) .glyph { width:100%; height:100%; border-radius:.55rem; }
 .gallery .entry-name { grid-column:1/-1; grid-row:2; width:100%; }
 .gallery .kind { grid-column:1; grid-row:3; }
 .gallery .detail { grid-column:2; grid-row:3; }
 .gallery .arrow { display:none; }
-.gallery .folder .glyph,.gallery .file:not(.image) .glyph { transform:scale(1.35); }
-.gallery .entry.image .glyph { cursor:zoom-in; }
+.gallery .folder .glyph,.gallery .file:not(.image):not(.video) .glyph { transform:scale(1.35); }
+.gallery .entry:is(.image,.video) .glyph { cursor:zoom-in; }
 .listing.gallery .entry.folder { order:-1; }
-.listing.gallery .entry.image { position:relative; order:0; display:block; min-height:0; aspect-ratio:1; padding:0; overflow:hidden; border:0; border-radius:.7rem; background:#11131a; box-shadow:none; content-visibility:auto; contain-intrinsic-size:180px 180px; transform:none; }
-.listing.gallery .entry.image:hover { padding:0; transform:translateY(-2px); }
-.listing.gallery .entry.image::after { position:absolute; z-index:1; inset:auto 0 0; height:42%; background:linear-gradient(transparent,rgba(4,5,9,.78)); content:""; opacity:0; transition:opacity .18s ease; pointer-events:none; }
-.listing.gallery .entry.image .glyph { position:absolute; inset:0; width:100%; height:100%; border:0; border-radius:inherit; }
-.listing.gallery .entry.image .entry-name,.listing.gallery .entry.image .detail { position:absolute; z-index:2; right:.65rem; left:.65rem; color:#fff; opacity:0; transform:translateY(.3rem); transition:opacity .18s ease,transform .18s cubic-bezier(.16,1,.3,1); }
-.listing.gallery .entry.image .entry-name { bottom:1.55rem; }
-.listing.gallery .entry.image .detail { bottom:.55rem; justify-self:auto; font-size:.68rem; }
-.listing.gallery .entry.image:hover::after,.listing.gallery .entry.image:focus-visible::after,.listing.gallery .entry.image:hover .entry-name,.listing.gallery .entry.image:focus-visible .entry-name,.listing.gallery .entry.image:hover .detail,.listing.gallery .entry.image:focus-visible .detail { opacity:1; transform:none; }
-.listing.gallery .entry.file:not(.image) { order:2; }
+.listing.gallery .entry:is(.image,.video) { position:relative; order:0; display:block; min-height:0; aspect-ratio:1; padding:0; overflow:hidden; border:0; border-radius:.7rem; background:#11131a; box-shadow:none; content-visibility:auto; contain-intrinsic-size:180px 180px; transform:none; }
+.listing.gallery .entry:is(.image,.video):hover { padding:0; transform:translateY(-2px); }
+.listing.gallery .entry:is(.image,.video)::after { position:absolute; z-index:1; inset:auto 0 0; height:42%; background:linear-gradient(transparent,rgba(4,5,9,.78)); content:""; opacity:0; transition:opacity .18s ease; pointer-events:none; }
+.listing.gallery .entry:is(.image,.video) .glyph { position:absolute; inset:0; width:100%; height:100%; border:0; border-radius:inherit; }
+.listing.gallery .entry:is(.image,.video) .entry-name,.listing.gallery .entry:is(.image,.video) .detail { position:absolute; z-index:2; right:.65rem; left:.65rem; color:#fff; opacity:0; transform:translateY(.3rem); transition:opacity .18s ease,transform .18s cubic-bezier(.16,1,.3,1); }
+.listing.gallery .entry:is(.image,.video) .entry-name { bottom:1.55rem; }
+.listing.gallery .entry:is(.image,.video) .detail { bottom:.55rem; justify-self:auto; font-size:.68rem; }
+.listing.gallery .entry:is(.image,.video):hover::after,.listing.gallery .entry:is(.image,.video):focus-visible::after,.listing.gallery .entry:is(.image,.video):hover .entry-name,.listing.gallery .entry:is(.image,.video):focus-visible .entry-name,.listing.gallery .entry:is(.image,.video):hover .detail,.listing.gallery .entry:is(.image,.video):focus-visible .detail { opacity:1; transform:none; }
+.listing.gallery .entry.file:not(.image):not(.video) { order:2; }
 .listing.gallery .gallery-other-heading { display:block; grid-column:1/-1; order:1; margin:1.6rem .55rem .35rem; color:var(--muted); font-size:.78rem; font-weight:700; letter-spacing:.04em; }
 .listing.gallery .empty { order:3; }
 .delete-dialog { width:min(calc(100% - 2rem),26rem); padding:1.5rem; border:0; border-radius:1rem; color:var(--ink); background:var(--surface); box-shadow:0 24px 80px rgba(0,0,0,.35); }
@@ -4387,12 +4482,12 @@ h1 { position:relative; z-index:1; margin:0; overflow-wrap:anywhere; font-family
 .empty span { font:300 3rem/1 ui-monospace,SFMono-Regular,Consolas,monospace; }
 .empty p { margin:.8rem 0 0; }
 :focus-visible { outline:3px solid color-mix(in srgb,var(--accent) 55%,transparent); outline-offset:-3px; }
-@media (max-width:650px) { main,.gallery-mode main { width:100%; padding:1rem; } main>header { padding:1.5rem 1.1rem; } .directory-browser-tools { flex-wrap:wrap; } .file-search { flex-basis:100%; } .directory-sort { margin-left:auto; } .view-toggle { position:relative; right:auto; top:auto; width:max-content; margin-top:1rem; } .entry { grid-template-columns:2.4rem minmax(0,1fr) auto; padding-inline:1rem; } .kind,.arrow { display:none; } .detail { grid-column:3; } .folder .detail { display:none; } .folder-favourite-toggle { position:static; grid-column:3; justify-self:end; } .entry.image .glyph { width:2.4rem; height:2.4rem; } .gallery-mode .listing { grid-template-columns:repeat(auto-fill,minmax(145px,1fr)); gap:.65rem; padding:.65rem; } .gallery .entry { grid-template-columns:minmax(0,1fr); grid-template-rows:8.5rem auto auto; padding:.6rem; } .gallery .entry:hover { padding:.6rem; } .gallery .entry.image .glyph { width:100%; height:100%; } .gallery .detail { grid-column:1; grid-row:3; justify-self:start; } .scroll-jumps { right:max(.4rem,env(safe-area-inset-right)); } .scroll-jumps button { width:2.8rem; height:2.8rem; } .image-lightbox { padding:max(.7rem,env(safe-area-inset-top)) max(.7rem,env(safe-area-inset-right)) max(.7rem,env(safe-area-inset-bottom)) max(.7rem,env(safe-area-inset-left)); } .lightbox-shell { gap:.45rem; } .lightbox-filmstrip { grid-template-columns:repeat(5,3.35rem); gap:.25rem; } .filmstrip-slot { width:3.35rem; } .filmstrip-slot[data-distance="3"] { display:none; } .image-lightbox figcaption { flex-wrap:wrap; } .lightbox-name { width:100%; text-align:center; } .lightbox-controls { gap:.25rem; } .preview-step,.carousel-toggle,.comment-toggle,.image-download,.viewer-more-toggle { min-width:2.8rem; width:2.8rem; height:2.8rem; } .favourite-toggle { width:2.9rem; height:2.9rem; } .gallery-comments { inset:auto max(.45rem,env(safe-area-inset-right)) max(.45rem,env(safe-area-inset-bottom)) max(.45rem,env(safe-area-inset-left)); width:auto; height:min(92dvh,42rem); border-radius:1.15rem; animation-name:gallery-comments-mobile-in; } @keyframes gallery-comments-mobile-in { from { opacity:0; transform:translateY(1.5rem) scale(.985); } } .gallery-comment-composer textarea { min-height:4.8rem; } }
+@media (max-width:650px) { main,.gallery-mode main { width:100%; padding:1rem; } main>header { padding:1.5rem 1.1rem; } .directory-browser-tools { flex-wrap:wrap; } .file-search { flex-basis:100%; } .directory-sort { margin-left:auto; } .view-toggle { position:relative; right:auto; top:auto; width:max-content; margin-top:1rem; } .entry { grid-template-columns:2.4rem minmax(0,1fr) auto; padding-inline:1rem; } .kind,.arrow { display:none; } .detail { grid-column:3; } .folder .detail { display:none; } .folder-favourite-toggle { position:static; grid-column:3; justify-self:end; } .entry:is(.image,.video) .glyph { width:2.4rem; height:2.4rem; } .gallery-mode .listing { grid-template-columns:repeat(auto-fill,minmax(145px,1fr)); gap:.65rem; padding:.65rem; } .gallery .entry { grid-template-columns:minmax(0,1fr); grid-template-rows:8.5rem auto auto; padding:.6rem; } .gallery .entry:hover { padding:.6rem; } .gallery .entry:is(.image,.video) .glyph { width:100%; height:100%; } .gallery .detail { grid-column:1; grid-row:3; justify-self:start; } .scroll-jumps { right:max(.4rem,env(safe-area-inset-right)); } .scroll-jumps button { width:2.8rem; height:2.8rem; } .image-lightbox { padding:max(.7rem,env(safe-area-inset-top)) max(.7rem,env(safe-area-inset-right)) max(.7rem,env(safe-area-inset-bottom)) max(.7rem,env(safe-area-inset-left)); } .lightbox-shell { gap:.45rem; } .lightbox-filmstrip { grid-template-columns:repeat(5,3.35rem); gap:.25rem; } .filmstrip-slot { width:3.35rem; } .filmstrip-slot[data-distance="3"] { display:none; } .image-lightbox figcaption { flex-wrap:wrap; } .lightbox-name { width:100%; text-align:center; } .lightbox-controls { gap:.25rem; } .preview-step,.carousel-toggle,.comment-toggle,.image-download,.viewer-more-toggle { min-width:2.8rem; width:2.8rem; height:2.8rem; } .favourite-toggle { width:2.9rem; height:2.9rem; } .gallery-comments { inset:auto max(.45rem,env(safe-area-inset-right)) max(.45rem,env(safe-area-inset-bottom)) max(.45rem,env(safe-area-inset-left)); width:auto; height:min(92dvh,42rem); border-radius:1.15rem; animation-name:gallery-comments-mobile-in; } @keyframes gallery-comments-mobile-in { from { opacity:0; transform:translateY(1.5rem) scale(.985); } } .gallery-comment-composer textarea { min-height:4.8rem; } }
 @media (max-height:620px) { .gallery-comments>header { padding:.7rem .9rem .6rem; } .gallery-comments>header button { width:2.15rem; height:2.15rem; } .gallery-comments-image { grid-template-columns:2.7rem minmax(0,1fr) auto; gap:.65rem; padding:.55rem .9rem; } .gallery-comments-image img { width:2.7rem; height:2.7rem; } .gallery-comment-empty { gap:.25rem; padding:.75rem; } .gallery-comment-composer { max-height:58dvh; gap:.5rem; padding:.7rem .9rem; } .gallery-comment-composer textarea { min-height:4rem; } .gallery-comments>footer { display:none; } }
 @media (max-width:1024px),(hover:none) and (pointer:coarse) { .preview-step,.carousel-toggle,.comment-toggle,.image-download,.viewer-more-toggle,.viewer-tools button,.shortcut-help-toggle { min-width:3rem; height:3rem; } .lightbox-controls { width:100%; min-width:0; flex-shrink:1; justify-content:center; flex-wrap:wrap; } .viewer-extras,.viewer-tools { width:100%; justify-content:center; border:0; } .image-info,.shortcut-help { left:50%; right:auto; bottom:8.7rem; width:max-content; max-width:calc(100vw - 2rem); transform:translateX(-50%); } }
-@media (hover:none) and (pointer:coarse) { .listing.gallery .entry.image,.listing.gallery .entry.image:hover { display:block; padding:0; } .listing.gallery .entry.image::after,.listing.gallery .entry.image .entry-name,.listing.gallery .entry.image .detail { opacity:1; transform:none; } .image-lightbox figcaption { padding-bottom:max(.2rem,env(safe-area-inset-bottom)); } }
+@media (hover:none) and (pointer:coarse) { .listing.gallery .entry:is(.image,.video),.listing.gallery .entry:is(.image,.video):hover { display:block; padding:0; } .listing.gallery .entry:is(.image,.video)::after,.listing.gallery .entry:is(.image,.video) .entry-name,.listing.gallery .entry:is(.image,.video) .detail { opacity:1; transform:none; } .image-lightbox figcaption { padding-bottom:max(.2rem,env(safe-area-inset-bottom)); } }
 :root[data-theme="dark"] { --paper:#11131b; --surface:#191c27; --ink:#edf0f7; --muted:#a7adbd; --line:#303545; --accent:#a9a5ff; --accent-soft:#292943; --folder:#8e8af5; --grid:#262b38; } :where(:root[data-theme="dark"]) body { background-image:radial-gradient(circle at 50% -20%,#252943 0,transparent 38rem); } :where(:root[data-theme="dark"]) .listing { box-shadow:0 25px 70px rgba(0,0,0,.25); }
-@media (prefers-reduced-motion:reduce) { .entry,.arrow,.entry.image .glyph img,.filmstrip-thumb { transition:none; } .entry.image:hover .glyph img,.gallery .entry:hover,.filmstrip-thumb { transform:none; } }
+@media (prefers-reduced-motion:reduce) { .entry,.arrow,.entry:is(.image,.video) .glyph img,.filmstrip-thumb { transition:none; } .entry:is(.image,.video):hover .glyph img,.gallery .entry:hover,.filmstrip-thumb { transform:none; } }
 "#;
 
 const MARKDOWN_CSS: &str = r#"
@@ -6067,6 +6162,144 @@ mod tests {
             String::from_utf8(response[..split].to_vec()).unwrap(),
             response[split..].to_vec(),
         )
+    }
+
+    fn video_thumbnail_request(
+        root: &Path,
+        cache: Option<&ImageCache>,
+        method: &str,
+        target: &str,
+        body: &[u8],
+        extra_headers: &str,
+    ) -> (String, Vec<u8>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let root = fs::canonicalize(root).unwrap();
+        let cache = cache.cloned();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            handle_connection(
+                stream,
+                &root,
+                &CollaborationHub::default(),
+                &ReviewHub::default(),
+                false,
+                cache.as_ref(),
+                &StateStore::new(None).unwrap(),
+            )
+            .unwrap();
+        });
+        let mut client = TcpStream::connect(address).unwrap();
+        write!(client, "{method} {target} HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n{extra_headers}Connection: close\r\n\r\n", body.len()).unwrap();
+        client.write_all(body).unwrap();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).unwrap();
+        server.join().unwrap();
+        let split = response
+            .windows(4)
+            .position(|bytes| bytes == b"\r\n\r\n")
+            .unwrap()
+            + 4;
+        (
+            String::from_utf8(response[..split].to_vec()).unwrap(),
+            response[split..].to_vec(),
+        )
+    }
+
+    #[test]
+    fn video_thumbnails_are_shared_persisted_and_follow_source_versions() {
+        for persistent in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let video = directory.path().join("clip.mp4");
+            fs::write(&video, b"first video").unwrap();
+            let cache_root = directory.path().join("cache");
+            let cache = persistent.then(|| ImageCache::new(&cache_root).unwrap());
+            let target = format!(
+                "/clip.mp4?mode=video-thumb&v={}",
+                file_version(&video.metadata().unwrap())
+            );
+            let request = |cache: Option<&ImageCache>,
+                           method: &str,
+                           target: &str,
+                           body: &[u8],
+                           headers: &str| {
+                video_thumbnail_request(directory.path(), cache, method, target, body, headers)
+            };
+            let (headers, _) = request(cache.as_ref(), "GET", &target, &[], "");
+            assert!(headers.starts_with("HTTP/1.1 404"), "{headers}");
+            let mut poster = Cursor::new(Vec::new());
+            image::RgbImage::from_pixel(512, 288, image::Rgb([40, 100, 200]))
+                .write_to(&mut poster, image::ImageFormat::Jpeg)
+                .unwrap();
+            let (headers, _) = request(cache.as_ref(), "POST", &target, poster.get_ref(), "");
+            assert!(headers.starts_with("HTTP/1.1 204"), "{headers}");
+            drop(cache);
+            let cache = persistent.then(|| ImageCache::new(&cache_root).unwrap());
+            let (headers, bytes) = request(cache.as_ref(), "GET", &target, &[], "");
+            assert!(headers.starts_with("HTTP/1.1 200"), "{headers}");
+            assert!(headers.contains("Content-Type: image/jpeg\r\n"));
+            let decoded = image::load_from_memory(&bytes).unwrap();
+            assert_eq!((decoded.width(), decoded.height()), (512, 288));
+            let preview_target = target.replace("video-thumb", "video-preview");
+            let (preview_headers, _) = request(cache.as_ref(), "GET", &preview_target, &[], "");
+            assert!(preview_headers.starts_with("HTTP/1.1 404"));
+            let mut preview = Cursor::new(Vec::new());
+            image::RgbImage::from_pixel(2560, 1440, image::Rgb([40, 100, 200]))
+                .write_to(&mut preview, image::ImageFormat::Jpeg)
+                .unwrap();
+            let (preview_headers, _) = request(
+                cache.as_ref(),
+                "POST",
+                &preview_target,
+                preview.get_ref(),
+                "",
+            );
+            assert!(preview_headers.starts_with("HTTP/1.1 204"));
+            drop(cache);
+            let cache = persistent.then(|| ImageCache::new(&cache_root).unwrap());
+            for (resource, dimensions) in [(&target, (512, 288)), (&preview_target, (2560, 1440))] {
+                let (headers, bytes) = request(cache.as_ref(), "GET", resource, &[], "");
+                assert!(headers.starts_with("HTTP/1.1 200"));
+                let decoded = image::load_from_memory(&bytes).unwrap();
+                assert_eq!((decoded.width(), decoded.height()), dimensions);
+            }
+            let etag = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("ETag: "))
+                .unwrap();
+            let (headers, bytes) = request(
+                cache.as_ref(),
+                "GET",
+                &target,
+                &[],
+                &format!("If-None-Match: {etag}\r\n"),
+            );
+            assert!(headers.starts_with("HTTP/1.1 304"));
+            assert!(bytes.is_empty());
+            let (_, bytes) = request(cache.as_ref(), "HEAD", &target, &[], "");
+            assert!(bytes.is_empty());
+            fs::write(&video, b"replacement video").unwrap();
+            let replacement = format!(
+                "/clip.mp4?mode=video-thumb&v={}",
+                file_version(&video.metadata().unwrap())
+            );
+            let (headers, _) = request(cache.as_ref(), "GET", &replacement, &[], "");
+            assert!(headers.starts_with("HTTP/1.1 404"));
+            let (headers, _) = request(
+                cache.as_ref(),
+                "GET",
+                &replacement.replace("video-thumb", "video-preview"),
+                &[],
+                "",
+            );
+            assert!(headers.starts_with("HTTP/1.1 404"));
+            let (headers, _) = request(cache.as_ref(), "POST", &target, poster.get_ref(), "");
+            assert!(headers.starts_with("HTTP/1.1 409"));
+            let (headers, _) = request(cache.as_ref(), "POST", &replacement, poster.get_ref(), "");
+            assert!(headers.starts_with("HTTP/1.1 204"));
+            let (headers, _) = request(cache.as_ref(), "GET", &replacement, &[], "");
+            assert!(headers.starts_with("HTTP/1.1 200"));
+        }
     }
 
     #[test]
@@ -7919,6 +8152,9 @@ mod tests {
     fn directory_uses_a_video_glyph_for_mp4_files() {
         let directory = tempfile::tempdir().unwrap();
         fs::write(directory.path().join("clip.mp4"), b"video").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("missing.mp4", directory.path().join("unavailable.mp4"))
+            .unwrap();
 
         let page = render_directory_page(
             directory.path(),
@@ -7936,8 +8172,12 @@ mod tests {
             &Access::default(),
         )
         .unwrap();
-        assert!(entries[0].is_video);
-        assert_eq!(entries[0].kind, "VIDEO");
+        let video = entries
+            .iter()
+            .find(|entry| entry.name == "clip.mp4")
+            .unwrap();
+        assert!(video.is_video);
+        assert_eq!(video.kind, "VIDEO");
     }
 
     #[test]

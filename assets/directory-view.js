@@ -79,7 +79,7 @@
 
     fromNode(node) { return node ? this.byPath.get(node.dataset.filePath) : null; }
     nodeFor(entry) { return this.nodes.get(entry?.filePath); }
-    visibleImages() { return this.entries.filter(entry => entry.isImage && !entry.hidden); }
+    visibleMedia() { return this.entries.filter(entry => (entry.isImage || entry.isVideo) && !entry.hidden); }
     schedule(layout = false) {
       this.dirty ||= layout;
       if (this.frame !== null) return;
@@ -91,7 +91,7 @@
       node.dataset.favourite = entry.favourite;
       node.dataset.imageTag = entry.imageTag;
       const link = node.querySelector('.file-open, .folder-open') || node;
-      link.href = entry.isImage && listing.classList.contains('gallery') ? entry.galleryHref : entry.listHref;
+      link.href = (entry.isImage || entry.isVideo) && listing.classList.contains('gallery') ? entry.galleryHref : entry.listHref;
       const mark = node.querySelector('.favourite-mark');
       if (mark) mark.hidden = entry.favourite !== 'true';
       const tag = node.querySelector('.image-tag');
@@ -126,11 +126,12 @@
       const node = document.createElement(entry.isDir || sharing ? 'div' : 'a');
       node.className = `entry ${entry.isDir ? 'folder' : 'file'}${entry.isImage ? ' image' : ''}${entry.vector ? ' vector' : ''}${entry.isVideo ? ' video' : ''}`;
       Object.assign(node.dataset, {filePath: entry.filePath, modified: entry.modified});
-      if (entry.isImage) Object.assign(node.dataset, {previewSrc: entry.previewSrc, originalSrc: entry.originalSrc, listHref: entry.listHref, galleryHref: entry.galleryHref, fileSize: entry.fileSize});
+      if (entry.isImage || entry.isVideo) Object.assign(node.dataset, {previewSrc: entry.previewSrc, originalSrc: entry.originalSrc, listHref: entry.listHref, galleryHref: entry.galleryHref, fileSize: entry.fileSize});
       let glyph = '';
       if (entry.listSrc) glyph = `<img data-list-src="${escape(entry.listSrc)}" data-gallery-src="${escape(entry.gallerySrc)}" alt="" decoding="async" draggable="false">`;
       else if (entry.isVideo) glyph = '<svg viewBox="0 0 24 18"><rect x="1" y="1" width="22" height="16" rx="3"></rect><path d="m10 5.5 6 3.5-6 3.5Z"></path></svg>';
-      if (entry.isImage) glyph += `<span class="favourite-mark" title="已点赞" hidden>${heart}</span><span class="image-tag" hidden></span>`;
+      if (entry.isVideo) glyph += '<span class="video-badge" title="视频">▶ 视频</span>';
+      if (entry.isImage || entry.isVideo) glyph += `<span class="favourite-mark" title="已点赞" hidden>${heart}</span><span class="image-tag" hidden></span>`;
       const content = `<span class="glyph" aria-hidden="true">${glyph}</span><span class="entry-name">${escape(entry.name)}</span><span class="kind">${escape(entry.kind)}</span><span class="detail">${escape(entry.fileSize)}</span><span class="arrow" aria-hidden="true">→</span>`;
       node.innerHTML = node.tagName === 'A' ? content : `<a class="${entry.isDir ? 'folder-open' : 'file-open'}">${content}</a>`;
       if (entry.isDir) {
@@ -144,7 +145,7 @@
         button.setAttribute('aria-label', `${button.title}：${entry.name}`);
         node.append(button);
       }
-      if (entry.isImage) {
+      if (entry.isImage || entry.isVideo) {
         const indicator = document.createElement('span');
         indicator.className = 'image-selection-indicator';
         indicator.setAttribute('aria-hidden', 'true');
@@ -166,7 +167,7 @@
       const rem = parseFloat(getComputedStyle(document.documentElement).fontSize);
       const cardHeight = parseFloat(style.getPropertyValue('--directory-card-height')) * rem;
       const visible = this.entries.filter(entry => !entry.hidden);
-      const groups = gallery ? [visible.filter(e => e.isDir), visible.filter(e => e.isImage), visible.filter(e => !e.isDir && !e.isImage)] : [visible];
+      const groups = gallery ? [visible.filter(e => e.isDir), visible.filter(e => e.isImage || e.isVideo), visible.filter(e => !e.isDir && !e.isImage && !e.isVideo)] : [visible];
       const heading = listing.querySelector('.gallery-other-heading');
       heading.hidden = true;
       let y = padding;

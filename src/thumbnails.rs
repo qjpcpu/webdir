@@ -80,6 +80,32 @@ pub(crate) fn thumbnail(
     )
 }
 
+pub(crate) fn uploaded_thumbnail(
+    path: &Path,
+    source_version: &str,
+    max_edge: u32,
+    cache: Option<&ImageCache>,
+    source: Option<&[u8]>,
+) -> io::Result<Thumbnail> {
+    let uploaded = || {
+        source
+            .map(|bytes| (bytes.to_vec(), "image/jpeg"))
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
+    };
+    if let Some(cache) = cache {
+        return cache.thumbnail(path, source_version, max_edge, uploaded);
+    }
+    static UPLOADS: OnceLock<Mutex<HashMap<String, Thumbnail>>> = OnceLock::new();
+    let mut uploads = UPLOADS.get_or_init(Mutex::default).lock().unwrap();
+    let key = thumbnail_key(path, source_version, max_edge);
+    if let Some(thumbnail) = uploads.get(&key) {
+        return Ok(thumbnail.clone());
+    }
+    let thumbnail = uploaded()?;
+    uploads.insert(key, thumbnail.clone());
+    Ok(thumbnail)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -364,7 +364,7 @@ if (history.state?.moveNotice) {
 }
 
 const listing = document.querySelector('.listing');
-const galleryAvailable = directoryEntries.some(entry => entry.isImage) || new URLSearchParams(location.search).get('view') === 'gallery';
+const galleryAvailable = directoryEntries.some(entry => entry.isImage || entry.isVideo) || new URLSearchParams(location.search).get('view') === 'gallery';
 const directoryViewModel = new DirectoryView(directoryEntries);
 window.webdirDirectory = directoryViewModel;
 const directorySort = document.querySelector('#directory-sort');
@@ -376,7 +376,7 @@ let selectedImageFilter = galleryAvailable ? localStorage.getItem(IMAGE_FILTER_K
 if (!filterLabels[selectedImageFilter]) selectedImageFilter = 'all';
 const refreshImageFilters = () => {
   if (!imageFilter) return;
-  const entries = directoryEntries.filter(entry => entry.isImage);
+  const entries = directoryEntries.filter(entry => entry.isImage || entry.isVideo);
   const available = new Set(['all', selectedImageFilter]);
   entries.forEach(entry => {
     if (entry.favourite === 'true') available.add('favourite');
@@ -430,12 +430,12 @@ const sortDirectory = async () => {
       const order = await loadSimilarityOrder();
       if (directorySort.value !== 'similarity') return;
       const ranks = new Map(order.map((name, index) => [name, index]));
-      const category = entry => entry.isDir ? 0 : entry.isImage ? 1 : 2;
-      entries.sort((left, right) => {
-        const categoryOrder = category(left) - category(right);
-        if (categoryOrder) return categoryOrder;
-        if (category(left) === 1) return ranks.get(entryName(left)) - ranks.get(entryName(right));
-        return compareEntryNames(left, right);
+      entries.sort(compareEntryNames);
+      const images = entries.filter(entry => entry.isImage)
+        .sort((left, right) => ranks.get(entryName(left)) - ranks.get(entryName(right)));
+      let imageIndex = 0;
+      entries.forEach((entry, index) => {
+        if (entry.isImage) entries[index] = images[imageIndex++];
       });
     } catch (error) {
       directoryNotice.textContent = error.message;
@@ -463,9 +463,9 @@ const filterDirectory = () => {
   document.querySelector('.summary').textContent = `${directoryCount} 个目录 · ${fileCount} 个文件`;
   directoryEmpty.hidden = directoryCount + fileCount > 0;
   const otherHeading = listing.querySelector('.gallery-other-heading');
-  if (otherHeading) otherHeading.hidden = !directoryEntries.some(entry => !entry.isDir && !entry.isImage && !entry.hidden);
+  if (otherHeading) otherHeading.hidden = !directoryEntries.some(entry => !entry.isDir && !entry.isImage && !entry.isVideo && !entry.hidden);
   directoryEmpty.querySelector('p').textContent = markedOnly
-    ? '没有符合筛选条件的图片'
+    ? '没有符合筛选条件的图片或视频'
     : query ? '没有匹配的文件或目录' : '这个目录是空的';
   directoryViewModel.schedule(true);
   document.dispatchEvent(new Event('gallery-filter-change'));
@@ -545,6 +545,18 @@ if (galleryToggle) {
   lightboxPlaceholder.setAttribute('aria-hidden', 'true');
   lightboxPlaceholder.draggable = false;
   lightboxStage.insertBefore(lightboxPlaceholder, lightboxStage.querySelector('.lightbox-image'));
+  const lightboxVideo = document.createElement('video');
+  lightboxVideo.className = 'lightbox-video';
+  lightboxVideo.controls = true;
+  lightboxVideo.playsInline = true;
+  lightboxVideo.preload = 'metadata';
+  lightboxVideo.hidden = true;
+  lightboxStage.append(lightboxVideo);
+  const videoPlayToggle = document.createElement('button');
+  videoPlayToggle.type = 'button';
+  videoPlayToggle.className = 'video-play-toggle';
+  videoPlayToggle.hidden = true;
+  lightboxStage.append(videoPlayToggle);
   const imageLoading = document.createElement('div');
   imageLoading.className = 'image-loading';
   imageLoading.hidden = true;
@@ -664,9 +676,9 @@ if (galleryToggle) {
   const mobileTouch = matchMedia('(hover: none) and (pointer: coarse)');
   const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
   const REVIEW_IDENTITY_KEY = 'webdir-review-identity';
-  const imageModel = () => directoryEntries.filter(entry => entry.isImage);
-  const visibleImages = () => imageModel().filter(entry => !entry.hidden);
-  const batchImages = () => visibleImages().filter(entry => !selectingImages || selectedImages.has(entry));
+  const mediaModel = () => directoryEntries.filter(entry => entry.isImage || entry.isVideo);
+  const visibleMedia = () => mediaModel().filter(entry => !entry.hidden);
+  const batchImages = () => visibleMedia().filter(entry => !selectingImages || selectedImages.has(entry));
   let previewTrigger = null;
   let deleting = false;
   let liking = 0;
@@ -676,6 +688,7 @@ if (galleryToggle) {
   let adjacentPreloads = [];
   let carouselTimer = null;
   let previewRequest = 0;
+  let viewRequest = 0;
   let loadingTimer = null;
   let chromeTimer = null;
   let mouseInChromeZone = false;
@@ -728,6 +741,7 @@ if (galleryToggle) {
   syncGalleryCommentIdentity();
 
   const updateLightboxState = () => {
+    lightboxState.hidden = !previewTrigger;
     const liked = previewTrigger?.favourite === 'true';
     const tag = previewTrigger?.imageTag || '';
     lightboxState.querySelector('.lightbox-favourite-state').classList.toggle('liked', liked);
@@ -754,7 +768,7 @@ if (galleryToggle) {
       const selected = selectedImages.has(entry);
       node.classList.toggle('image-selected', selected);
       const link = node.querySelector('.file-open') || node;
-      if (selectingImages && entry.isImage) {
+      if (selectingImages && (entry.isImage || entry.isVideo)) {
         link.setAttribute('role', 'checkbox');
         link.setAttribute('aria-checked', String(selected));
       } else {
@@ -763,8 +777,8 @@ if (galleryToggle) {
       }
     };
     for (const node of directoryViewModel.nodes.values()) directoryViewModel.refresh(directoryViewModel.fromNode(node));
-    selectionCount.textContent = `已选 ${selectedImages.size} 张`;
-    selectAllImagesButton.disabled = moving || visibleImages().length === selectedImages.size;
+    selectionCount.textContent = `已选 ${selectedImages.size} ${[...selectedImages].some(entry => entry.isVideo) ? '个' : '张'}`;
+    selectAllImagesButton.disabled = moving || visibleMedia().length === selectedImages.size;
     clearSelectionButton.disabled = moving || selectedImages.size === 0;
     selectImagesButton.disabled = moving;
     const count = batchImages().length;
@@ -797,7 +811,7 @@ if (galleryToggle) {
   };
   selectImagesButton.addEventListener('click', () => setImageSelection(true));
   selectAllImagesButton.addEventListener('click', () => {
-    visibleImages().forEach(entry => selectedImages.add(entry));
+    visibleMedia().forEach(entry => selectedImages.add(entry));
     updateImageControls();
   });
   clearSelectionButton.addEventListener('click', () => {
@@ -807,7 +821,7 @@ if (galleryToggle) {
   document.addEventListener('gallery-filter-change', updateImageControls);
 
   const updatePreviewButtons = () => {
-    const entries = visibleImages();
+    const entries = visibleMedia();
     const index = entries.indexOf(previewTrigger);
     previewPrevious.disabled = index <= 0;
     previewNext.disabled = index < 0 || index >= entries.length - 1;
@@ -832,6 +846,10 @@ if (galleryToggle) {
   };
   const renderGalleryComments = () => {
     if (!previewTrigger) return;
+    const label = previewTrigger.isVideo ? '视频评论' : '图片评论';
+    commentsDrawer.setAttribute('aria-label', label);
+    commentsDrawer.querySelector('header strong').textContent = label;
+    commentsDrawer.querySelector('header span').textContent = previewTrigger.isVideo ? 'VIDEO NOTES' : 'IMAGE NOTES';
     const name = currentImageName();
     const comments = galleryComments.comments.filter(comment => comment.image === name);
     commentCount.textContent = String(comments.length);
@@ -929,6 +947,7 @@ if (galleryToggle) {
   };
 
   const appendPastedGalleryComment = async body => {
+    if (!previewTrigger) return;
     const author = localStorage.getItem(REVIEW_IDENTITY_KEY)?.trim() || '';
     if (!author) {
       showGalleryToast('请先打开评论区设置评论人');
@@ -963,7 +982,7 @@ if (galleryToggle) {
   };
 
   const renderFilmstrip = () => {
-    const entries = visibleImages();
+    const entries = visibleMedia();
     const currentIndex = entries.indexOf(previewTrigger);
     lightboxFilmstrip.replaceChildren();
     for (let offset = -3; offset <= 3; offset++) {
@@ -977,12 +996,19 @@ if (galleryToggle) {
         button.type = 'button';
         button.setAttribute('aria-current', String(offset === 0));
         const name = entry.name;
-        button.setAttribute('aria-label', offset === 0 ? `当前图片：${name}` : `查看 ${name}`);
+        button.setAttribute('aria-label', offset === 0 ? `当前${entry.isVideo ? '视频' : '图片'}：${name}` : `查看 ${name}`);
         const image = document.createElement('img');
-        image.src = currentThumbnailSource(entry);
+        if (entry.isVideo) loadVideoThumbnail(entry).then(source => { image.src = source; }).catch(() => {});
+        else image.src = currentThumbnailSource(entry);
         image.alt = '';
         image.decoding = 'async';
         button.append(image);
+        if (entry.isVideo) {
+          const badge = document.createElement('span');
+          badge.className = 'video-badge';
+          badge.textContent = '▶ 视频';
+          button.append(badge);
+        }
         button.addEventListener('click', () => switchPreview(entry, Math.sign(offset)));
         slot.append(button);
       }
@@ -991,10 +1017,10 @@ if (galleryToggle) {
   };
 
   const preloadAdjacentImages = () => {
-    const entries = visibleImages();
+    const entries = visibleMedia();
     const index = entries.indexOf(previewTrigger);
     adjacentPreloads = [entries[index - 1], entries[index + 1]]
-      .filter(Boolean)
+      .filter(entry => entry?.isImage)
       .map(entry => {
         const image = new Image();
         image.src = entry.previewSrc;
@@ -1004,25 +1030,45 @@ if (galleryToggle) {
 
   const currentThumbnailSource = entry => entry?.gallerySrc || entry?.listSrc || entry?.previewSrc || '';
 
+  const mediaDimensions = () => previewTrigger?.isVideo
+    ? {width: lightboxVideo.videoWidth, height: lightboxVideo.videoHeight}
+    : {width: lightboxImage.naturalWidth, height: lightboxImage.naturalHeight};
+
   const updateImageInfo = () => {
     if (!previewTrigger) return;
     const name = previewTrigger.name;
     const extension = name.includes('.') ? name.split('.').pop().toUpperCase() : 'IMAGE';
-    const dimensions = lightboxImage.naturalWidth
-      ? `${lightboxImage.naturalWidth} × ${lightboxImage.naturalHeight}`
+    const {width, height} = mediaDimensions();
+    const dimensions = width
+      ? `${width} × ${height}`
       : '尺寸读取中';
-    imageInfo.innerHTML = `<span>${extension}</span><span>${previewTrigger.fileSize}</span><span>${dimensions}</span><span>${Math.round(zoom.scale * 100)}%</span><a href="${previewTrigger.originalSrc}" target="_blank">打开原图</a>`;
+    imageInfo.innerHTML = `<span>${extension}</span><span>${previewTrigger.fileSize}</span><span>${dimensions}</span><span>${Math.round(zoom.scale * 100)}%</span><a href="${previewTrigger.originalSrc}" target="_blank">${previewTrigger.isVideo ? '打开原视频' : '打开原图'}</a>`;
   };
 
   const applyZoom = () => {
-    lightboxImage.style.transform = `translate3d(calc(${zoom.x}px + var(--gesture-x,0px)),calc(${zoom.y}px + var(--gesture-y,0px)),0) scale(${zoom.scale})`;
-    lightboxImage.classList.toggle('zoomed', zoom.scale > 1.01);
+    const media = previewTrigger?.isVideo ? lightboxVideo : lightboxImage;
+    media.style.transform = `translate3d(calc(${zoom.x}px + var(--gesture-x,0px)),calc(${zoom.y}px + var(--gesture-y,0px)),0) scale(${zoom.scale})`;
+    media.classList.toggle('zoomed', zoom.scale > 1.01);
+    if (previewTrigger?.isVideo) lightboxPlaceholder.style.transform = media.style.transform;
+    else lightboxPlaceholder.style.removeProperty('transform');
     updateImageInfo();
     updateLightboxStatePosition();
   };
 
   const loadOriginal = async () => {
     if (!previewTrigger) return false;
+    if (previewTrigger.isVideo) {
+      if (lightboxVideo.videoWidth) return true;
+      const entry = previewTrigger;
+      const request = previewRequest;
+      return new Promise(resolve => {
+        const finish = () => {
+          for (const event of ['loadedmetadata', 'error', 'emptied']) lightboxVideo.removeEventListener(event, finish);
+          resolve(previewTrigger === entry && previewRequest === request && lightboxVideo.videoWidth > 0);
+        };
+        for (const event of ['loadedmetadata', 'error', 'emptied']) lightboxVideo.addEventListener(event, finish);
+      });
+    }
     if (zoom.originalLoaded || lightboxImage.src === new URL(previewTrigger.originalSrc, location.href).href) return true;
     const entry = previewTrigger;
     const request = ++previewRequest;
@@ -1041,8 +1087,12 @@ if (galleryToggle) {
   };
 
   const setZoom = (scale, origin = null) => {
+    viewRequest++;
     const previous = zoom.scale;
-    zoom.scale = Math.min(8, Math.max(1, scale));
+    const fitted = fittedImageSize();
+    const minimum = previewTrigger?.isVideo && lightboxVideo.videoWidth
+      ? Math.min(1, lightboxVideo.videoWidth / fitted.width) : 1;
+    zoom.scale = Math.min(8, Math.max(minimum, scale));
     zoom.mode = zoom.scale === 1 ? 'fit' : 'custom';
     if (origin && previous > 0) {
       const rect = lightboxStage.getBoundingClientRect();
@@ -1053,16 +1103,16 @@ if (galleryToggle) {
       zoom.y = oy - (oy - zoom.y) * ratio;
     }
     if (zoom.scale === 1) zoom.x = zoom.y = 0;
-    if (zoom.scale > 1.15) loadOriginal();
+    if (zoom.scale > 1.15 && !previewTrigger?.isVideo) loadOriginal();
     applyZoom();
   };
 
   const fittedImageSize = () => {
     const stage = lightboxStage.getBoundingClientRect();
-    const width = lightboxImage.naturalWidth;
-    const height = lightboxImage.naturalHeight;
+    const {width, height} = mediaDimensions();
     if (!width || !height) return {width: stage.width, height: stage.height};
-    const scale = Math.min(1, stage.width / width, stage.height / height);
+    const fit = Math.min(stage.width / width, stage.height / height);
+    const scale = previewTrigger?.isVideo ? fit : Math.min(1, fit);
     return {width: width * scale, height: height * scale};
   };
 
@@ -1074,18 +1124,28 @@ if (galleryToggle) {
     lightboxState.style.bottom = `${Math.max(inset, (stage.height - fitted.height * zoom.scale) / 2 - zoom.y + inset)}px`;
   };
   addEventListener('resize', updateLightboxStatePosition);
+  lightboxVideo.addEventListener('loadedmetadata', () => {
+    if (!previewTrigger?.isVideo) return;
+    updateImageInfo();
+    updateLightboxStatePosition();
+  });
 
   const setViewMode = async mode => {
     if (!previewTrigger) return;
+    const request = ++viewRequest;
+    const entry = previewTrigger;
     if (mode === 'fit') {
       zoom = {scale: 1, x: 0, y: 0, mode: 'fit', originalLoaded: zoom.originalLoaded};
       return applyZoom();
     }
-    if (mode === 'actual') {
+    if (mode === 'actual' || entry.isVideo) {
       if (!await loadOriginal()) return;
+      if (request !== viewRequest || entry !== previewTrigger || lightbox.hidden) return;
+    }
+    if (mode === 'actual') {
       const fitted = fittedImageSize();
       const scale = fitted.width
-        ? Math.min(8, Math.max(1, lightboxImage.naturalWidth / fitted.width))
+        ? Math.min(8, Math.max(previewTrigger.isVideo ? 0 : 1, mediaDimensions().width / fitted.width))
         : 1;
       zoom = {scale, x: 0, y: 0, mode: 'actual', originalLoaded: zoom.originalLoaded};
       return applyZoom();
@@ -1212,6 +1272,57 @@ if (galleryToggle) {
     if (carouselMode || (!hold && canAutoHideChrome())) {
       chromeTimer = setTimeout(() => lightbox.classList.add('chrome-hidden'), 2500);
     }
+  };
+
+  const updateVideoPlayback = () => {
+    const paused = lightboxVideo.paused || lightboxVideo.ended;
+    videoPlayToggle.hidden = !previewTrigger?.isVideo || !paused;
+    videoPlayToggle.textContent = '▶';
+    videoPlayToggle.setAttribute('aria-label', '播放视频（空格播放／暂停）');
+    scheduleCarousel();
+  };
+  const toggleVideoPlayback = async () => {
+    if (!previewTrigger?.isVideo) return;
+    const entry = previewTrigger;
+    const request = previewRequest;
+    if (!lightboxVideo.paused) lightboxVideo.pause();
+    else {
+      try {
+        const playing = lightboxVideo.play();
+        updateVideoPlayback();
+        await playing;
+        if (previewTrigger === entry && request === previewRequest && !lightbox.hidden) imageLoadError.hidden = true;
+      } catch (error) {
+        if (error.name === 'AbortError' || previewTrigger !== entry || request !== previewRequest || lightbox.hidden) return;
+        imageLoadError.querySelector('strong').textContent = '视频播放失败';
+        imageLoadError.hidden = false;
+      } finally {
+        if (previewTrigger === entry && request === previewRequest && !lightbox.hidden) updateVideoPlayback();
+      }
+    }
+  };
+  videoPlayToggle.addEventListener('click', toggleVideoPlayback);
+  for (const event of ['play', 'pause', 'ended']) lightboxVideo.addEventListener(event, updateVideoPlayback);
+  lightboxVideo.addEventListener('playing', () => {
+    if (!previewTrigger?.isVideo || lightbox.hidden || lightboxVideo.paused || lightboxVideo.readyState < 2) return;
+    lightboxPlaceholder.hidden = true;
+    imageLoading.hidden = true;
+    updateVideoPlayback();
+  });
+  lightboxPlaceholder.addEventListener('load', () => {
+    if (previewTrigger?.isVideo) imageLoading.hidden = true;
+  });
+  lightboxVideo.addEventListener('error', () => {
+    if (!previewTrigger?.isVideo || lightbox.hidden) return;
+    imageLoading.hidden = true;
+    imageLoadError.querySelector('strong').textContent = '浏览器无法播放这个视频';
+    imageLoadError.hidden = false;
+  });
+  const stopVideo = () => {
+    lightboxVideo.pause();
+    lightboxVideo.removeAttribute('src');
+    lightboxVideo.removeAttribute('poster');
+    lightboxVideo.load();
   };
 
   const animateFavouriteFeedback = (liked, origin = null) => {
@@ -1505,13 +1616,15 @@ if (galleryToggle) {
   let batchFilter = 'all';
   const captureBatchFiles = () => batchImages().map(entryName);
   const batchScope = () => selectingImages ? '已选的' : '当前筛选的';
+  const batchUnit = () => batchImages().some(entry => entry.isVideo) ? '个文件' : '张图片';
   const runBatch = async action => {
     if (!action.files.length || moving || liking || marking || deleting) return;
     moving = true;
     updateImageControls();
     const descriptions = {move: '移动', delete: '删除', 'clear-mark': '取消标记'};
     const description = descriptions[action.action];
-    directoryNotice.textContent = `正在${description} ${action.files.length} 张图片…`;
+    const unit = batchUnit();
+    directoryNotice.textContent = `正在${description} ${action.files.length} ${unit}…`;
     directoryNotice.hidden = false;
     try {
       const url = new URL(location.href);
@@ -1521,7 +1634,7 @@ if (galleryToggle) {
       });
       if (!response.ok) throw new Error(await response.text());
       const result = await response.json();
-      let notice = `已${description} ${result.affected} 张图片`;
+      let notice = `已${description} ${result.affected} ${unit}`;
       if (result.directory_removed) notice += '，已删除空目录';
       if (result.errors.length) notice += `；未完成的操作：${result.errors.join('；')}`;
       if (result.directory_removed) {
@@ -1541,7 +1654,9 @@ if (galleryToggle) {
   moveImagesButton.addEventListener('click', () => {
     batchFiles = captureBatchFiles();
     if (!batchFiles.length || moving) return;
-    moveDialog.querySelector('.move-description').textContent = `移动${batchScope()} ${batchFiles.length} 张图片`;
+    moveDialog.querySelector('.move-description').textContent = `移动${batchScope()} ${batchFiles.length} ${batchUnit()}`;
+    moveDialog.querySelector('#move-title').textContent = batchImages().some(entry => entry.isVideo) ? '移动这些文件' : '移动这些图片';
+    moveConfirm.textContent = batchImages().some(entry => entry.isVideo) ? '移动文件' : '移动图片';
     selectedMovePath = null;
     moveTree.textContent = '正在打开目录…';
     moveTarget.textContent = '请选择目标文件夹';
@@ -1569,7 +1684,8 @@ if (galleryToggle) {
     batchFiles = captureBatchFiles();
     if (!batchFiles.length || moving) return;
     batchDeleteError.hidden = true;
-    batchDeleteDialog.querySelector('#batch-delete-description').textContent = `${batchScope()} ${batchFiles.length} 张图片将从磁盘中删除，此操作无法撤销。`;
+    batchDeleteDialog.querySelector('#batch-delete-title').textContent = batchImages().some(entry => entry.isVideo) ? '删除这些文件？' : '删除这些图片？';
+    batchDeleteDialog.querySelector('#batch-delete-description').textContent = `${batchScope()} ${batchFiles.length} ${batchUnit()}将从磁盘中删除，此操作无法撤销。`;
     batchDeleteDialog.showModal();
   });
   batchDeleteCancel.addEventListener('click', () => batchDeleteDialog.close());
@@ -1582,7 +1698,8 @@ if (galleryToggle) {
     if (!batchFiles.length || moving) return;
     batchFilter = selectedImageFilter;
     const marks = batchFilter === 'all' ? '喜欢和数字标记' : batchFilter === 'favourite' ? '喜欢标记' : '数字标记';
-    clearMarksDialog.querySelector('#clear-marks-description').textContent = `将取消${batchScope()} ${batchFiles.length} 张图片的${marks}，图片文件会保留。`;
+    clearMarksDialog.querySelector('#clear-marks-title').textContent = batchImages().some(entry => entry.isVideo) ? '取消这些文件的标记？' : '取消这些图片的标记？';
+    clearMarksDialog.querySelector('#clear-marks-description').textContent = `将取消${batchScope()} ${batchFiles.length} ${batchUnit()}的${marks}，文件会保留。`;
     clearMarksDialog.showModal();
   });
   clearMarksDialog.querySelector('#clear-marks-cancel').addEventListener('click', () => clearMarksDialog.close());
@@ -1648,7 +1765,16 @@ if (galleryToggle) {
       thumbnailCleanups.set(image, cleanup);
       image.addEventListener('load', complete);
       image.addEventListener('error', complete);
-      image.src = source;
+      const entry = directoryViewModel.fromNode(image.closest('.entry'));
+      if (entry?.isVideo) {
+        loadVideoThumbnail(entry).then(url => {
+          if (image.isConnected) image.src = url;
+        }).catch(() => {
+          image.hidden = true;
+          image.closest('.glyph').classList.add('thumbnail-error');
+          complete({type: 'error'});
+        });
+      } else image.src = source;
     }
   }
 
@@ -1678,14 +1804,15 @@ if (galleryToggle) {
   const scheduleCarousel = () => {
     clearCarouselTimer();
     if (!lightbox.classList.contains('carousel-mode') || carouselPaused || lightbox.hidden || document.hidden || deleteDialog.open) return;
-    const entries = visibleImages();
+    if (previewTrigger?.isVideo && !lightboxVideo.paused && !lightboxVideo.ended) return;
+    const entries = visibleMedia();
     let nextEntry = carouselHistory.slice(carouselHistoryIndex + 1).find(entry => entries.includes(entry) && entry !== previewTrigger);
     if (!nextEntry) {
       carouselQueue = carouselQueue.filter(entry => entries.includes(entry) && entry !== previewTrigger);
       if (!carouselQueue.length) carouselQueue = shuffle(entries.filter(entry => entry !== previewTrigger));
       nextEntry = carouselQueue[0];
     }
-    if (nextEntry) {
+    if (nextEntry?.isImage) {
       const next = new Image();
       next.src = nextEntry.previewSrc;
       adjacentPreloads.push(next);
@@ -1703,7 +1830,7 @@ if (galleryToggle) {
 
   const stepCarousel = (direction) => {
     if (deleting || deleteDialog.open) return false;
-    const entries = visibleImages();
+    const entries = visibleMedia();
     let nextHistoryIndex = carouselHistoryIndex + direction;
     while (nextHistoryIndex >= 0 && nextHistoryIndex < carouselHistory.length
       && (!entries.includes(carouselHistory[nextHistoryIndex]) || carouselHistory[nextHistoryIndex] === previewTrigger)) {
@@ -1734,12 +1861,15 @@ if (galleryToggle) {
     if (!previewTrigger || deleting || deleteDialog.open) return;
     clearCarouselTimer();
     deleteName.textContent = previewTrigger.name;
+    deleteDialog.querySelector('#delete-title').textContent = previewTrigger.isVideo ? '删除这个视频？' : '删除这张图片？';
+    deleteDialog.querySelector('#delete-description').textContent = `${previewTrigger.isVideo ? '视频' : '图片'}将从磁盘中删除，此操作无法撤销。`;
+    deleteConfirm.textContent = previewTrigger.isVideo ? '删除视频' : '删除图片';
     deleteError.hidden = true;
     deleteDialog.showModal();
   };
 
   const stepPreview = (direction, gestureOffset = null) => {
-    const entries = visibleImages();
+    const entries = visibleMedia();
     const nextEntry = entries[entries.indexOf(previewTrigger) + direction];
     if (!nextEntry) return false;
     switchPreview(nextEntry, direction, null, gestureOffset);
@@ -1837,6 +1967,7 @@ if (galleryToggle) {
 
   const closeLightbox = () => {
     if (lightbox.hidden || deleting) return;
+    stopVideo();
     if (history.state?.galleryPreview) {
       history.back();
       return;
@@ -2029,15 +2160,22 @@ if (galleryToggle) {
   };
 
   imageLoadError.querySelector('button').addEventListener('click', () => {
-    if (previewTrigger) loadPreviewImage(previewTrigger);
+    if (previewTrigger?.isVideo) {
+      imageLoadError.hidden = true;
+      lightboxPlaceholder.hidden = false;
+      lightboxVideo.load();
+      toggleVideoPlayback();
+    } else if (previewTrigger) loadPreviewImage(previewTrigger);
   });
 
   const showPreview = (entry, direction = 0, effect = null, gestureOffset = null) => {
     lastImageTap = null;
+    const previousWasVideo = !!previewTrigger?.isVideo;
+    stopVideo();
     let outgoing = null;
     let outgoingBackdrop = null;
     let gestureIncoming = null;
-    if (!lightbox.hidden && direction) {
+    if (!lightbox.hidden && direction && !previousWasVideo && !entry.isVideo) {
       if (gestureOffset !== null) {
         gestureIncoming = lightboxStage.querySelector(`.gesture-neighbour[data-direction="${direction}"]`);
       }
@@ -2059,6 +2197,19 @@ if (galleryToggle) {
       history.pushState({...state, galleryPreview: true}, '');
     }
     previewTrigger = entry;
+    lightbox.classList.toggle('video-preview', entry.isVideo);
+    lightboxVideo.hidden = !entry.isVideo;
+    lightboxImage.hidden = entry.isVideo;
+    lightboxPlaceholder.hidden = false;
+    favouriteToggle.hidden = commentToggle.hidden = moreToggle.hidden = false;
+    lightbox.setAttribute('aria-label', entry.isVideo ? '视频预览' : '图片预览');
+    lightboxClose.setAttribute('aria-label', entry.isVideo ? '关闭视频预览' : '关闭图片预览');
+    commentToggle.title = entry.isVideo ? '视频评论 (c)' : '图片评论 (c)';
+    commentToggle.setAttribute('aria-label', commentToggle.title);
+    viewerTools.querySelector('[data-info]').setAttribute('aria-label', entry.isVideo ? '视频信息' : '图片信息');
+    shortcutHelp.querySelectorAll('span')[2].textContent = entry.isVideo ? 'P 轮播 · 空格播放 / 暂停' : 'P 轮播 · 空格暂停';
+    imageLoadError.querySelector('strong').textContent = entry.isVideo ? '视频播放失败' : '图片加载失败';
+    imageLoading.querySelector('span').textContent = entry.isVideo ? '正在载入视频封面…' : '正在载入清晰图片…';
     lightbox.dataset.filePath = entry.filePath;
     const name = entry.name;
     const thumbnailSource = currentThumbnailSource(entry);
@@ -2071,7 +2222,24 @@ if (galleryToggle) {
     imageDownload.download = name;
     zoom = {scale: 1, x: 0, y: 0, mode: 'fit', originalLoaded: false};
     applyZoom();
-    loadPreviewImage(entry);
+    if (entry.isVideo) {
+      const request = ++previewRequest;
+      clearTimeout(loadingTimer);
+      imageLoadError.hidden = true;
+      imageLoading.hidden = lightboxPlaceholder.complete && lightboxPlaceholder.naturalWidth > 0;
+      lightboxVideo.poster = thumbnailSource;
+      lightboxVideo.src = entry.originalSrc;
+      loadVideoThumbnail(entry).then(() => {
+        if (previewTrigger !== entry || request !== previewRequest || lightbox.hidden) return;
+        if (!lightboxPlaceholder.hidden) {
+          lightboxPlaceholder.src = entry.previewSrc;
+          lightboxVideo.poster = entry.previewSrc;
+        }
+      }).catch(() => {
+        if (previewTrigger === entry && request === previewRequest) imageLoading.hidden = true;
+      });
+    } else loadPreviewImage(entry);
+    updateVideoPlayback();
     favouriteError.hidden = true;
     imageTagError.hidden = true;
     updateFavouriteButton();
@@ -2115,7 +2283,7 @@ if (galleryToggle) {
     try {
       const response = await fetch(entry.listHref, {method: 'DELETE'});
       if (!response.ok) throw new Error('删除失败，请检查文件是否存在且可写后重试。');
-      const entries = visibleImages();
+      const entries = visibleMedia();
       const index = entries.indexOf(entry);
       const nextEntry = entries[index + 1] || entries[index - 1];
       if (deleteDialog.open) deleteDialog.close();
@@ -2151,17 +2319,17 @@ if (galleryToggle) {
   deleteDialog.addEventListener('close', scheduleCarousel);
 
   listing.addEventListener('click', event => {
-    const entry = directoryViewModel.fromNode(event.target.closest('.entry.image[data-preview-src]'));
+    const entry = directoryViewModel.fromNode(event.target.closest('.entry[data-preview-src]'));
     if (!listing.classList.contains('gallery') || !entry) return;
     event.preventDefault();
-    if (selectingImages) {
+    if (selectingImages && (entry.isImage || entry.isVideo)) {
       toggleImageSelection(entry);
       return;
     }
     openLightbox(entry);
   });
   listing.addEventListener('keydown', event => {
-    const entry = directoryViewModel.fromNode(event.target.closest('.entry.image[data-preview-src]'));
+    const entry = directoryViewModel.fromNode(event.target.closest('.entry[data-preview-src]'));
     if (!selectingImages || !entry || event.key !== ' ' || event.target.getAttribute('role') !== 'checkbox') return;
     event.preventDefault();
     toggleImageSelection(entry);
@@ -2199,9 +2367,11 @@ if (galleryToggle) {
     lightboxImage.style.removeProperty('--gesture-y');
     lightboxPlaceholder.style.removeProperty('--gesture-x');
     lightboxPlaceholder.style.removeProperty('--gesture-y');
+    lightboxVideo.style.removeProperty('--gesture-x');
+    lightboxVideo.style.removeProperty('--gesture-y');
   };
   const gestureNeighbour = direction => {
-    const entries = visibleImages();
+    const entries = visibleMedia();
     const entry = entries[entries.indexOf(previewTrigger) + direction];
     if (!entry) return null;
     let image = lightboxStage.querySelector(`.gesture-neighbour[data-direction="${direction}"]`);
@@ -2218,6 +2388,7 @@ if (galleryToggle) {
   };
   lightbox.addEventListener('pointerdown', event => {
     if (deleting || deleteDialog.open || event.target.closest('button, dialog, a, input, textarea, .gallery-comments') || (event.pointerType === 'mouse' && event.button !== 0)) return;
+    if (event.target === lightboxVideo && event.clientY >= lightboxVideo.getBoundingClientRect().bottom - 48) return;
     activePointers.set(event.pointerId, {x: event.clientX, y: event.clientY});
     lightbox.setPointerCapture?.(event.pointerId);
     if (activePointers.size === 2) {
@@ -2225,7 +2396,7 @@ if (galleryToggle) {
       pointerGesture = {pinch: true, distance: Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y), scale: zoom.scale};
       return;
     }
-    pointerGesture = {id: event.pointerId, x: event.clientX, y: event.clientY, lastX: event.clientX, lastY: event.clientY, time: performance.now(), velocity: 0, moved: false, imageTap: event.target === lightboxImage || event.target === lightboxPlaceholder};
+    pointerGesture = {id: event.pointerId, x: event.clientX, y: event.clientY, lastX: event.clientX, lastY: event.clientY, time: performance.now(), velocity: 0, moved: false, imageTap: event.target === lightboxImage || event.target === lightboxPlaceholder || event.target === lightboxVideo};
   });
   lightbox.addEventListener('pointermove', event => {
     if (!activePointers.has(event.pointerId) || !pointerGesture) return;
@@ -2264,6 +2435,8 @@ if (galleryToggle) {
       lightboxImage.style.setProperty('--gesture-y', `${y}px`);
       lightboxPlaceholder.style.setProperty('--gesture-x', `${x}px`);
       lightboxPlaceholder.style.setProperty('--gesture-y', `${y}px`);
+      lightboxVideo.style.setProperty('--gesture-x', `${x}px`);
+      lightboxVideo.style.setProperty('--gesture-y', `${y}px`);
       if (neighbour) {
         const origin = direction * axisSize + resisted;
         neighbour.style.transform = mobileTouch.matches ? `translate3d(0,${origin}px,0)` : `translate3d(${origin}px,0,0)`;
@@ -2426,6 +2599,12 @@ if (galleryToggle) {
       toggleImageTag(event.key);
       return;
     }
+    if (event.key === ' ' && previewTrigger?.isVideo) {
+      if (event.target.closest('input, textarea, select') || event.target.isContentEditable) return;
+      event.preventDefault();
+      if (!event.repeat) toggleVideoPlayback();
+      return;
+    }
     if (event.key === ' ' && lightbox.classList.contains('carousel-mode')) {
       event.preventDefault();
       carouselPaused = !carouselPaused;
@@ -2478,7 +2657,7 @@ if (galleryToggle) {
   setGallery(galleryAvailable && directoryView === 'gallery', false);
   const requestedImage = new URLSearchParams(location.search).get('open');
   if (requestedImage) {
-    const entry = imageModel().find(item => entryName(item) === requestedImage);
+    const entry = mediaModel().find(item => entryName(item) === requestedImage);
     if (entry) {
       setGallery(true, false);
       openLightbox(entry);
@@ -2492,7 +2671,7 @@ if (galleryToggle) {
     if (!mobileTouch.matches) return;
     setImageSelection(Boolean(history.state?.gallerySelection), false);
     if (history.state?.galleryPreview) {
-      const entry = visibleImages()
+      const entry = visibleMedia()
         .find(entry => entry.listHref === history.state.previewImage);
       if (entry) openLightbox(entry);
     } else {
@@ -2503,7 +2682,7 @@ if (galleryToggle) {
     setImageSelection(true, false);
   }
   if (listing.classList.contains('gallery') && history.state?.previewImage) {
-    const entry = visibleImages()
+    const entry = visibleMedia()
       .find(entry => entry.listHref === history.state.previewImage);
     if (entry) openLightbox(entry);
   }

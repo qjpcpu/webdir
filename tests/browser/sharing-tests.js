@@ -66,6 +66,32 @@ async function getShareUrl(page) {
 }
 
 module.exports = () => {
+  test('video grid separates the play label from sharing, tags and selection controls', async ({page}) => {
+    fs.copyFileSync(path.join(__dirname, 'media', 'bear.mp4'), path.join(directory, 'docs/project/clip.mp4'));
+    await login(page);
+    await page.request.put(`${origin}/docs/project/clip.mp4?mode=image-tag`, {data:{tag:3}});
+    await page.goto(`${origin}/docs/project/?view=gallery`);
+    const card = page.locator('.entry.video');
+    const badge = card.locator('.video-badge');
+    const share = card.getByRole('button', {name:'复制分享链接'});
+    await expect(badge).toBeVisible();
+    await expect(share).toBeVisible();
+    const separate = async (first, second) => {
+      const a = await first.boundingBox(), b = await second.boundingBox();
+      expect(a.x + a.width <= b.x || b.x + b.width <= a.x || a.y + a.height <= b.y || b.y + b.height <= a.y).toBe(true);
+    };
+    await separate(badge, share);
+    await separate(badge, card.locator('.image-tag'));
+    await share.click();
+    await expect(page.locator('#share-url')).toHaveValue(/clip\.mp4\?share=/);
+    await page.locator('[data-share-close]').click();
+    await page.locator('#select-images').click();
+    await expect(card.locator('.image-selection-indicator')).toBeVisible();
+    await separate(badge, share);
+    await separate(badge, card.locator('.image-selection-indicator'));
+    await separate(share, card.locator('.image-selection-indicator'));
+  });
+
   test('directory sharing opens file links, nested navigation, and image previews', async ({page, browser}) => {
     await login(page);
     await page.goto(`${origin}/docs/project/?view=gallery`);

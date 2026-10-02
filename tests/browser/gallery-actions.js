@@ -553,7 +553,7 @@ module.exports = () => test.describe('gallery image actions', () => {
     expect(await page.evaluate(() => window.copiedTexts.length)).toBe(2);
     await page.locator('#file-search-input').blur();
     await page.keyboard.type('yy');
-    await expect(page.locator('#file-path-toast')).toHaveText('没有可复制的图片');
+    await expect(page.locator('#file-path-toast')).toHaveText('没有可复制的文件');
     expect(await page.evaluate(() => window.copiedTexts.length)).toBe(2);
     await page.locator('#file-search-input').fill('01');
     await entry(page, names[0]).click();
