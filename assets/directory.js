@@ -637,7 +637,7 @@ if (galleryToggle) {
   const shortcutHelp = document.createElement('aside');
   shortcutHelp.className = 'shortcut-help';
   shortcutHelp.hidden = true;
-  shortcutHelp.innerHTML = '<span>← / J 上一张 · → / K 下一张</span><span>F 点赞 · C 评论 · 粘贴文本追加评论 · 1–5 数字标记 · Ctrl K 直接删除</span><span>P 轮播 · Shift P 自适应轮播 · 空格暂停</span><span>Esc 退出</span>';
+  shortcutHelp.innerHTML = '<span>← / J 上一张 · → / K 下一张</span><span>F 点赞 · C 评论 · 粘贴文本追加评论 · 1–5 数字标记 · Ctrl K 直接删除</span><span>pp 全屏轮播 · p 自适应轮播 · 空格暂停</span><span>Esc 退出</span>';
   const figure = lightbox.querySelector('figure');
   figure.append(imageInfo, shortcutHelp);
   previewPrevious.innerHTML = svgIcon(strokePath('m15 6-6 6 6 6'));
@@ -687,6 +687,12 @@ if (galleryToggle) {
   let lastImageTap = null;
   let adjacentPreloads = [];
   let carouselTimer = null;
+  let carouselShortcutTimer = null;
+  const resetCarouselShortcut = () => {
+    clearTimeout(carouselShortcutTimer);
+    carouselShortcutTimer = null;
+  };
+  window.addEventListener('blur', resetCarouselShortcut);
   let previewRequest = 0;
   let viewRequest = 0;
   let loadingTimer = null;
@@ -1912,11 +1918,12 @@ if (galleryToggle) {
   };
 
   const setCarousel = async (enabled, fullscreen = true) => {
+    resetCarouselShortcut();
     if (enabled && (lightbox.hidden || carouselToggle.disabled)) return;
     if (enabled && !commentsDrawer.hidden) closeGalleryComments();
     lightbox.classList.toggle('carousel-mode', enabled);
     carouselToggle.setAttribute('aria-pressed', String(enabled));
-    carouselToggle.title = enabled ? '退出轮播 (p)' : '进入轮播 (p)';
+    carouselToggle.title = enabled ? '退出轮播 (p / pp)' : '进入全屏轮播 (pp)';
     carouselToggle.setAttribute('aria-label', carouselToggle.title);
     if (enabled) {
       carouselPaused = false;
@@ -1956,7 +1963,7 @@ if (galleryToggle) {
     if (!fullscreenElement() && lightbox.classList.contains('carousel-mode')) {
       lightbox.classList.remove('carousel-mode');
       carouselToggle.setAttribute('aria-pressed', 'false');
-      carouselToggle.title = '进入轮播 (p)';
+      carouselToggle.title = '进入全屏轮播 (pp)';
       carouselToggle.setAttribute('aria-label', carouselToggle.title);
       carouselPaused = false;
       clearCarouselTimer();
@@ -2207,7 +2214,7 @@ if (galleryToggle) {
     commentToggle.title = entry.isVideo ? '视频评论 (c)' : '图片评论 (c)';
     commentToggle.setAttribute('aria-label', commentToggle.title);
     viewerTools.querySelector('[data-info]').setAttribute('aria-label', entry.isVideo ? '视频信息' : '图片信息');
-    shortcutHelp.querySelectorAll('span')[2].textContent = `P 轮播 · Shift P 自适应轮播 · ${entry.isVideo ? '空格播放 / 暂停' : '空格暂停'}`;
+    shortcutHelp.querySelectorAll('span')[2].textContent = `pp 全屏轮播 · p 自适应轮播 · ${entry.isVideo ? '空格播放 / 暂停' : '空格暂停'}`;
     imageLoadError.querySelector('strong').textContent = entry.isVideo ? '视频播放失败' : '图片加载失败';
     imageLoading.querySelector('span').textContent = entry.isVideo ? '正在载入视频封面…' : '正在载入清晰图片…';
     lightbox.dataset.filePath = entry.filePath;
@@ -2535,6 +2542,8 @@ if (galleryToggle) {
     }
   });
   document.addEventListener('keydown', event => {
+    const pendingCarouselShortcut = carouselShortcutTimer !== null;
+    resetCarouselShortcut();
     if (deleting || deleteDialog.open) return;
     const commentEditorActive = !commentsDrawer.hidden
       && (event.target === galleryCommentAuthor || event.target === galleryCommentBody);
@@ -2613,10 +2622,13 @@ if (galleryToggle) {
       showChrome();
       return;
     }
-    if (event.key.toLowerCase() === 'p') {
+    if (event.key === 'p' && !event.shiftKey) {
       if (event.repeat || event.target.closest('input, textarea, select') || event.target.isContentEditable) return;
       event.preventDefault();
-      setCarousel(!lightbox.classList.contains('carousel-mode'), !event.shiftKey);
+      if (pendingCarouselShortcut) setCarousel(!lightbox.classList.contains('carousel-mode'), true);
+      else carouselShortcutTimer = setTimeout(() => {
+        setCarousel(!lightbox.classList.contains('carousel-mode'), false);
+      }, 500);
       return;
     }
     if (event.key === 'f') {

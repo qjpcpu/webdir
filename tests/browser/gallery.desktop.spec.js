@@ -456,7 +456,7 @@ test('comments keep the editor reachable in a compact browser window', async ({p
   await expect(composer.locator('.comment-submit')).toBeInViewport();
 });
 
-test('slideshow fills the viewport and favourite particles are not stage-clipped', async ({page}) => {
+test('pp slideshow fills the viewport and favourite particles are not stage-clipped', async ({page}) => {
   await openGalleryImage(page);
   await page.locator('.lightbox-image').click({position: {x: 300, y: 300}});
   await page.evaluate(() => {
@@ -479,7 +479,7 @@ test('slideshow fills the viewport and favourite particles are not stage-clipped
       configurable: true
     });
   });
-  await page.locator('#carousel-toggle').click();
+  await page.keyboard.type('pp');
   await expect(page.locator('#image-lightbox')).toHaveClass(/carousel-mode/);
   await expect.poll(() => page.evaluate(() => window.__webkitFullscreenCalls)).toBe(1);
   await expect(page.locator('.lightbox-close')).toBeHidden();
@@ -538,9 +538,11 @@ test('slideshow fills the viewport and favourite particles are not stage-clipped
 require('./gallery-actions')();
 
 
-test('Shift+P starts a slideshow that fits the browser window and follows resizing', async ({page}) => {
+test('p starts a slideshow that fits the browser window and follows resizing', async ({page}) => {
   await openGalleryImage(page);
-  await page.keyboard.press('Shift+p');
+  await page.clock.install();
+  await page.keyboard.press('p');
+  await page.clock.fastForward(500);
   const lightbox = page.locator('#image-lightbox');
   await expect(lightbox).toHaveClass(/carousel-mode/);
   expect(await page.evaluate(() => Boolean(document.fullscreenElement || document.webkitFullscreenElement))).toBe(false);
@@ -570,17 +572,20 @@ test('Shift+P starts a slideshow that fits the browser window and follows resizi
   await page.keyboard.press('Escape');
   await expect(lightbox).not.toHaveClass(/carousel-mode/);
   await expect(lightbox).toBeVisible();
-  await page.keyboard.press('Shift+p');
+  await page.keyboard.press('p');
+  await page.clock.fastForward(500);
   await expect(lightbox).toHaveClass(/carousel-mode/);
-  await page.keyboard.press('Shift+p');
+  await page.keyboard.press('p');
+  await page.clock.fastForward(500);
   await expect(lightbox).not.toHaveClass(/carousel-mode/);
-  await page.keyboard.press('Shift+p');
+  await page.keyboard.press('p');
+  await page.clock.fastForward(500);
   await expect(lightbox).toHaveClass(/carousel-mode/);
   await page.locator('[data-carousel-exit]').click();
   await expect(lightbox).not.toHaveClass(/carousel-mode/);
 });
 
-for (const shortcut of ['p', 'Shift+p']) {
+for (const shortcut of ['pp', 'p']) {
   test(`${shortcut} slideshow shortcuts follow playback history and the shuffled queue`, async ({page}) => {
     await openGalleryImage(page);
     await page.evaluate(() => {
@@ -588,7 +593,8 @@ for (const shortcut of ['p', 'Shift+p']) {
       document.querySelector('#image-lightbox').requestFullscreen = async () => {};
     });
     await page.clock.install();
-    await page.keyboard.press(shortcut);
+    await page.keyboard.type(shortcut);
+    if (shortcut === 'p') await page.clock.fastForward(500);
     await expect(page.locator('#image-lightbox')).toHaveClass(/carousel-mode/);
     const caption = page.locator('.lightbox-name');
     await page.clock.fastForward(5000);
@@ -613,10 +619,12 @@ for (const shortcut of ['p', 'Shift+p']) {
     await page.keyboard.press('Space');
     await page.clock.fastForward(5000);
     await expect(caption).toHaveText('02-landscape.svg');
-    await page.keyboard.press(shortcut);
+    await page.keyboard.type(shortcut);
+    if (shortcut === 'p') await page.clock.fastForward(500);
     await page.keyboard.press('j');
     await expect(caption).toHaveText('01-portrait.svg');
-    await page.keyboard.press(shortcut);
+    await page.keyboard.type(shortcut);
+    if (shortcut === 'p') await page.clock.fastForward(500);
     await page.keyboard.press('j');
     await expect(caption).toHaveText('01-portrait.svg');
     await page.keyboard.press('k');
