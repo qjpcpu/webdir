@@ -538,44 +538,88 @@ test('slideshow fills the viewport and favourite particles are not stage-clipped
 require('./gallery-actions')();
 
 
-test('slideshow shortcuts follow playback history and the shuffled queue', async ({page}) => {
+test('Shift+P starts a slideshow that fits the browser window and follows resizing', async ({page}) => {
   await openGalleryImage(page);
-  await page.evaluate(() => {
-    Math.random = () => 0;
-    document.querySelector('#image-lightbox').requestFullscreen = async () => {};
-  });
-  await page.clock.install();
-  await page.keyboard.press('p');
-  await expect(page.locator('#image-lightbox')).toHaveClass(/carousel-mode/);
-  const caption = page.locator('.lightbox-name');
-  await page.clock.fastForward(5000);
-  await expect(caption).toHaveText('03-square.svg');
-  await page.keyboard.press('ArrowLeft');
-  await expect(caption).toHaveText('01-portrait.svg');
-  await page.keyboard.press('ArrowRight');
-  await expect(caption).toHaveText('03-square.svg');
-  await page.keyboard.press('k');
-  await expect(caption).toHaveText('02-landscape.svg');
-  await page.keyboard.press('Space');
-  await page.keyboard.press('j');
-  await expect(caption).toHaveText('03-square.svg');
-  await page.keyboard.press('ArrowUp');
-  await expect(caption).toHaveText('01-portrait.svg');
-  await page.keyboard.press('ArrowLeft');
-  await expect(caption).toHaveText('01-portrait.svg');
-  await page.keyboard.press('ArrowDown');
-  await expect(caption).toHaveText('03-square.svg');
-  await page.clock.fastForward(10000);
-  await expect(caption).toHaveText('03-square.svg');
-  await page.keyboard.press('Space');
-  await page.clock.fastForward(5000);
-  await expect(caption).toHaveText('02-landscape.svg');
-  await page.keyboard.press('p');
-  await page.keyboard.press('j');
-  await expect(caption).toHaveText('01-portrait.svg');
-  await page.keyboard.press('p');
-  await page.keyboard.press('j');
-  await expect(caption).toHaveText('01-portrait.svg');
-  await page.keyboard.press('k');
-  await expect(caption).toHaveText('03-square.svg');
+  await page.keyboard.press('Shift+p');
+  const lightbox = page.locator('#image-lightbox');
+  await expect(lightbox).toHaveClass(/carousel-mode/);
+  expect(await page.evaluate(() => Boolean(document.fullscreenElement || document.webkitFullscreenElement))).toBe(false);
+  await expect(page.locator('.lightbox-filmstrip')).toBeHidden();
+  await expect(page.locator('.carousel-backdrop')).toBeVisible();
+  await expect(page.locator('.carousel-hud')).toBeVisible();
+
+  for (const viewport of [{width: 1000, height: 600}, {width: 600, height: 800}]) {
+    await page.setViewportSize(viewport);
+    await expect.poll(() => lightbox.evaluate(element => {
+      const box = element.getBoundingClientRect();
+      const image = element.querySelector('.lightbox-image');
+      const imageBox = image.getBoundingClientRect();
+      return {
+        width: box.width, height: box.height,
+        imageWidth: imageBox.width, imageHeight: imageBox.height,
+        objectFit: getComputedStyle(image).objectFit
+      };
+    })).toEqual({
+      width: viewport.width, height: viewport.height,
+      imageWidth: viewport.width, imageHeight: viewport.height,
+      objectFit: 'contain'
+    });
+    await expect(lightbox).toHaveClass(/carousel-mode/);
+  }
+
+  await page.keyboard.press('Escape');
+  await expect(lightbox).not.toHaveClass(/carousel-mode/);
+  await expect(lightbox).toBeVisible();
+  await page.keyboard.press('Shift+p');
+  await expect(lightbox).toHaveClass(/carousel-mode/);
+  await page.keyboard.press('Shift+p');
+  await expect(lightbox).not.toHaveClass(/carousel-mode/);
+  await page.keyboard.press('Shift+p');
+  await expect(lightbox).toHaveClass(/carousel-mode/);
+  await page.locator('[data-carousel-exit]').click();
+  await expect(lightbox).not.toHaveClass(/carousel-mode/);
 });
+
+for (const shortcut of ['p', 'Shift+p']) {
+  test(`${shortcut} slideshow shortcuts follow playback history and the shuffled queue`, async ({page}) => {
+    await openGalleryImage(page);
+    await page.evaluate(() => {
+      Math.random = () => 0;
+      document.querySelector('#image-lightbox').requestFullscreen = async () => {};
+    });
+    await page.clock.install();
+    await page.keyboard.press(shortcut);
+    await expect(page.locator('#image-lightbox')).toHaveClass(/carousel-mode/);
+    const caption = page.locator('.lightbox-name');
+    await page.clock.fastForward(5000);
+    await expect(caption).toHaveText('03-square.svg');
+    await page.keyboard.press('ArrowLeft');
+    await expect(caption).toHaveText('01-portrait.svg');
+    await page.keyboard.press('ArrowRight');
+    await expect(caption).toHaveText('03-square.svg');
+    await page.keyboard.press('k');
+    await expect(caption).toHaveText('02-landscape.svg');
+    await page.keyboard.press('Space');
+    await page.keyboard.press('j');
+    await expect(caption).toHaveText('03-square.svg');
+    await page.keyboard.press('ArrowUp');
+    await expect(caption).toHaveText('01-portrait.svg');
+    await page.keyboard.press('ArrowLeft');
+    await expect(caption).toHaveText('01-portrait.svg');
+    await page.keyboard.press('ArrowDown');
+    await expect(caption).toHaveText('03-square.svg');
+    await page.clock.fastForward(10000);
+    await expect(caption).toHaveText('03-square.svg');
+    await page.keyboard.press('Space');
+    await page.clock.fastForward(5000);
+    await expect(caption).toHaveText('02-landscape.svg');
+    await page.keyboard.press(shortcut);
+    await page.keyboard.press('j');
+    await expect(caption).toHaveText('01-portrait.svg');
+    await page.keyboard.press(shortcut);
+    await page.keyboard.press('j');
+    await expect(caption).toHaveText('01-portrait.svg');
+    await page.keyboard.press('k');
+    await expect(caption).toHaveText('03-square.svg');
+  });
+}

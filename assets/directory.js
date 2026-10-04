@@ -637,7 +637,7 @@ if (galleryToggle) {
   const shortcutHelp = document.createElement('aside');
   shortcutHelp.className = 'shortcut-help';
   shortcutHelp.hidden = true;
-  shortcutHelp.innerHTML = '<span>← / J 上一张 · → / K 下一张</span><span>F 点赞 · C 评论 · 粘贴文本追加评论 · 1–5 数字标记 · Ctrl K 直接删除</span><span>P 轮播 · 空格暂停</span><span>Esc 退出</span>';
+  shortcutHelp.innerHTML = '<span>← / J 上一张 · → / K 下一张</span><span>F 点赞 · C 评论 · 粘贴文本追加评论 · 1–5 数字标记 · Ctrl K 直接删除</span><span>P 轮播 · Shift P 自适应轮播 · 空格暂停</span><span>Esc 退出</span>';
   const figure = lightbox.querySelector('figure');
   figure.append(imageInfo, shortcutHelp);
   previewPrevious.innerHTML = svgIcon(strokePath('m15 6-6 6 6 6'));
@@ -1911,7 +1911,7 @@ if (galleryToggle) {
     }
   };
 
-  const setCarousel = async enabled => {
+  const setCarousel = async (enabled, fullscreen = true) => {
     if (enabled && (lightbox.hidden || carouselToggle.disabled)) return;
     if (enabled && !commentsDrawer.hidden) closeGalleryComments();
     lightbox.classList.toggle('carousel-mode', enabled);
@@ -1925,7 +1925,7 @@ if (galleryToggle) {
       carouselHistoryIndex = 0;
       document.activeElement?.blur();
       try {
-        if (!fullscreenElement()) await enterFullscreen(lightbox);
+        if (fullscreen && !fullscreenElement()) await enterFullscreen(lightbox);
       } catch (_) {
         const notice = carouselHud.querySelector('.carousel-notice');
         notice.textContent = '已使用网页全屏';
@@ -2207,7 +2207,7 @@ if (galleryToggle) {
     commentToggle.title = entry.isVideo ? '视频评论 (c)' : '图片评论 (c)';
     commentToggle.setAttribute('aria-label', commentToggle.title);
     viewerTools.querySelector('[data-info]').setAttribute('aria-label', entry.isVideo ? '视频信息' : '图片信息');
-    shortcutHelp.querySelectorAll('span')[2].textContent = entry.isVideo ? 'P 轮播 · 空格播放 / 暂停' : 'P 轮播 · 空格暂停';
+    shortcutHelp.querySelectorAll('span')[2].textContent = `P 轮播 · Shift P 自适应轮播 · ${entry.isVideo ? '空格播放 / 暂停' : '空格暂停'}`;
     imageLoadError.querySelector('strong').textContent = entry.isVideo ? '视频播放失败' : '图片加载失败';
     imageLoading.querySelector('span').textContent = entry.isVideo ? '正在载入视频封面…' : '正在载入清晰图片…';
     lightbox.dataset.filePath = entry.filePath;
@@ -2613,10 +2613,10 @@ if (galleryToggle) {
       showChrome();
       return;
     }
-    if (event.key === 'p') {
+    if (event.key.toLowerCase() === 'p') {
       if (event.repeat || event.target.closest('input, textarea, select') || event.target.isContentEditable) return;
       event.preventDefault();
-      setCarousel(!lightbox.classList.contains('carousel-mode'));
+      setCarousel(!lightbox.classList.contains('carousel-mode'), !event.shiftKey);
       return;
     }
     if (event.key === 'f') {
