@@ -36,6 +36,24 @@ module.exports = () => test.describe('gallery image actions', () => {
   });
   test.afterEach(() => fs.rmSync(directory, {recursive: true, force: true}));
 
+  test('remembers gallery mode after a folder is emptied and new files are added', async ({page}) => {
+    await page.goto(url);
+    await page.locator('#gallery-toggle').click();
+    await expect(page.locator('.listing')).toHaveClass(/gallery/);
+    await page.goto('/');
+    for (const name of [...names, 'notes.txt']) fs.unlinkSync(path.join(directory, name));
+
+    await page.goto(url);
+    await expect(page.locator('#directory-empty')).toBeVisible();
+    await page.goto('/');
+    fs.copyFileSync(path.join(__dirname, 'fixtures', '01-portrait.svg'), path.join(directory, names[0]));
+
+    await page.goto(url);
+    await expect(entry(page, names[0])).toBeVisible();
+    await expect(page.locator('.listing')).toHaveClass(/gallery/);
+    await expect(page.locator('#gallery-toggle')).toHaveAttribute('aria-pressed', 'true');
+  });
+
   test('multi-select toggles photos, selects visible results, and returns to preview mode', async ({page}) => {
     await tag(page, names[0], 3);
     await tag(page, names[1], 3);

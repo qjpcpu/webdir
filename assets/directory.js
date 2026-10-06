@@ -364,7 +364,10 @@ if (history.state?.moveNotice) {
 }
 
 const listing = document.querySelector('.listing');
-const galleryAvailable = directoryEntries.some(entry => entry.isImage || entry.isVideo) || new URLSearchParams(location.search).get('view') === 'gallery';
+const DIRECTORY_VIEW_KEY = `webdir-directory-view:${location.pathname}`;
+const directoryView = new URLSearchParams(location.search).get('view')
+  ?? localStorage.getItem(DIRECTORY_VIEW_KEY);
+const galleryAvailable = directoryEntries.some(entry => entry.isImage || entry.isVideo) || directoryView === 'gallery';
 const directoryViewModel = new DirectoryView(directoryEntries);
 window.webdirDirectory = directoryViewModel;
 const directorySort = document.querySelector('#directory-sort');
@@ -523,7 +526,6 @@ const galleryToggle = document.querySelector('#gallery-toggle');
 galleryToggle.hidden = !galleryAvailable;
 document.querySelector('#gallery-organise').hidden = !galleryAvailable;
 if (galleryToggle) {
-  const DIRECTORY_VIEW_KEY = `webdir-directory-view:${location.pathname}`;
   const organise = document.querySelector('#gallery-organise');
   const moveImagesButton = organise.querySelector('#move-images');
   const selectImagesButton = organise.querySelector('#select-images');
@@ -2664,8 +2666,6 @@ if (galleryToggle) {
     setGallery(enabled);
   });
 
-  const directoryView = new URLSearchParams(location.search).get('view')
-    ?? localStorage.getItem(DIRECTORY_VIEW_KEY);
   setGallery(galleryAvailable && directoryView === 'gallery', false);
   const requestedImage = new URLSearchParams(location.search).get('open');
   if (requestedImage) {
