@@ -2163,6 +2163,7 @@ fn send_redirect(stream: &mut TcpStream, location: &str) -> io::Result<()> {
 struct DirectoryEntry {
     name: String,
     is_dir: bool,
+    is_empty_dir: bool,
     is_image: bool,
     is_video: bool,
     vector: bool,
@@ -3027,6 +3028,8 @@ fn read_directory_entries(
         entries.push(DirectoryEntry {
             name,
             is_dir,
+            is_empty_dir: is_dir
+                && fs::read_dir(&path).is_ok_and(|mut entries| entries.next().is_none()),
             is_image,
             is_video,
             vector: is_image && has_extension(&path, "svg"),

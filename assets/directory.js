@@ -457,7 +457,7 @@ const filterDirectory = () => {
     const matchesName = entry.name.toLowerCase().includes(query);
     const matchesMark = !markedOnly || (selectedImageFilter === 'favourite'
       ? entry.favourite === 'true' : `tag${entry.imageTag}` === selectedImageFilter);
-    entry.hidden = !matchesName || !matchesMark;
+    entry.hidden = !matchesName || !matchesMark || (listing.classList.contains('gallery') && entry.isEmptyDir);
     if (entry.hidden) return;
     if (entry.isDir) directoryCount++;
     else fileCount++;
@@ -1902,6 +1902,7 @@ if (galleryToggle) {
     }
     localStorage.setItem(DIRECTORY_VIEW_KEY, enabled ? 'gallery' : 'list');
     listing.classList.toggle('gallery', enabled);
+    filterDirectory();
     document.body.classList.toggle('gallery-mode', enabled);
     selectImagesButton.hidden = !enabled || selectingImages;
     if (!enabled) setImageSelection(false);
