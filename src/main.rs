@@ -2300,7 +2300,7 @@ fn search_path_files(
             name,
             access,
             depth_arguments,
-            Some(MAX_FILE_SEARCH_RESULTS),
+            None,
         ) {
             let prefix = relative.strip_prefix(base_relative).unwrap();
             for result in &mut results {
@@ -2324,6 +2324,7 @@ fn search_path_files(
                 }
             }
             rank_path_search_results(&mut results, path);
+            results.truncate(MAX_FILE_SEARCH_RESULTS);
             return Ok(Some(results));
         }
     }
@@ -7902,13 +7903,12 @@ mod tests {
         );
         let args = fs::read_to_string(root.join("docs/search-args.txt")).unwrap();
         assert!(args.contains("--max-depth\n1\n"));
-        assert!(args.contains("--max-results\n50\n"));
         assert!(args.ends_with("--\nroot\n.\n"));
     }
 
     #[cfg(unix)]
     #[test]
-    fn path_search_ranks_suffixes_in_one_bounded_query() {
+    fn path_search_ranks_suffixes() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
         let command = root.join("fake-fd");
@@ -7939,10 +7939,11 @@ mod tests {
         );
         let args = fs::read_to_string(root.join("search-args.txt")).unwrap();
         assert_eq!(
-            args.lines().filter(|line| *line == "--max-results").count(),
+            args.lines()
+                .filter(|line| *line == "--fixed-strings")
+                .count(),
             1
         );
-        assert!(args.contains("--max-results\n50\n"));
         assert!(args.ends_with("--\nROOT.crt\n.\n"));
 
         let results = search_path_files(
@@ -7970,7 +7971,56 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn path_search_caps_candidates_and_checks_the_share_scope() {
+    fn path_search_ranks_all_candidates_before_limiting_results() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let command = root.join("fake-fd");
+        write_search_command(
+            &command,
+            "index=1; while [ $index -le 60 ]; do printf './other-%02d/index.html\\0' \"$index\"; index=$((index + 1)); done; printf './draft/web-app-icon-2026-10-13/prototype/index.html\\0./archive/prototype/index.html\\0'",
+        );
+        for index in 1..=60 {
+            let parent = root.join(format!("other-{index:02}"));
+            fs::create_dir_all(&parent).unwrap();
+            fs::write(parent.join("index.html"), "").unwrap();
+        }
+        for parent in [
+            "draft/web-app-icon-2026-10-13/prototype",
+            "archive/prototype",
+        ] {
+            fs::create_dir_all(root.join(parent)).unwrap();
+            fs::write(root.join(parent).join("index.html"), "").unwrap();
+        }
+
+        for commands in [
+            vec![command.as_os_str()],
+            vec![OsStr::new("fd"), OsStr::new("fdfind")],
+        ] {
+            for (query, count) in [
+                ("draft/web-app-icon-2026-10-13/prototype/index.html", 1),
+                (
+                    "xxx/draft/web-app-icon-2026-10-13/prototype/index.html",
+                    MAX_FILE_SEARCH_RESULTS,
+                ),
+            ] {
+                let results = search_path_files(&commands, root, query, &Access::default())
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(results.len(), count);
+                assert_eq!(
+                    results[0].open_href,
+                    "/draft/web-app-icon-2026-10-13/prototype/index.html"
+                );
+                if count > 1 {
+                    assert_eq!(results[1].open_href, "/archive/prototype/index.html");
+                }
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn path_search_caps_results_and_checks_the_share_scope() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
         fs::create_dir(root.join("shared")).unwrap();
