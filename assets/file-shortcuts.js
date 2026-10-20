@@ -3,7 +3,7 @@
 
   const breadcrumbs = document.querySelector('.file-breadcrumbs');
   if (breadcrumbs) {
-    const links = Array.from(breadcrumbs.querySelectorAll('a'));
+    const links = Array.from(breadcrumbs.querySelectorAll('a:not(.recent-link)'));
     links.forEach(link => { link.title = link.textContent; });
     const middle = links.slice(1, -1);
     const overflow = document.createElement('span');

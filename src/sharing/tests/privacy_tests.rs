@@ -861,3 +861,236 @@ fn shared_static_assets_do_not_expose_root_files() {
         }
     }
 }
+#[test]
+fn recently_orders_visits_removes_deleted_files_and_isolates_shares() {
+    let server = Server::new();
+    let owner = "webdir_auth_token=secret";
+    let (_, cookie) = server.share();
+    for target in ["/docs/project2/private.md", "/docs/project/note.md"] {
+        assert_status(
+            server.request("GET", target, owner, "").as_bytes(),
+            200,
+            target,
+        );
+    }
+    let response = server.request("GET", "/?mode=recent", owner, "");
+    assert!(body(&response).contains("private.md"));
+    assert!(body(&response).contains("note.md"));
+    let response = server.request("GET", "/docs/project/?mode=recent", &cookie, "");
+    assert!(!body(&response).contains("private.md"));
+    assert!(!body(&response).contains("note.md"));
+    assert!(body(&response).contains("还没有最近访问"));
+
+    for target in [
+        "/docs/project/note.md",
+        "/docs/project/sub/child.md",
+        "/docs/project/note.md",
+    ] {
+        assert_status(
+            server.request("GET", target, &cookie, "").as_bytes(),
+            200,
+            target,
+        );
+    }
+    for (method, target) in [
+        ("HEAD", "/docs/project/sub/child.md"),
+        ("GET", "/docs/project/sub/child.md?mode=raw"),
+        ("GET", "/docs/project/%E7%8C%AB.svg?mode=thumb"),
+        ("GET", "/docs/project/missing.md"),
+    ] {
+        server.request(method, target, &cookie, "");
+    }
+    let response = server.request("GET", "/docs/project/?mode=recent", &cookie, "");
+    let html = body(&response);
+    assert!(
+        html.find("href=\"/docs/project/note.md\"").unwrap()
+            < html.find("href=\"/docs/project/sub/child.md\"").unwrap()
+    );
+    assert_eq!(html.matches("href=\"/docs/project/note.md\"").count(), 1);
+    assert!(!html.contains("private.md"));
+    assert!(!html.contains("missing.md"));
+    assert!(!html.contains("猫.svg"));
+    assert!(!html.contains(&server.root().to_string_lossy().to_string()));
+
+    let nested = format!(
+        "webdir_share={}",
+        sign(Path::new("docs/project/sub"), "secret").unwrap()
+    );
+    let response = server.request("GET", "/docs/project/sub/?mode=recent", &nested, "");
+    assert!(!body(&response).contains("note.md"));
+    assert!(!body(&response).contains("child.md"));
+    let root_share = format!("webdir_share={}", sign(Path::new(""), "secret").unwrap());
+    let response = server.request("GET", "/?mode=recent", &root_share, "");
+    assert!(!body(&response).contains("private.md"));
+    assert_denied(
+        server
+            .request("GET", "/?mode=recent", &cookie, "")
+            .as_bytes(),
+        "GET",
+        "/?mode=recent",
+    );
+
+    fs::remove_file(server.root().join("docs/project/note.md")).unwrap();
+    let response = server.request("GET", "/docs/project/?mode=recent", &cookie, "");
+    assert!(!body(&response).contains("note.md"));
+    assert!(body(&response).contains("child.md"));
+    fs::write(server.root().join("docs/project/note.md"), "# New file").unwrap();
+    let response = server.request("GET", "/docs/project/?mode=recent", &cookie, "");
+    assert!(!body(&response).contains("note.md"));
+}
+
+#[cfg(unix)]
+#[test]
+fn recently_rechecks_symlink_targets_before_exposing_history() {
+    use std::os::unix::fs::symlink;
+    let server = Server::new();
+    let (_, cookie) = server.share();
+    let link = server.root().join("docs/project/linked.md");
+    symlink("note.md", &link).unwrap();
+    let response = server.request("GET", "/docs/project/linked.md", &cookie, "");
+    assert_status(response.as_bytes(), 200, "linked document");
+    let response = server.request("GET", "/docs/project/?mode=recent", &cookie, "");
+    assert!(body(&response).contains("linked.md"));
+    fs::remove_file(&link).unwrap();
+    symlink("../project2/private.md", &link).unwrap();
+    let response = server.request("GET", "/docs/project/?mode=recent", &cookie, "");
+    assert!(!body(&response).contains("linked.md"));
+    assert!(!body(&response).contains("private.md"));
+}
+
+#[test]
+fn gallery_visits_record_images_within_the_current_share() {
+    let server = Server::new();
+    let (_, cookie) = server.share();
+    let image = "/docs/project/%E7%8C%AB.svg";
+    let target = format!("{image}?mode=visit");
+    let response = server.request("POST", &target, &cookie, "");
+    assert_status(response.as_bytes(), 204, &target);
+    let response = server.request("GET", "/docs/project/?mode=recent", &cookie, "");
+    assert!(body(&response).contains("href=\"/docs/project/?view=gallery&amp;open=%E7%8C%AB.svg\""));
+    let response = server.request("GET", "/?mode=recent", OWNER, "");
+    assert!(!body(&response).contains("猫.svg"));
+
+    fs::copy(
+        server.root().join("docs/project/猫.svg"),
+        server.root().join("docs/project2/private.svg"),
+    )
+    .unwrap();
+    let target = "/docs/project2/private.svg?mode=visit";
+    assert_denied(
+        server.request("POST", target, &cookie, "").as_bytes(),
+        "POST",
+        target,
+    );
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(
+            "../project2/private.svg",
+            server.root().join("docs/project/linked.svg"),
+        )
+        .unwrap();
+        let target = "/docs/project/linked.svg?mode=visit";
+        assert_denied(
+            server.request("POST", target, &cookie, "").as_bytes(),
+            "POST",
+            target,
+        );
+    }
+    let response = server.request("GET", "/docs/project/?mode=recent", &cookie, "");
+    assert!(!body(&response).contains("private.svg"));
+    assert!(!body(&response).contains("linked.svg"));
+}
+
+#[test]
+fn recent_pages_and_search_are_scoped_and_filter_unavailable_files() {
+    let server = Server::new();
+    let (_, cookie) = server.share();
+    let root = server.root();
+    let scope = Path::new("/docs/project");
+    for index in 0..110 {
+        let relative = format!("docs/project/sub/report-{index:03}.md");
+        fs::write(root.join(&relative), "# Report").unwrap();
+        server
+            .state
+            .record_visit(&root, scope, Path::new(&relative), false)
+            .unwrap();
+    }
+    server
+        .state
+        .record_visit(&root, scope, Path::new("docs/project/missing.md"), false)
+        .unwrap();
+    server
+        .state
+        .record_visit(&root, scope, Path::new("docs/project2/private.md"), false)
+        .unwrap();
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(
+            "../project2/private.md",
+            root.join("docs/project/linked.md"),
+        )
+        .unwrap();
+        server
+            .state
+            .record_visit(&root, scope, Path::new("docs/project/linked.md"), false)
+            .unwrap();
+    }
+    let mut target = "/docs/project/?mode=recent-entries".to_owned();
+    let mut names = Vec::new();
+    for count in [50, 50, 10] {
+        let response = server.request("GET", &target, &cookie, "");
+        assert_status(response.as_bytes(), 200, &target);
+        assert!(response.contains("Cache-Control: no-store"));
+        let json: serde_json::Value = serde_json::from_str(body(&response)).unwrap();
+        let entries = json["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), count);
+        for entry in entries {
+            assert!(entry["href"]
+                .as_str()
+                .unwrap()
+                .starts_with("/docs/project/sub/"));
+            assert!(entry["path"].as_str().unwrap().starts_with("sub/"));
+            names.push(entry["name"].as_str().unwrap().to_owned());
+        }
+        if let Some(cursor) = json["next_cursor"].as_str() {
+            target = format!("/docs/project/?mode=recent-entries&cursor={cursor}");
+        } else {
+            assert_eq!(count, 10);
+        }
+    }
+    let unique: std::collections::HashSet<_> = names.iter().collect();
+    assert_eq!(unique.len(), 110);
+    assert_eq!(names.first().unwrap(), "report-109.md");
+    assert_eq!(names.last().unwrap(), "report-000.md");
+    for (query, count) in [
+        ("REPORT-000", 1),
+        ("sub/report-00", 10),
+        ("project", 0),
+        ("private", 0),
+        ("linked", 0),
+        ("missing", 0),
+    ] {
+        let target = format!("/docs/project/?mode=recent-entries&q={query}");
+        let response = server.request("GET", &target, &cookie, "");
+        let json: serde_json::Value = serde_json::from_str(body(&response)).unwrap();
+        assert_eq!(json["entries"].as_array().unwrap().len(), count, "{query}");
+        assert!(json["next_cursor"].is_null());
+    }
+    let response = server.request("GET", "/?mode=recent-entries", OWNER, "");
+    let json: serde_json::Value = serde_json::from_str(body(&response)).unwrap();
+    assert!(json["entries"].as_array().unwrap().is_empty());
+    assert_denied(
+        server
+            .request("GET", "/?mode=recent-entries&q=private", &cookie, "")
+            .as_bytes(),
+        "GET",
+        "recent entries outside share",
+    );
+    let response = server.request(
+        "GET",
+        "/docs/project/?mode=recent-entries&cursor=invalid",
+        &cookie,
+        "",
+    );
+    assert_status(response.as_bytes(), 400, "invalid recent cursor");
+}

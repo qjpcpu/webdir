@@ -12,6 +12,15 @@ pub(crate) struct StateStore {
     connection: Arc<Mutex<Connection>>,
 }
 
+pub(crate) const RECENT_PAGE_SIZE: usize = 50;
+
+pub(crate) struct RecentVisit {
+    pub(crate) path: PathBuf,
+    pub(crate) visited_at: i64,
+    pub(crate) gallery: bool,
+    pub(crate) id: i64,
+}
+
 impl StateStore {
     pub(crate) fn new(cache_root: Option<&Path>) -> io::Result<Self> {
         let connection = match cache_root {
@@ -23,7 +32,17 @@ impl StateStore {
         };
         connection
             .execute_batch(
-                "CREATE TABLE IF NOT EXISTS favourites (
+                "CREATE TABLE IF NOT EXISTS recent_files (
+                    root BLOB NOT NULL,
+                    scope BLOB NOT NULL,
+                    path BLOB NOT NULL,
+                    visited_at INTEGER NOT NULL,
+                    gallery INTEGER NOT NULL,
+                    PRIMARY KEY (root, scope, path)
+                );
+                CREATE INDEX IF NOT EXISTS recent_files_by_visit
+                    ON recent_files (root, scope, visited_at DESC);
+                CREATE TABLE IF NOT EXISTS favourites (
                     path BLOB PRIMARY KEY NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS image_tags (
@@ -53,6 +72,89 @@ impl StateStore {
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
         })
+    }
+
+    pub(crate) fn record_visit(
+        &self,
+        root: &Path,
+        scope: &Path,
+        path: &Path,
+        gallery: bool,
+    ) -> io::Result<()> {
+        let visited_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_micros() as i64;
+        let mut connection = self.connection.lock().unwrap();
+        let transaction = connection.transaction().map_err(sqlite_error)?;
+        transaction
+            .execute(
+                "INSERT OR REPLACE INTO recent_files (root, scope, path, visited_at, gallery) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![path_bytes(root), path_bytes(scope), path_bytes(path), visited_at, gallery],
+            )
+            .map_err(sqlite_error)?;
+        transaction
+            .execute(
+                "DELETE FROM recent_files WHERE root = ?1 AND scope = ?2 AND path IN (
+                    SELECT path FROM recent_files WHERE root = ?1 AND scope = ?2
+                    ORDER BY visited_at DESC, rowid DESC LIMIT -1 OFFSET 1000
+                )",
+                params![path_bytes(root), path_bytes(scope)],
+            )
+            .map_err(sqlite_error)?;
+        transaction.commit().map_err(sqlite_error)
+    }
+
+    pub(crate) fn recent_files(
+        &self,
+        root: &Path,
+        scope: &Path,
+        before: Option<(i64, i64)>,
+    ) -> io::Result<Vec<RecentVisit>> {
+        let connection = self.connection.lock().unwrap();
+        let mut statement = connection
+            .prepare(
+                "SELECT path, visited_at, gallery, rowid FROM recent_files
+                 WHERE root = ?1 AND scope = ?2 AND (visited_at, rowid) < (?3, ?4)
+                 ORDER BY visited_at DESC, rowid DESC LIMIT ?5",
+            )
+            .map_err(sqlite_error)?;
+        let (visited_at, id) = before.unwrap_or((i64::MAX, i64::MAX));
+        let rows = statement
+            .query_map(
+                params![
+                    path_bytes(root),
+                    path_bytes(scope),
+                    visited_at,
+                    id,
+                    RECENT_PAGE_SIZE as i64
+                ],
+                |row| {
+                    let bytes: Vec<u8> = row.get(0)?;
+                    Ok(RecentVisit {
+                        path: PathBuf::from(unsafe {
+                            std::ffi::OsString::from_encoded_bytes_unchecked(bytes)
+                        }),
+                        visited_at: row.get(1)?,
+                        gallery: row.get(2)?,
+                        id: row.get(3)?,
+                    })
+                },
+            )
+            .map_err(sqlite_error)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(sqlite_error)
+    }
+
+    pub(crate) fn remove_visit(&self, root: &Path, scope: &Path, path: &Path) -> io::Result<()> {
+        self.connection
+            .lock()
+            .unwrap()
+            .execute(
+                "DELETE FROM recent_files WHERE root = ?1 AND scope = ?2 AND path = ?3",
+                params![path_bytes(root), path_bytes(scope), path_bytes(path)],
+            )
+            .map(|_| ())
+            .map_err(sqlite_error)
     }
 
     pub(crate) fn is_favourite(&self, path: &Path) -> io::Result<bool> {
@@ -356,6 +458,133 @@ fn sqlite_error(error: rusqlite::Error) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn all_visits(state: &StateStore, root: &Path, scope: &Path) -> Vec<RecentVisit> {
+        let mut visits = Vec::new();
+        let mut before = None;
+        loop {
+            let page = state.recent_files(root, scope, before).unwrap();
+            if page.is_empty() {
+                return visits;
+            }
+            assert!(page.len() <= RECENT_PAGE_SIZE);
+            let last = page.last().unwrap();
+            before = Some((last.visited_at, last.id));
+            visits.extend(page);
+        }
+    }
+
+    #[test]
+    fn recent_visits_persist_and_are_ordered_within_their_root_and_scope() {
+        let cache = tempfile::tempdir().unwrap();
+        let root = Path::new("/workspace");
+        let scope = Path::new("");
+        let first = Path::new("first.md");
+        let second = Path::new("second.md");
+        let state = StateStore::new(Some(cache.path())).unwrap();
+        state.record_visit(root, scope, first, false).unwrap();
+        state.record_visit(root, scope, second, true).unwrap();
+        state.record_visit(root, scope, first, true).unwrap();
+        state
+            .record_visit(root, Path::new("/"), second, false)
+            .unwrap();
+        state
+            .record_visit(Path::new("/other"), scope, second, false)
+            .unwrap();
+        drop(state);
+
+        let state = StateStore::new(Some(cache.path())).unwrap();
+        let visits = all_visits(&state, root, scope);
+        assert_eq!(visits.len(), 2);
+        assert_eq!(visits[0].path, first);
+        assert_eq!(visits[1].path, second);
+        assert!(visits[0].gallery);
+        assert!(visits[1].gallery);
+        assert!(visits[0].visited_at >= visits[1].visited_at);
+        state.record_visit(root, scope, first, false).unwrap();
+        assert!(!all_visits(&state, root, scope)[0].gallery);
+        state.remove_visit(root, scope, first).unwrap();
+        assert_eq!(all_visits(&state, root, scope).len(), 1);
+        assert_eq!(all_visits(&state, root, Path::new("/")).len(), 1);
+    }
+
+    #[test]
+    fn recent_visits_keep_the_latest_thousand_per_root_and_scope() {
+        let state = StateStore::new(None).unwrap();
+        let root = Path::new("/workspace");
+        let scope = Path::new("");
+        let shared = Path::new("/docs");
+        let first = Path::new("0.md");
+        state.record_visit(root, shared, first, false).unwrap();
+        state
+            .record_visit(Path::new("/other"), scope, first, false)
+            .unwrap();
+        for index in 0..1005 {
+            state
+                .record_visit(root, scope, Path::new(&format!("{index}.md")), false)
+                .unwrap();
+        }
+        let visits = all_visits(&state, root, scope);
+        assert_eq!(visits.len(), 1000);
+        assert_eq!(visits[0].path, Path::new("1004.md"));
+        assert_eq!(visits[999].path, Path::new("5.md"));
+
+        state
+            .record_visit(root, scope, Path::new("5.md"), false)
+            .unwrap();
+        let visits = all_visits(&state, root, scope);
+        assert_eq!(visits.len(), 1000);
+        assert_eq!(visits[0].path, Path::new("5.md"));
+        state.record_visit(root, scope, first, false).unwrap();
+        let visits = all_visits(&state, root, scope);
+        assert_eq!(visits.len(), 1000);
+        assert_eq!(visits[0].path, first);
+        assert!(!visits.iter().any(|visit| visit.path == Path::new("6.md")));
+        assert_eq!(all_visits(&state, root, shared).len(), 1);
+        assert_eq!(all_visits(&state, Path::new("/other"), scope).len(), 1);
+    }
+
+    #[test]
+    fn recent_cursor_orders_ties_and_survives_new_visits_and_deletions() {
+        let state = StateStore::new(None).unwrap();
+        let root = Path::new("/workspace");
+        let scope = Path::new("");
+        for index in 0..105 {
+            state
+                .record_visit(root, scope, Path::new(&format!("{index}.md")), false)
+                .unwrap();
+        }
+        state
+            .connection
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE recent_files SET visited_at = 100 WHERE root = ?1 AND scope = ?2",
+                params![path_bytes(root), path_bytes(scope)],
+            )
+            .unwrap();
+        let first = state.recent_files(root, scope, None).unwrap();
+        assert_eq!(first.len(), 50);
+        assert_eq!(first[0].path, Path::new("104.md"));
+        assert_eq!(first[49].path, Path::new("55.md"));
+        let cursor = Some((first[49].visited_at, first[49].id));
+        state
+            .record_visit(root, scope, Path::new("0.md"), false)
+            .unwrap();
+        state
+            .record_visit(root, scope, Path::new("new.md"), false)
+            .unwrap();
+        state.remove_visit(root, scope, Path::new("54.md")).unwrap();
+        let second = state.recent_files(root, scope, cursor).unwrap();
+        assert_eq!(second.len(), 50);
+        assert_eq!(second[0].path, Path::new("53.md"));
+        assert_eq!(second[49].path, Path::new("4.md"));
+        let third = state
+            .recent_files(root, scope, Some((second[49].visited_at, second[49].id)))
+            .unwrap();
+        assert_eq!(third.len(), 3);
+        assert_eq!(third[2].path, Path::new("1.md"));
+    }
 
     #[test]
     fn clearing_images_rolls_back_all_marks_on_database_failure() {

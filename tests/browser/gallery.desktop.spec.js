@@ -89,14 +89,14 @@ test('folder stars update favourites without reloading the directory', async ({p
   await page.reload();
   await expect(page.locator('.directory-favourites-list .directory-favourite')).toHaveCount(4);
   await expect(page.locator('.directory-favourites-more')).toHaveCount(0);
-  await page.setViewportSize({width: 800, height: 900});
+  await page.setViewportSize({width: 920, height: 900});
   await expect(page.locator('.directory-favourites-list .directory-favourite')).toHaveCount(3);
   await page.setViewportSize({width: 390, height: 844});
-  await expect(page.locator('.directory-favourites-list .directory-favourite')).toHaveCount(1);
+  await expect(page.locator('.directory-favourites-list .directory-favourite')).toHaveCount(0);
   await page.setViewportSize({width: 1440, height: 900});
   await expect(page.locator('.directory-favourites-list .directory-favourite')).toHaveCount(4);
   await expect(page.locator('.directory-favourites-more')).toHaveCount(0);
-  await page.setViewportSize({width: 800, height: 900});
+  await page.setViewportSize({width: 920, height: 900});
   await expect(page.locator('.directory-favourites-more')).toBeVisible();
   await expect(page.locator('.directory-favourites-more summary')).toContainText('更多');
   await expect(page.locator('.directory-favourites-menu .directory-favourite')).toHaveCount(1);

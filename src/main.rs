@@ -22,6 +22,7 @@ mod collaboration;
 mod gallery_comments;
 mod image_cache;
 mod image_similarity;
+mod recent;
 mod review;
 mod sharing;
 mod state;
@@ -533,6 +534,55 @@ fn handle_connection_with_auth(
         return send_text(&mut stream, 403, "Forbidden", "超出分享范围\n", head_only);
     }
 
+    if matches!(mode.as_deref(), Some("recent" | "recent-entries")) {
+        if !matches!(method, "GET" | "HEAD") {
+            return send_text(
+                &mut stream,
+                405,
+                "Method Not Allowed",
+                "仅支持读取最近访问\n",
+                head_only,
+            );
+        }
+        let search = query_parameter(query, "q").unwrap_or_default();
+        let (body, content_type) = if mode.as_deref() == Some("recent-entries") {
+            let cursor = match query_parameter(query, "cursor") {
+                Some(value) => match recent::parse_cursor(&value) {
+                    Some(cursor) => Some(cursor),
+                    None => {
+                        return send_text(
+                            &mut stream,
+                            400,
+                            "Bad Request",
+                            "无效的分页游标\n",
+                            head_only,
+                        )
+                    }
+                },
+                None => None,
+            };
+            let page = recent::entries(root, state, &access, &search, cursor)?;
+            (
+                serde_json::to_string(&page).map_err(io::Error::other)?,
+                "application/json; charset=utf-8",
+            )
+        } else {
+            (
+                themed_html(&recent::page(root, state, &access, &search)?),
+                "text/html; charset=utf-8",
+            )
+        };
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: {content_type}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+            body.len(),
+        )?;
+        if !head_only {
+            stream.write_all(body.as_bytes())?;
+        }
+        return Ok(());
+    }
+
     if mode.as_deref() == Some("directory-favourite") && method == "DELETE" {
         return match state.set_directory_favourite(&join_relative_path(root, &relative), false) {
             Ok(()) => send_empty(&mut stream, 204, "No Content"),
@@ -571,6 +621,22 @@ fn handle_connection_with_auth(
     };
 
     let metadata = fs::metadata(&canonical)?;
+    if mode.as_deref() == Some("visit") {
+        if method != "POST" {
+            return send_empty(&mut stream, 405, "Method Not Allowed");
+        }
+        if !metadata.is_file() || !is_image_file(&canonical) {
+            return send_text(
+                &mut stream,
+                415,
+                "Unsupported Media Type",
+                "仅支持记录图片预览访问\n",
+                false,
+            );
+        }
+        recent::record(state, root, &relative, &access, true)?;
+        return send_empty(&mut stream, 204, "No Content");
+    }
     if matches!(mode.as_deref(), Some("video-thumb" | "video-preview")) {
         if !metadata.is_file() || !has_extension(&canonical, "mp4") {
             return send_text(
@@ -1398,6 +1464,9 @@ fn handle_connection_with_auth(
     }
 
     if has_extension(&canonical, "html") || has_extension(&canonical, "htm") {
+        if !head_only && request_wants_html(&headers) {
+            recent::record(state, root, &relative, &access, false)?;
+        }
         return send_file(
             &mut stream,
             &canonical,
@@ -1420,6 +1489,7 @@ fn handle_connection_with_auth(
             &root,
             head_only,
             &access,
+            state,
         );
     }
 
@@ -1441,6 +1511,7 @@ fn handle_connection_with_auth(
             &root,
             head_only,
             &access,
+            state,
         );
     }
 
@@ -1457,6 +1528,7 @@ fn handle_connection_with_auth(
             &root,
             head_only,
             &access,
+            state,
         );
     }
 
@@ -1495,6 +1567,7 @@ fn handle_connection_with_auth(
             &root,
             head_only,
             &access,
+            state,
         );
     }
 
@@ -1512,6 +1585,7 @@ fn handle_connection_with_auth(
             &root,
             head_only,
             &access,
+            state,
         );
     }
 
@@ -1530,6 +1604,7 @@ fn handle_connection_with_auth(
                 &root,
                 head_only,
                 &access,
+                state,
             );
         }
     }
@@ -1943,9 +2018,11 @@ body > header,.topbar { top:2.4rem; }
 .file-breadcrumbs { position:fixed; inset:0 0 auto; z-index:8; display:flex; align-items:center; gap:.55rem; height:2.4rem; padding:0 var(--file-header-padding); color:var(--muted); background:var(--paper); border-bottom:1px solid var(--line); font:600 .78rem/1.4 ui-monospace,SFMono-Regular,Consolas,monospace; scrollbar-width:none; }
 .file-breadcrumbs > a,.file-breadcrumbs > span { flex-shrink:0; }
 .file-breadcrumbs a { color:inherit; text-decoration:none; white-space:nowrap; }
-.file-breadcrumbs > a:last-of-type { flex-shrink:1; min-width:0; overflow:hidden; text-overflow:ellipsis; }
-.file-breadcrumbs.measuring > a:last-of-type { flex-shrink:0; }
+.file-breadcrumbs > a:has(+ .recent-link) { flex-shrink:1; min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.file-breadcrumbs.measuring > a:has(+ .recent-link) { flex-shrink:0; }
 .file-breadcrumbs [hidden] { display:none !important; }
+.file-breadcrumbs .recent-link { display:inline-flex; align-items:center; gap:.35rem; flex-shrink:0; margin-left:auto; padding-left:.5rem; }
+.file-breadcrumbs .recent-link svg { width:1rem; height:1rem; fill:none; stroke:currentColor; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; }
 .file-breadcrumbs a:hover { color:var(--accent); }
 #history-back { flex:0 0 2rem; padding:0; border:0; background:transparent; font:inherit; cursor:pointer; }
 #history-back:hover { color:var(--accent); background:var(--accent-soft); }
@@ -1966,7 +2043,11 @@ fn send_file_page_with_access(
     root: &Path,
     head_only: bool,
     access: &Access,
+    state: &StateStore,
 ) -> io::Result<()> {
+    if !head_only {
+        recent::record(state, root, relative, access, false)?;
+    }
     let body = body
         .replacen(
             "<body",
@@ -1985,8 +2066,9 @@ fn send_file_page_with_access(
         .replacen(
             "<header",
             &format!(
-                "<nav class=\"file-breadcrumbs\" aria-label=\"当前位置\">{}{PATH_SEARCH_CONTROL}</nav><header",
-                render_breadcrumbs_with_access(relative.parent().unwrap(), access)
+                "<nav class=\"file-breadcrumbs\" aria-label=\"当前位置\">{}{}{PATH_SEARCH_CONTROL}</nav><header",
+                render_breadcrumbs_with_access(relative.parent().unwrap(), access),
+                recent::link(access)
             ),
             1,
         )
@@ -2948,7 +3030,7 @@ fn render_directory_favourites_with_access(
         items.push_str(&item);
     }
     Ok(format!(
-        "<nav class=\"directory-favourites\" aria-label=\"收藏目录\"><span class=\"directory-favourites-label\">收藏夹</span><div class=\"directory-favourites-list\">{items}</div></nav>"
+        "<nav class=\"directory-favourites\" aria-label=\"收藏目录\"><span class=\"directory-favourites-label\"><svg viewBox=\"0 0 20 20\" aria-hidden=\"true\"><path d=\"M5.5 3h9a1 1 0 0 1 1 1v13L10 13.5 4.5 17V4a1 1 0 0 1 1-1Z\"/></svg><span>收藏夹</span></span><div class=\"directory-favourites-list\">{items}</div></nav>"
     ))
 }
 
@@ -3099,8 +3181,11 @@ fn render_directory_page_with_access(
         render_breadcrumbs_with_access(relative, access)
     );
     let logical_directory = join_relative_path(root, relative);
-    let directory_favourites =
-        render_directory_favourites_with_access(root, &logical_directory, state, access)?;
+    let directory_favourites = format!(
+        "<div class=\"directory-shortcuts\">{}{}</div>",
+        recent::link(access),
+        render_directory_favourites_with_access(root, &logical_directory, state, access)?
+    );
     let directory_favourite = state.is_directory_favourite(&logical_directory)?;
 
     let title = escape_html(title);
@@ -4173,8 +4258,13 @@ main { width:min(100% - 2rem,980px); margin:0 auto; padding:clamp(1.5rem,6vw,5re
 .breadcrumbs .path-search { position:sticky; right:0; z-index:1; padding-left:.45rem; background:var(--paper); }
 .breadcrumbs a { color:inherit; text-decoration:none; white-space:nowrap; }
 .breadcrumbs a:hover { color:var(--accent); }
-.directory-favourites { display:flex; align-items:center; gap:.45rem; margin:-.35rem 0 1rem; padding:.45rem 0; color:var(--muted); }
-.directory-favourites-label { flex:0 0 auto; padding-right:.15rem; font:700 .68rem/1 ui-monospace,SFMono-Regular,Consolas,monospace; letter-spacing:.08em; }
+.directory-shortcuts { display:flex; align-items:center; gap:.8rem; margin:-.35rem 0 1rem; padding:.45rem 0; }
+.directory-shortcuts .recent-link { display:inline-flex; align-items:center; gap:.35rem; flex:0 0 auto; min-height:2rem; padding:.4rem .6rem; border:1px solid color-mix(in srgb,var(--accent) 18%,var(--line)); border-radius:.5rem; color:var(--accent); background:var(--accent-soft); font:600 .75rem/1.2 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans-serif; text-decoration:none; white-space:nowrap; transition:background .16s ease,border-color .16s ease; }
+.directory-shortcuts .recent-link:hover { border-color:var(--accent); background:color-mix(in srgb,var(--accent) 12%,var(--surface)); }
+.directory-shortcuts .recent-link:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+.directory-shortcuts svg { flex:0 0 auto; width:1rem; height:1rem; fill:none; stroke:currentColor; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; }
+.directory-favourites { display:flex; align-items:center; flex:1; min-width:0; gap:.45rem; padding-left:.8rem; border-left:1px solid var(--line); color:var(--muted); }
+.directory-favourites-label { display:inline-flex; align-items:center; gap:.3rem; flex:0 0 auto; padding-right:.15rem; font:600 .72rem/1.2 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans-serif; white-space:nowrap; }
 .directory-favourites-list { display:flex; flex:1 1 auto; gap:.45rem; min-width:0; overflow:hidden; }
 .directory-favourites-more { position:relative; flex:0 0 auto; }
 .directory-favourites-more summary { display:flex; align-items:center; gap:.18rem; min-height:1.8rem; padding:.38rem .48rem .38rem .62rem; border:1px solid var(--line); border-radius:.5rem; color:var(--muted); background:var(--surface); font:700 .7rem/1 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans-serif; cursor:pointer; list-style:none; transition:border-color .16s ease,color .16s ease,background-color .16s ease; }

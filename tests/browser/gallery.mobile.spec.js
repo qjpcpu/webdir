@@ -81,10 +81,10 @@ test('mobile directory favourites keep every shortcut reachable without overlapp
   }
 
   await page.goto('/');
-  await expect(page.locator('.directory-favourites-list .directory-favourite')).toHaveCount(1);
+  await expect(page.locator('.directory-favourites-list .directory-favourite')).toHaveCount(0);
   await expect(page.locator('.directory-favourites-more')).toBeVisible();
   await page.locator('.directory-favourites-more summary').click();
-  await expect(page.locator('.directory-favourites-menu .directory-favourite')).toHaveCount(3);
+  await expect(page.locator('.directory-favourites-menu .directory-favourite')).toHaveCount(4);
   for (const item of await page.locator('.directory-favourites-menu .directory-favourite').all()) {
     await expect(item).toBeVisible();
   }

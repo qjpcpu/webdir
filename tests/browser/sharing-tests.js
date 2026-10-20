@@ -66,6 +66,149 @@ async function getShareUrl(page) {
 }
 
 module.exports = () => {
+  test('Recently pages fifty files at a time and searches older visits on the server', async ({page}) => {
+    await login(page);
+    fs.mkdirSync(path.join(directory, 'docs/project/设计'));
+    const special = '设计/Report_100%.svg';
+    const names = [special, ...Array.from({length:105}, (_, index) => `report-${String(index).padStart(3, '0')}.svg`)];
+    for (const name of names) {
+      fs.copyFileSync(path.join(directory, 'docs/project/cat.svg'), path.join(directory, 'docs/project', name));
+      const href = name.split('/').map(encodeURIComponent).join('/');
+      const response = await page.request.post(`${origin}/docs/project/${href}?mode=visit`);
+      expect(response.status()).toBe(204);
+    }
+    await page.goto(`${origin}/?mode=recent`);
+    const entries = page.locator('.listing .entry');
+    await expect(entries).toHaveCount(50);
+    await expect(entries.first()).toContainText('report-104.svg');
+    await expect(entries.last()).toContainText('report-055.svg');
+    const search = page.getByRole('searchbox', {name:'搜索最近访问'});
+    const searchFor = async query => {
+      await Promise.all([
+        page.waitForResponse(response => {
+          const url = new URL(response.url());
+          return url.searchParams.get('mode') === 'recent-entries'
+            && (url.searchParams.get('q') || '') === query;
+        }),
+        search.fill(query)
+      ]);
+    };
+    await searchFor('REPORT_100%');
+    await expect(entries).toHaveCount(1);
+    await expect(entries.first()).toContainText(special);
+    await expect(page.locator('#recent-more')).toBeHidden();
+    await page.reload();
+    await expect(search).toHaveValue('REPORT_100%');
+    await expect(entries).toHaveCount(1);
+
+    await searchFor('report-');
+    await expect(entries).toHaveCount(50);
+    const more = page.getByRole('button', {name:'加载更多', exact:true});
+    await more.scrollIntoViewIfNeeded();
+    await expect(entries).toHaveCount(100);
+    await more.scrollIntoViewIfNeeded();
+    await expect(entries).toHaveCount(105);
+    await expect(page.locator('#recent-more')).toBeHidden();
+    await expect(page.locator('#recent-status')).toHaveText('已显示全部记录');
+    const hrefs = await entries.evaluateAll(items => items.map(item => item.getAttribute('href')));
+    expect(new Set(hrefs).size).toBe(105);
+    await expect(entries.last()).toContainText('report-000.svg');
+
+    await searchFor('没有这样的文件');
+    await expect(entries).toHaveCount(0);
+    await expect(page.locator('.listing')).toContainText('没有匹配的访问记录');
+    await searchFor('');
+    await expect(entries).toHaveCount(50);
+  });
+
+  test('Recently records gallery images on opening and switching, including cached revisits', async ({page}) => {
+    for (const name of ['next.svg', 'unused.svg']) {
+      fs.copyFileSync(path.join(directory, 'docs/project/cat.svg'), path.join(directory, 'docs/project', name));
+    }
+    await login(page);
+    await page.goto(`${origin}/docs/project/?view=gallery`);
+    const visit = async action => {
+      const [response] = await Promise.all([
+        page.waitForResponse(response => response.url().includes('mode=visit')),
+        action()
+      ]);
+      expect(response.status()).toBe(204);
+    };
+    await visit(() => page.locator('.entry.image').filter({hasText:'cat.svg'}).click());
+    await expect(page.locator('.lightbox-image:not(.preview-outgoing)')).toHaveAttribute('alt', 'cat.svg');
+    const firstHistory = await page.request.get(`${origin}/?mode=recent`);
+    const firstHtml = await firstHistory.text();
+    expect(firstHtml).toContain('href="/docs/project/?view=gallery&amp;open=cat.svg"');
+    expect(firstHtml).not.toContain('open=next.svg');
+    expect(firstHtml).not.toContain('open=unused.svg');
+    await visit(() => page.keyboard.press('ArrowRight'));
+    await expect(page.locator('.lightbox-image:not(.preview-outgoing)')).toHaveAttribute('alt', 'next.svg');
+    await visit(() => page.keyboard.press('ArrowLeft'));
+    await expect(page.locator('.lightbox-image:not(.preview-outgoing)')).toHaveAttribute('alt', 'cat.svg');
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#image-lightbox')).toBeHidden();
+    await page.getByRole('link', {name:'最近访问', exact:true}).click();
+    await expect(page).toHaveTitle('最近访问');
+    await expect(page.getByRole('heading', {name:'最近访问', exact:true})).toBeVisible();
+    const entries = page.locator('.listing .entry');
+    await expect(entries).toHaveCount(2);
+    await expect(entries.first()).toHaveAttribute('href', '/docs/project/?view=gallery&open=cat.svg');
+    await expect(entries.last()).toHaveAttribute('href', '/docs/project/?view=gallery&open=next.svg');
+    await visit(() => entries.last().click());
+    await expect(page.locator('.listing')).toHaveClass(/gallery/);
+    await expect(page.locator('#image-lightbox')).toBeVisible();
+    await expect(page.locator('.lightbox-image:not(.preview-outgoing)')).toHaveAttribute('alt', 'next.svg');
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#image-lightbox')).toBeHidden();
+    await page.getByRole('link', {name:'最近访问', exact:true}).click();
+    await expect(entries.first()).toHaveAttribute('href', '/docs/project/?view=gallery&open=next.svg');
+    await page.goto(`${origin}/docs/project/cat.svg`);
+    await page.getByRole('link', {name:'最近访问', exact:true}).click();
+    await expect(entries.first()).toHaveAttribute('href', '/docs/project/cat.svg');
+  });
+
+  test('Recently orders opened documents, drops deleted files and respects sharing scope', async ({page, browser}) => {
+    await login(page);
+    await page.goto(`${origin}/docs/other/private.md`);
+    await page.goto(`${origin}/docs/project/note.md`);
+    await page.locator('.recent-link').click();
+    await expect(page.locator('.listing .entry')).toHaveCount(2);
+    await expect(page.locator('.listing .entry').first()).toHaveAttribute('href', '/docs/project/note.md');
+    await expect(page.locator('.listing .entry').last()).toHaveAttribute('href', '/docs/other/private.md');
+
+    const share = await page.request.post(`${origin}/docs/project/?mode=share`);
+    const {url} = await share.json();
+    const recipientContext = await browser.newContext({viewport:page.viewportSize()});
+    try {
+      const recipient = await recipientContext.newPage();
+      await recipient.goto(new URL(url, origin).href);
+      await recipient.locator('.recent-link').click();
+      await expect(recipient.locator('.listing .entry')).toHaveCount(0);
+      await expect(recipient.locator('.listing')).toContainText('还没有最近访问');
+      await recipient.goto(`${origin}/docs/project/note.md`);
+      await recipient.goto(`${origin}/docs/project/sub/child.txt`);
+      await recipient.goto(`${origin}/docs/project/note.md`);
+      await recipient.locator('.recent-link').click();
+      const entries = recipient.locator('.listing .entry');
+      await expect(entries).toHaveCount(2);
+      await expect(entries.first()).toHaveAttribute('href', '/docs/project/note.md');
+      await expect(entries.last()).toHaveAttribute('href', '/docs/project/sub/child.txt');
+      await expect(recipient.locator('.listing')).not.toContainText('private.md');
+      await expect(entries.first().locator('time')).toHaveAttribute('datetime', /T/);
+      expect(await recipient.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+
+      await entries.first().click();
+      fs.rmSync(path.join(directory, 'docs/project/note.md'));
+      await recipient.goBack();
+      await expect(entries).toHaveCount(1);
+      await expect(entries.first()).toHaveAttribute('href', '/docs/project/sub/child.txt');
+      await entries.first().click();
+      await expect(recipient.locator('.file-breadcrumbs')).toContainText('分享目录');
+    } finally {
+      await recipientContext.close();
+    }
+  });
+
   test('video grid separates the play label from sharing, tags and selection controls', async ({page}) => {
     fs.copyFileSync(path.join(__dirname, 'media', 'bear.mp4'), path.join(directory, 'docs/project/clip.mp4'));
     await login(page);
@@ -108,8 +251,8 @@ module.exports = () => {
       await expect(shared).toHaveURL(`${origin}/docs/project/note.md`);
       await expect(shared.locator('#article')).toContainText('Shared document');
       await expect(shared.locator('#article img')).toHaveJSProperty('naturalWidth', 32);
-      await expect(shared.locator('.file-breadcrumbs a')).toHaveCount(1);
-      await expect(shared.locator('.file-breadcrumbs a')).toHaveAttribute('href', '/docs/project/');
+      await expect(shared.locator('.file-breadcrumbs a:not(.recent-link)')).toHaveCount(1);
+      await expect(shared.locator('.file-breadcrumbs a:not(.recent-link)')).toHaveAttribute('href', '/docs/project/');
       await expect(shared.getByRole('button', {name:'复制分享链接'})).toHaveCount(0);
       await shared.locator('#path-search-toggle').click();
       await shared.locator('#path-search-input').fill('child');
@@ -128,8 +271,8 @@ module.exports = () => {
       await expect(shared.locator('.path-search-result')).toHaveCount(0);
       await expect(shared.locator('#path-search-status')).toHaveText('没有找到匹配的文件或文件夹');
       await shared.locator('#path-search-input').press('Escape');
-      await shared.locator('.file-breadcrumbs a').click();
-      await expect(shared.locator('.breadcrumbs a')).toHaveCount(1);
+      await shared.locator('.file-breadcrumbs a:not(.recent-link)').click();
+      await expect(shared.locator('.breadcrumbs a:not(.recent-link)')).toHaveCount(1);
       await shared.locator('.folder-open').filter({hasText:'sub'}).click();
       await shared.locator('.entry.file').filter({hasText:'child.txt'}).click();
       await expect(shared.locator('body')).toContainText('Child document');

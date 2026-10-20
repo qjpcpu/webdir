@@ -59,8 +59,8 @@ const ensureDirectoryFavourites = () => {
   nav = document.createElement('nav');
   nav.className = 'directory-favourites';
   nav.setAttribute('aria-label', '收藏目录');
-  nav.innerHTML = '<span class="directory-favourites-label">收藏夹</span><div class="directory-favourites-list"></div>';
-  document.querySelector('.breadcrumbs').insertAdjacentElement('afterend', nav);
+  nav.innerHTML = '<span class="directory-favourites-label"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5.5 3h9a1 1 0 0 1 1 1v13L10 13.5 4.5 17V4a1 1 0 0 1 1-1Z"/></svg><span>收藏夹</span></span><div class="directory-favourites-list"></div>';
+  document.querySelector('.directory-shortcuts').append(nav);
   directoryFavouritesResizeObserver.observe(nav);
   return nav;
 };
@@ -2207,6 +2207,12 @@ if (galleryToggle) {
       history.pushState({...state, galleryPreview: true}, '');
     }
     previewTrigger = entry;
+    if (entry.isImage) {
+      const visitUrl = new URL(entry.listHref, location.href);
+      visitUrl.searchParams.set('mode', 'visit');
+      fetch(visitUrl, {method: 'POST', keepalive: true})
+        .catch(error => console.warn('记录最近访问失败', error));
+    }
     lightbox.classList.toggle('video-preview', entry.isVideo);
     lightboxVideo.hidden = !entry.isVideo;
     lightboxImage.hidden = entry.isVideo;
