@@ -638,7 +638,7 @@ fn handle_connection_with_auth(
         return send_empty(&mut stream, 204, "No Content");
     }
     if matches!(mode.as_deref(), Some("video-thumb" | "video-preview")) {
-        if !metadata.is_file() || !has_extension(&canonical, "mp4") {
+        if !metadata.is_file() || !is_video_file(&canonical) {
             return send_text(
                 &mut stream,
                 415,
@@ -1412,7 +1412,7 @@ fn handle_connection_with_auth(
         );
     }
     if asset_mode {
-        if has_extension(&canonical, "mp4") {
+        if is_video_file(&canonical) {
             return send_ranged_file(
                 &mut stream,
                 &canonical,
@@ -1515,7 +1515,7 @@ fn handle_connection_with_auth(
         );
     }
 
-    if has_extension(&canonical, "mp4") && request_wants_html(&headers) {
+    if is_video_file(&canonical) && request_wants_html(&headers) {
         let title = canonical
             .file_name()
             .and_then(|name| name.to_str())
@@ -1609,7 +1609,7 @@ fn handle_connection_with_auth(
         }
     }
 
-    if has_extension(&canonical, "mp4") {
+    if is_video_file(&canonical) {
         send_ranged_file(
             &mut stream,
             &canonical,
@@ -3081,8 +3081,7 @@ fn read_directory_entries(
             .as_ref()
             .map_or_else(|| file_type.is_dir(), fs::Metadata::is_dir);
         let is_image = metadata.as_ref().is_some_and(|m| m.is_file()) && is_image_file(&path);
-        let is_video =
-            metadata.as_ref().is_some_and(|m| m.is_file()) && has_extension(&path, "mp4");
+        let is_video = metadata.as_ref().is_some_and(|m| m.is_file()) && is_video_file(&path);
         let canonical = (is_image || is_video)
             .then(|| fs::canonicalize(&path))
             .transpose()?;
@@ -3265,8 +3264,12 @@ fn is_image_file(path: &Path) -> bool {
     file_kind(path) == "IMAGE"
 }
 
+fn is_video_file(path: &Path) -> bool {
+    file_kind(path) == "VIDEO"
+}
+
 fn is_gallery_media(path: &Path) -> bool {
-    is_image_file(path) || has_extension(path, "mp4")
+    is_image_file(path) || is_video_file(path)
 }
 
 fn is_raster_image(path: &Path) -> bool {
@@ -3470,7 +3473,7 @@ fn file_kind(path: &Path) -> &'static str {
         "c" | "h" | "cc" | "cpp" | "cxx" | "hpp" | "hxx" => "C/C++",
         "lisp" | "lsp" | "cl" | "el" | "scm" | "ss" | "rkt" => "LISP",
         "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" => "IMAGE",
-        "mp4" => "VIDEO",
+        "mp4" | "mov" => "VIDEO",
         "drawio" => "DRAWIO",
         "pdf" => "PDF",
         "txt" => "TEXT",
@@ -3841,9 +3844,16 @@ video { display:block; width:100%; max-height:calc(100vh - 8.5rem); max-height:c
 "#;
 
 fn render_video_page(title: &str, size: u64) -> String {
+    let kind = escape_html(
+        &Path::new(title)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or("VIDEO")
+            .to_ascii_uppercase(),
+    );
     let title = escape_html(title);
     format!(
-        "<!doctype html>\n<html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\"><title>{title}</title><style>{VIDEO_CSS}</style></head><body><header><button class=\"back\" id=\"history-back\" type=\"button\" aria-label=\"返回上一页\">←</button><span class=\"kind\">MP4</span><span class=\"filename\">{title}</span><span class=\"meta\">{size}</span><a class=\"download\" href=\"?mode=asset\" download>下载</a></header><main><div class=\"player\"><video controls playsinline preload=\"metadata\" src=\"?mode=asset\">浏览器无法播放这个 MP4 文件。</video></div></main></body></html>",
+        "<!doctype html>\n<html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\"><title>{title}</title><style>{VIDEO_CSS}</style></head><body><header><button class=\"back\" id=\"history-back\" type=\"button\" aria-label=\"返回上一页\">←</button><span class=\"kind\">{kind}</span><span class=\"filename\">{title}</span><span class=\"meta\">{size}</span><a class=\"download\" href=\"?mode=asset\" download>下载</a></header><main><div class=\"player\"><video controls playsinline preload=\"metadata\" src=\"?mode=asset\">浏览器无法播放这个 {kind} 文件。</video></div></main></body></html>",
         size = human_size(size)
     )
 }
@@ -5822,6 +5832,7 @@ fn mime_type(path: &Path) -> &'static str {
         "wasm" => "application/wasm",
         "pdf" => "application/pdf",
         "mp4" => "video/mp4",
+        "mov" => "video/quicktime",
         "xml" => "application/xml",
         _ => "application/octet-stream",
     }
@@ -8313,35 +8324,37 @@ mod tests {
     }
 
     #[test]
-    fn directory_uses_a_video_glyph_for_mp4_files() {
-        let directory = tempfile::tempdir().unwrap();
-        fs::write(directory.path().join("clip.mp4"), b"video").unwrap();
-        #[cfg(unix)]
-        std::os::unix::fs::symlink("missing.mp4", directory.path().join("unavailable.mp4"))
+    fn directory_uses_a_video_glyph_for_video_files() {
+        for extension in ["mp4", "mov", "MOV"] {
+            let directory = tempfile::tempdir().unwrap();
+            fs::write(directory.path().join(format!("clip.{extension}")), b"video").unwrap();
+            #[cfg(unix)]
+            std::os::unix::fs::symlink("missing.mp4", directory.path().join("unavailable.mp4"))
+                .unwrap();
+
+            let page = render_directory_page(
+                directory.path(),
+                directory.path(),
+                &StateStore::new(None).unwrap(),
+            )
             .unwrap();
 
-        let page = render_directory_page(
-            directory.path(),
-            directory.path(),
-            &StateStore::new(None).unwrap(),
-        )
-        .unwrap();
-
-        assert!(page.contains("<svg viewBox=\"0 0 24 18\">"));
-        let entries = read_directory_entries(
-            directory.path(),
-            directory.path(),
-            Path::new(""),
-            &StateStore::new(None).unwrap(),
-            &Access::default(),
-        )
-        .unwrap();
-        let video = entries
-            .iter()
-            .find(|entry| entry.name == "clip.mp4")
+            assert!(page.contains("<svg viewBox=\"0 0 24 18\">"));
+            let entries = read_directory_entries(
+                directory.path(),
+                directory.path(),
+                Path::new(""),
+                &StateStore::new(None).unwrap(),
+                &Access::default(),
+            )
             .unwrap();
-        assert!(video.is_video);
-        assert_eq!(video.kind, "VIDEO");
+            let video = entries
+                .iter()
+                .find(|entry| entry.name == format!("clip.{extension}"))
+                .unwrap();
+            assert!(video.is_video);
+            assert_eq!(video.kind, "VIDEO");
+        }
     }
 
     #[test]
@@ -8460,67 +8473,97 @@ mod tests {
     }
 
     #[test]
-    fn renders_mp4_with_native_video_controls() {
-        let page = render_video_page("clip<&>.mp4", 4096);
+    fn renders_videos_with_native_video_controls() {
+        for (extension, content_type) in [
+            ("mp4", "video/mp4"),
+            ("mov", "video/quicktime"),
+            ("MOV", "video/quicktime"),
+        ] {
+            let page = render_video_page(&format!("clip<&>.{extension}"), 4096);
 
-        assert!(page.starts_with("<!doctype html>"));
-        assert!(page.contains("<video controls playsinline preload=\"metadata\""));
-        assert!(page.contains("src=\"?mode=asset\""));
-        assert!(page.contains("href=\"?mode=asset\" download"));
-        assert!(page.contains("clip&lt;&amp;&gt;.mp4"));
-        assert_eq!(mime_type(Path::new("clip.mp4")), "video/mp4");
-        assert_eq!(file_kind(Path::new("clip.mp4")), "VIDEO");
+            assert!(page.starts_with("<!doctype html>"));
+            assert!(page.contains("<video controls playsinline preload=\"metadata\""));
+            assert!(page.contains("src=\"?mode=asset\""));
+            assert!(page.contains("href=\"?mode=asset\" download"));
+            assert!(page.contains(&format!("clip&lt;&amp;&gt;.{extension}")));
+            assert_eq!(
+                mime_type(Path::new(&format!("clip.{extension}"))),
+                content_type
+            );
+            assert_eq!(file_kind(Path::new(&format!("clip.{extension}"))), "VIDEO");
+            assert!(page.contains(&format!(
+                "class=\"kind\">{}</span>",
+                extension.to_ascii_uppercase()
+            )));
+            assert!(is_gallery_media(Path::new(&format!("clip.{extension}"))));
+        }
     }
 
     #[test]
-    fn serves_mp4_byte_ranges() {
-        let directory = tempfile::tempdir().unwrap();
-        fs::write(directory.path().join("clip.mp4"), b"0123456789").unwrap();
-        let root = fs::canonicalize(directory.path()).unwrap();
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = std::thread::spawn(move || {
-            let state = StateStore::new(None).unwrap();
-            for _ in 0..3 {
-                let (stream, _) = listener.accept().unwrap();
-                handle_connection(
-                    stream,
-                    &root,
-                    &CollaborationHub::default(),
-                    &ReviewHub::default(),
-                    false,
-                    None,
-                    &state,
-                )
-                .unwrap();
-            }
-        });
-        let request = |target: &str, headers: &str| {
-            let mut client = TcpStream::connect(address).unwrap();
-            write!(
+    fn serves_video_byte_ranges() {
+        for (extension, content_type) in [
+            ("mp4", "video/mp4"),
+            ("mov", "video/quicktime"),
+            ("MOV", "video/quicktime"),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            fs::write(
+                directory.path().join(format!("clip.{extension}")),
+                b"0123456789",
+            )
+            .unwrap();
+            let root = fs::canonicalize(directory.path()).unwrap();
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let state = StateStore::new(None).unwrap();
+                for _ in 0..3 {
+                    let (stream, _) = listener.accept().unwrap();
+                    handle_connection(
+                        stream,
+                        &root,
+                        &CollaborationHub::default(),
+                        &ReviewHub::default(),
+                        false,
+                        None,
+                        &state,
+                    )
+                    .unwrap();
+                }
+            });
+            let request = |target: &str, headers: &str| {
+                let mut client = TcpStream::connect(address).unwrap();
+                write!(
                 client,
                 "GET {target} HTTP/1.1\r\nHost: localhost\r\n{headers}Connection: close\r\n\r\n"
             )
-            .unwrap();
-            let mut response = String::new();
-            client.read_to_string(&mut response).unwrap();
-            response
-        };
+                .unwrap();
+                let mut response = String::new();
+                client.read_to_string(&mut response).unwrap();
+                response
+            };
 
-        let page = request("/clip.mp4", "Accept: text/html\r\n");
-        assert!(page.starts_with("HTTP/1.1 200 OK"));
-        assert!(page.contains("<video controls"));
+            let page = request(&format!("/clip.{extension}"), "Accept: text/html\r\n");
+            assert!(page.starts_with("HTTP/1.1 200 OK"));
+            assert!(page.contains("<video controls"));
 
-        let range = request("/clip.mp4?mode=asset", "Range: bytes=2-5\r\n");
-        assert!(range.starts_with("HTTP/1.1 206 Partial Content"));
-        assert!(range.contains("Content-Type: video/mp4\r\n"));
-        assert!(range.contains("Content-Range: bytes 2-5/10\r\n"));
-        assert!(range.ends_with("2345"));
+            let range = request(
+                &format!("/clip.{extension}?mode=asset"),
+                "Range: bytes=2-5\r\n",
+            );
+            assert!(range.starts_with("HTTP/1.1 206 Partial Content"));
+            assert!(range.contains(&format!("Content-Type: {content_type}\r\n")));
+            assert!(range.contains("Content-Range: bytes 2-5/10\r\n"));
+            assert!(range.ends_with("2345"));
 
-        let invalid = request("/clip.mp4?mode=asset", "Range: bytes=20-30\r\n");
-        assert!(invalid.starts_with("HTTP/1.1 416 Range Not Satisfiable"));
-        assert!(invalid.contains("Content-Range: bytes */10\r\n"));
-        server.join().unwrap();
+            let invalid = request(
+                &format!("/clip.{extension}?mode=asset"),
+                "Range: bytes=20-30\r\n",
+            );
+            assert!(invalid.starts_with("HTTP/1.1 416 Range Not Satisfiable"));
+            assert!(invalid.contains("Content-Range: bytes */10\r\n"));
+            server.join().unwrap();
+        }
     }
 
     #[test]
