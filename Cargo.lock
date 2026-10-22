@@ -635,6 +635,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "heic-rs"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8883c3bfa6b4ff19a40e52a6dc051c5612cbe21bf408fc6d4875e8dfd777cb66"
+
+[[package]]
 name = "hkdf"
 version = "0.12.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1667,6 +1673,7 @@ name = "webdir"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "heic-rs",
  "image",
  "jsonwebtoken",
  "pulldown-cmark",

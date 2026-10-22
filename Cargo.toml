@@ -5,6 +5,7 @@ edition = "2021"
 description = "A lightweight workspace for browsing and reviewing local files"
 
 [dependencies]
+heic-rs = { version = "0.1.4", default-features = false, features = ["std"] }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
 pulldown-cmark = { version = "0.13.4", default-features = false, features = ["html"] }
 serde = { version = "1.0", features = ["derive"] }

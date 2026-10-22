@@ -2234,7 +2234,9 @@ if (galleryToggle) {
     lightboxBackdrop.style.backgroundImage = `url(${JSON.stringify(thumbnailSource)})`;
     lightboxImage.alt = name;
     lightboxCaption.textContent = name;
-    imageDownload.href = entry.originalSrc;
+    const downloadUrl = new URL(entry.originalSrc, location.href);
+    downloadUrl.searchParams.set('mode', 'asset');
+    imageDownload.href = downloadUrl.href;
     imageDownload.download = name;
     zoom = {scale: 1, x: 0, y: 0, mode: 'fit', originalLoaded: false};
     applyZoom();

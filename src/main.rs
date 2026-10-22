@@ -506,6 +506,7 @@ fn handle_connection_with_auth(
     let thumb_mode = mode.as_deref() == Some("thumb");
     let gallery_thumb_mode = mode.as_deref() == Some("gallery-thumb");
     let gallery_preview_mode = mode.as_deref() == Some("gallery-preview");
+    let image_full_mode = mode.as_deref() == Some("image-full");
     let collaboration_mode = mode.as_deref() == Some("collab");
     let review_data_mode = mode.as_deref() == Some("review-data");
     let review_action_mode = mode.as_deref() == Some("review-action");
@@ -1433,8 +1434,15 @@ fn handle_connection_with_auth(
 
     // Directory listings request a downscaled preview instead of decoding a
     // full-size photo into a 40px well.
-    if thumb_mode || gallery_thumb_mode || gallery_preview_mode {
-        let max_edge = if gallery_preview_mode {
+    if thumb_mode
+        || gallery_thumb_mode
+        || gallery_preview_mode
+        || image_full_mode
+        || (is_heic_file(&canonical) && mode.is_none() && !request_wants_html(&headers))
+    {
+        let max_edge = if image_full_mode || mode.is_none() {
+            u32::MAX
+        } else if gallery_preview_mode {
             GALLERY_PREVIEW_MAX_EDGE
         } else if gallery_thumb_mode {
             GALLERY_THUMBNAIL_MAX_EDGE
@@ -3095,8 +3103,13 @@ fn read_directory_entries(
         let size = metadata.as_ref().map_or(0, fs::Metadata::len);
         let version = metadata.as_ref().map(file_version);
         let original = (is_image || is_video).then(|| {
+            let mode = if is_heic_file(&path) {
+                "image-full"
+            } else {
+                "asset"
+            };
             format!(
-                "{href}?mode=asset&v={}",
+                "{href}?mode={mode}&v={}",
                 version.as_deref().unwrap_or_default()
             )
         });
@@ -3264,6 +3277,10 @@ fn is_image_file(path: &Path) -> bool {
     file_kind(path) == "IMAGE"
 }
 
+fn is_heic_file(path: &Path) -> bool {
+    has_extension(path, "heic") || has_extension(path, "heif")
+}
+
 fn is_video_file(path: &Path) -> bool {
     file_kind(path) == "VIDEO"
 }
@@ -3400,14 +3417,41 @@ fn send_image_thumbnail(
     }
 }
 
-fn render_image_thumbnail(source: &[u8], max_edge: u32) -> io::Result<(Vec<u8>, &'static str)> {
+fn decode_image(source: &[u8]) -> io::Result<image::DynamicImage> {
+    if source.get(4..8) == Some(b"ftyp") {
+        let info = heic_rs::probe(source).map_err(image_io_error)?;
+        if info.width > 16_384 || info.height > 16_384 {
+            return Err(image_io_error("图片尺寸超过处理限制"));
+        }
+        let layout = if info.has_alpha {
+            heic_rs::PixelLayout::Rgba8
+        } else {
+            heic_rs::PixelLayout::Rgb8
+        };
+        let options = heic_rs::DecodeOptions::default()
+            .with_layout(layout)
+            .with_max_pixels(Some(256 * 1024 * 1024 / layout.bytes_per_pixel() as u64));
+        let decoded = heic_rs::decode(source, &options).map_err(image_io_error)?;
+        return if info.has_alpha {
+            image::RgbaImage::from_raw(decoded.width, decoded.height, decoded.data)
+                .map(image::DynamicImage::ImageRgba8)
+        } else {
+            image::RgbImage::from_raw(decoded.width, decoded.height, decoded.data)
+                .map(image::DynamicImage::ImageRgb8)
+        }
+        .ok_or_else(|| image_io_error("无效的 HEIC 像素数据"));
+    }
     let mut reader = image::ImageReader::new(Cursor::new(source)).with_guessed_format()?;
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(16_384);
     limits.max_image_height = Some(16_384);
     limits.max_alloc = Some(256 * 1024 * 1024);
     reader.limits(limits);
-    let image = reader.decode().map_err(image_io_error)?;
+    reader.decode().map_err(image_io_error)
+}
+
+fn render_image_thumbnail(source: &[u8], max_edge: u32) -> io::Result<(Vec<u8>, &'static str)> {
+    let image = decode_image(source)?;
     let max_edge = max_edge.min(image.width().max(image.height()));
     let thumb = image.thumbnail(max_edge, max_edge);
     let mut bytes = Vec::new();
@@ -3472,7 +3516,7 @@ fn file_kind(path: &Path) -> &'static str {
         "java" => "JAVA",
         "c" | "h" | "cc" | "cpp" | "cxx" | "hpp" | "hxx" => "C/C++",
         "lisp" | "lsp" | "cl" | "el" | "scm" | "ss" | "rkt" => "LISP",
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" => "IMAGE",
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "heic" | "heif" => "IMAGE",
         "mp4" | "mov" => "VIDEO",
         "drawio" => "DRAWIO",
         "pdf" => "PDF",
@@ -3553,6 +3597,8 @@ fn has_binary_extension(path: &Path) -> bool {
             | "ico"
             | "bmp"
             | "avif"
+            | "heic"
+            | "heif"
             | "pdf"
             | "zip"
             | "gz"
@@ -3814,10 +3860,15 @@ fn render_svg_page(title: &str, size: u64) -> String {
 }
 
 fn render_image_page(title: &str, kind: &str, size: u64) -> String {
+    let image_mode = if is_heic_file(Path::new(title)) {
+        "image-full"
+    } else {
+        "asset"
+    };
     let title = escape_html(title);
     let kind = escape_html(kind);
     format!(
-        "<!doctype html>\n<html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\"><title>{title}</title><style>{SVG_CSS}</style></head><body><header><button class=\"back\" id=\"history-back\" type=\"button\" aria-label=\"返回上一页\">←</button><span class=\"kind\">{kind}</span><span class=\"filename\">{title}</span><span class=\"meta\">{size}</span><button id=\"scale\" type=\"button\">原始尺寸</button><a class=\"raw\" href=\"?mode=asset\">原图</a><a class=\"raw\" href=\"?mode=asset\" download=\"{title}\">下载</a></header><main class=\"canvas\"><img id=\"artwork\" src=\"?mode=asset\" alt=\"{title}\"><p id=\"error\" hidden>无法渲染这张图片</p></main><script>{SVG_JS}</script></body></html>",
+        "<!doctype html>\n<html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\"><title>{title}</title><style>{SVG_CSS}</style></head><body><header><button class=\"back\" id=\"history-back\" type=\"button\" aria-label=\"返回上一页\">←</button><span class=\"kind\">{kind}</span><span class=\"filename\">{title}</span><span class=\"meta\">{size}</span><button id=\"scale\" type=\"button\">原始尺寸</button><a class=\"raw\" href=\"?mode=asset\">原图</a><a class=\"raw\" href=\"?mode=asset\" download=\"{title}\">下载</a></header><main class=\"canvas\"><img id=\"artwork\" src=\"?mode={image_mode}\" alt=\"{title}\"><p id=\"error\" hidden>无法渲染这张图片</p></main><script>{SVG_JS}</script></body></html>",
         size = human_size(size)
     )
 }
@@ -5828,6 +5879,8 @@ fn mime_type(path: &Path) -> &'static str {
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",
         "webp" => "image/webp",
+        "heic" => "image/heic",
+        "heif" => "image/heif",
         "ico" => "image/x-icon",
         "wasm" => "application/wasm",
         "pdf" => "application/pdf",
@@ -8355,6 +8408,110 @@ mod tests {
             assert!(video.is_video);
             assert_eq!(video.kind, "VIDEO");
         }
+    }
+
+    #[test]
+    fn heic_previews_decode_tiles_and_rotation() {
+        let tiled = include_bytes!("../tests/browser/media/checker-1024.heic");
+        let (bytes, mime) = render_image_thumbnail(tiled, 128).unwrap();
+        assert_eq!(mime, "image/jpeg");
+        let image = image::load_from_memory(&bytes).unwrap().to_rgb8();
+        assert_eq!(image.dimensions(), (128, 128));
+        assert!(image.get_pixel(2, 2)[0] > 220);
+        assert!(image.get_pixel(10, 2)[0] < 35);
+
+        let mut strips = include_bytes!("../tests/browser/media/rgb-strips-96.heic").to_vec();
+        let image = decode_image(&strips).unwrap().to_rgb8();
+        assert_eq!(image.dimensions(), (96, 32));
+        for (x, channel) in [(16, 0), (48, 1), (80, 2)] {
+            assert!(image.get_pixel(x, 16)[channel] > 200);
+        }
+        let rotation = strips
+            .windows(4)
+            .position(|bytes| bytes == b"irot")
+            .unwrap();
+        strips[rotation + 4] = 1;
+        let image = decode_image(&strips).unwrap();
+        assert_eq!((image.width(), image.height()), (32, 96));
+    }
+
+    #[test]
+    fn heic_files_support_gallery_preview_download_and_similarity() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let cache_directory = tempfile::tempdir().unwrap();
+        let cache = ImageCache::new(cache_directory.path()).unwrap();
+        let source = include_bytes!("../tests/browser/media/checker-1024.heic");
+        let state = StateStore::new(None).unwrap();
+        for name in ["photo.HEIC", "photo.heif"] {
+            let path = root.join(name);
+            fs::write(&path, source).unwrap();
+            for (mode, edge) in [
+                ("thumb", 128),
+                ("gallery-thumb", 512),
+                ("gallery-preview", 1024),
+                ("image-full", 1024),
+            ] {
+                let (headers, bytes) = video_thumbnail_request(
+                    &root,
+                    Some(&cache),
+                    "GET",
+                    &format!("/{name}?mode={mode}"),
+                    &[],
+                    "",
+                );
+                assert!(headers.starts_with("HTTP/1.1 200"), "{headers}");
+                assert!(headers.contains("Content-Type: image/jpeg"));
+                let image = image::load_from_memory(&bytes).unwrap();
+                assert_eq!((image.width(), image.height()), (edge, edge));
+            }
+            let (headers, bytes) = video_thumbnail_request(
+                &root,
+                Some(&cache),
+                "GET",
+                &format!("/{name}?mode=asset"),
+                &[],
+                "",
+            );
+            assert!(headers.contains(mime_type(&path)));
+            assert_eq!(bytes, source);
+            let (_, page) = video_thumbnail_request(
+                &root,
+                None,
+                "GET",
+                &format!("/{name}"),
+                &[],
+                "Accept: text/html\r\n",
+            );
+            let page = String::from_utf8(page).unwrap();
+            assert!(page.contains("src=\"?mode=image-full\""));
+            assert!(page.contains("href=\"?mode=asset\" download"));
+            let (_, bytes) = video_thumbnail_request(
+                &root,
+                None,
+                "GET",
+                &format!("/{name}"),
+                &[],
+                "Accept: image/*\r\n",
+            );
+            assert_eq!(image::load_from_memory(&bytes).unwrap().width(), 1024);
+        }
+        let entries =
+            read_directory_entries(&root, &root, Path::new(""), &state, &Access::default())
+                .unwrap();
+        assert_eq!(entries.len(), 2);
+        for entry in entries {
+            assert!(entry.is_image);
+            assert!(entry.original_src.unwrap().contains("mode=image-full"));
+            assert!(entry.gallery_src.unwrap().contains("mode=gallery-thumb"));
+        }
+        assert_eq!(image_similarity::order(&root, &state).unwrap().len(), 2);
+        let path = root.join("photo.HEIC");
+        let version = format!("2:{}", file_version(&fs::metadata(&path).unwrap()));
+        assert!(state
+            .image_similarity_feature(&path, &version)
+            .unwrap()
+            .is_some());
     }
 
     #[test]

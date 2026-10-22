@@ -111,7 +111,11 @@ fn feature(path: &Path, source_version: &str, state: &StateStore) -> io::Result<
         }
     }
 
-    let image = image::open(path).map_err(io::Error::other)?;
+    let image = if super::is_heic_file(path) {
+        super::decode_image(&fs::read(path)?)?
+    } else {
+        image::open(path).map_err(io::Error::other)?
+    };
     let aspect_ratio = image.width() as f32 / image.height().max(1) as f32;
     let grayscale = image
         .resize_exact(32, 32, FilterType::Triangle)
