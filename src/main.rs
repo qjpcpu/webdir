@@ -54,6 +54,8 @@ const THEME_JS: &str = include_str!("../assets/theme.js");
 const THEME_CSS: &str = include_str!("../assets/theme.css");
 const YJS_PATH: &str = "/__webdir/yjs-13.6.32.min.js";
 const YJS_JS: &[u8] = include_bytes!("../assets/yjs-13.6.32.min.js");
+const PINYIN_PATH: &str = "/__webdir/pinyin-pro-3.29.5.min.js";
+const PINYIN_JS: &[u8] = include_bytes!("../assets/pinyin-pro-3.29.5.min.js");
 const AUTH_PATH: &str = "/__webdir/auth";
 const INVALID_ACCESS_PATH: &str = "/__webdir/invalid-access";
 const AUTH_COOKIE_NAME: &str = "webdir_auth_token";
@@ -491,6 +493,14 @@ fn handle_connection_with_auth(
             head_only,
         );
     }
+    if matches!(method, "GET" | "HEAD") && request_path == PINYIN_PATH {
+        return send_content(
+            &mut stream,
+            PINYIN_JS,
+            "text/javascript; charset=utf-8",
+            head_only,
+        );
+    }
     if matches!(method, "GET" | "HEAD")
         && matches!(request_path, "/favicon.svg" | "/favicon.ico")
         && (access.scope.is_some() || !root.join(request_path.trim_start_matches('/')).is_file())
@@ -591,7 +601,7 @@ fn handle_connection_with_auth(
                 &mut stream,
                 500,
                 "Internal Server Error",
-                "保存目录收藏失败，请重试。\n",
+                "保存收藏失败，请重试。\n",
                 false,
             ),
         };
@@ -841,12 +851,12 @@ fn handle_connection_with_auth(
         };
     }
     if mode.as_deref() == Some("directory-favourite-label") {
-        if method != "POST" || !metadata.is_dir() {
+        if method != "POST" {
             return send_text(
                 &mut stream,
                 405,
                 "Method Not Allowed",
-                "请从目录页修改收藏名称\n",
+                "请使用 POST 修改收藏名称\n",
                 head_only,
             );
         }
@@ -910,7 +920,7 @@ fn handle_connection_with_auth(
                 &mut stream,
                 403,
                 "Forbidden",
-                "收藏目录超出分享范围\n",
+                "收藏项目超出分享范围\n",
                 false,
             );
         }
@@ -926,12 +936,12 @@ fn handle_connection_with_auth(
         };
     }
     if mode.as_deref() == Some("directory-favourite") {
-        if method != "PUT" || !metadata.is_dir() {
+        if method != "PUT" {
             return send_text(
                 &mut stream,
                 405,
                 "Method Not Allowed",
-                "仅支持收藏或取消收藏目录\n",
+                "仅支持 PUT 收藏或 DELETE 取消收藏\n",
                 head_only,
             );
         }
@@ -941,21 +951,18 @@ fn handle_connection_with_auth(
                 &mut stream,
                 500,
                 "Internal Server Error",
-                "保存目录收藏失败，请重试。\n",
+                "保存收藏失败，请重试。\n",
                 false,
             ),
         };
     }
     if mode.as_deref() == Some("favourite") {
-        if !matches!(method, "PUT" | "DELETE")
-            || !metadata.is_file()
-            || !is_gallery_media(&canonical)
-        {
+        if !matches!(method, "PUT" | "DELETE") || !metadata.is_file() {
             return send_text(
                 &mut stream,
                 405,
                 "Method Not Allowed",
-                "仅支持点赞或取消点赞图片和视频\n",
+                "仅支持点赞或取消点赞文件\n",
                 head_only,
             );
         }
@@ -971,15 +978,12 @@ fn handle_connection_with_auth(
         };
     }
     if mode.as_deref() == Some("image-tag") {
-        if !matches!(method, "PUT" | "DELETE")
-            || !metadata.is_file()
-            || !is_gallery_media(&canonical)
-        {
+        if !matches!(method, "PUT" | "DELETE") || !metadata.is_file() {
             return send_text(
                 &mut stream,
                 405,
                 "Method Not Allowed",
-                "仅支持设置或取消图片和视频数字标记\n",
+                "仅支持设置或取消文件数字标记\n",
                 head_only,
             );
         }
@@ -995,7 +999,7 @@ fn handle_connection_with_auth(
             match serde_json::from_str::<ImageTag>(&body) {
                 Ok(value) if (1..=5).contains(&value.tag) => Some(value.tag),
                 _ => {
-                    return send_text(&mut stream, 400, "Bad Request", "图片标记应为 1–5\n", false)
+                    return send_text(&mut stream, 400, "Bad Request", "文件标记应为 1–5\n", false)
                 }
             }
         } else {
@@ -1007,7 +1011,7 @@ fn handle_connection_with_auth(
                 &mut stream,
                 500,
                 "Internal Server Error",
-                "保存图片标记失败，请重试。\n",
+                "保存文件标记失败，请重试。\n",
                 false,
             ),
         };
@@ -1018,7 +1022,7 @@ fn handle_connection_with_auth(
                 &mut stream,
                 405,
                 "Method Not Allowed",
-                "请从目录页批量操作图片\n",
+                "请从目录页批量操作文件\n",
                 head_only,
             );
         }
@@ -1987,6 +1991,8 @@ fn send_empty(stream: &mut TcpStream, status: u16, reason: &str) -> io::Result<(
 }
 
 const FILE_SHORTCUT_JS: &str = include_str!("../assets/file-shortcuts.js");
+const FAVOURITE_ICON: &str = include_str!("../assets/favourite-icon.svg");
+const FAVOURITE_ICON_CSS: &str = include_str!("../assets/favourite-icon.css");
 
 const PATH_SEARCH_CONTROL: &str = r#"<div class="path-search"><button class="path-search-toggle" id="path-search-toggle" type="button" aria-label="从根目录搜索文件和文件夹" aria-expanded="false" aria-controls="path-search-panel"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6.5"></circle><path d="m14.8 14.8 5.2 5.2"></path></svg></button><section class="path-search-panel" id="path-search-panel" aria-label="文件和文件夹搜索" hidden><label class="path-search-box"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6.5"></circle><path d="m14.8 14.8 5.2 5.2"></path></svg><input class="path-search-input" id="path-search-input" type="search" placeholder="输入文件、文件夹名或路径…" autocomplete="off" aria-label="从根目录搜索文件和文件夹" aria-controls="path-search-results"></label><div class="path-search-status" id="path-search-status" role="status">输入文件、文件夹名或路径开始搜索</div><div class="path-search-results" id="path-search-results" role="listbox"></div></section></div>"#;
 
@@ -2026,12 +2032,17 @@ body > header,.topbar { top:2.4rem; }
 .file-breadcrumbs { position:fixed; inset:0 0 auto; z-index:8; display:flex; align-items:center; gap:.55rem; height:2.4rem; padding:0 var(--file-header-padding); color:var(--muted); background:var(--paper); border-bottom:1px solid var(--line); font:600 .78rem/1.4 ui-monospace,SFMono-Regular,Consolas,monospace; scrollbar-width:none; }
 .file-breadcrumbs > a,.file-breadcrumbs > span { flex-shrink:0; }
 .file-breadcrumbs a { color:inherit; text-decoration:none; white-space:nowrap; }
-.file-breadcrumbs > a:has(+ .recent-link) { flex-shrink:1; min-width:0; overflow:hidden; text-overflow:ellipsis; }
-.file-breadcrumbs.measuring > a:has(+ .recent-link) { flex-shrink:0; }
+.file-breadcrumbs > a:has(+ :is(.recent-link,.path-search)) { flex-shrink:1; min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.file-breadcrumbs.measuring > a:has(+ :is(.recent-link,.path-search)) { flex-shrink:0; }
 .file-breadcrumbs [hidden] { display:none !important; }
 .file-breadcrumbs .recent-link { display:inline-flex; align-items:center; gap:.35rem; flex-shrink:0; margin-left:auto; padding-left:.5rem; }
 .file-breadcrumbs .recent-link svg { width:1rem; height:1rem; fill:none; stroke:currentColor; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; }
+.file-breadcrumbs > a + .path-search { margin-left:auto; }
 .file-breadcrumbs a:hover { color:var(--accent); }
+#file-favourite-toggle { flex-shrink:0; display:grid; place-items:center; width:2rem; height:2rem; padding:0; border:0; border-radius:.4rem; color:var(--muted); background:transparent; font-size:1.35rem; cursor:pointer; }
+.top-actions #file-favourite-toggle { border:1px solid var(--line); border-radius:.45rem; background:var(--surface); }
+#file-favourite-toggle:hover,#file-favourite-toggle[aria-pressed="true"] { color:var(--accent); background:var(--accent-soft); }
+#file-favourite-toggle:disabled { opacity:.5; cursor:wait; }
 #history-back { flex:0 0 2rem; padding:0; border:0; background:transparent; font:inherit; cursor:pointer; }
 #history-back:hover { color:var(--accent); background:var(--accent-soft); }
 .breadcrumb-overflow { display:flex; align-items:center; gap:.55rem; }
@@ -2056,6 +2067,26 @@ fn send_file_page_with_access(
     if !head_only {
         recent::record(state, root, relative, access, false)?;
     }
+    let bookmarked = state.is_directory_favourite(&join_relative_path(root, relative))?;
+    let bookmark_label = if bookmarked {
+        "移出收藏夹"
+    } else {
+        "添加到收藏夹"
+    };
+    let bookmark = format!(
+        "<button id=\"file-favourite-toggle\" type=\"button\" aria-pressed=\"{bookmarked}\" aria-label=\"{bookmark_label}\" title=\"{bookmark_label}\">{FAVOURITE_ICON}</button>"
+    );
+    let mut body = body.to_owned();
+    let navigation_actions = if has_extension(relative, "md") {
+        body = body.replacen(
+            "</span></header>",
+            &format!("{bookmark}</span></header>"),
+            1,
+        );
+        String::new()
+    } else {
+        format!("{}{bookmark}", recent::link(access))
+    };
     let body = body
         .replacen(
             "<body",
@@ -2068,15 +2099,14 @@ fn send_file_page_with_access(
         )
         .replacen(
             "</head>",
-            &format!("<style>{FILE_NAVIGATION_CSS}{PATH_SEARCH_CSS}</style></head>"),
+            &format!("<style>{FILE_NAVIGATION_CSS}{PATH_SEARCH_CSS}{FAVOURITE_ICON_CSS}</style></head>"),
             1,
         )
         .replacen(
             "<header",
             &format!(
-                "<nav class=\"file-breadcrumbs\" aria-label=\"当前位置\">{}{}{PATH_SEARCH_CONTROL}</nav><header",
-                render_breadcrumbs_with_access(relative.parent().unwrap(), access),
-                recent::link(access)
+                "<nav class=\"file-breadcrumbs\" aria-label=\"当前位置\">{}{navigation_actions}{PATH_SEARCH_CONTROL}</nav><header",
+                render_breadcrumbs_with_access(relative.parent().unwrap(), access)
             ),
             1,
         )
@@ -2630,6 +2660,10 @@ enum BatchImageAction {
         files: Vec<String>,
         filter: ImageFilter,
     },
+    Mark {
+        files: Vec<String>,
+        mark: ImageFilter,
+    },
 }
 
 #[derive(serde::Serialize)]
@@ -2776,25 +2810,30 @@ fn batch_images_with_access(
     let files = match &action {
         BatchImageAction::Move { files, .. }
         | BatchImageAction::Delete { files }
-        | BatchImageAction::ClearMark { files, .. } => files,
+        | BatchImageAction::ClearMark { files, .. }
+        | BatchImageAction::Mark { files, .. } => files,
     };
     let mut result = BatchImagesResult::default();
     let mut changed_paths = Vec::new();
     for name in files {
         let outcome = (|| -> io::Result<()> {
             if !is_file_name(name) {
-                return Err(io::Error::other("请选择当前目录的图片或视频"));
+                return Err(io::Error::other("请选择当前目录的文件"));
             }
             let source = directory.join(name);
-            if !source.is_file() || !is_gallery_media(&source) {
-                return Err(io::Error::other("图片或视频文件不存在"));
+            if !source.is_file() {
+                return Err(io::Error::other("文件不存在"));
             }
             let source_key = fs::canonicalize(&source)?;
             if !access.allows(&source_key)
-                || (!matches!(&action, BatchImageAction::ClearMark { .. })
+                || (is_gallery_media(&source)
+                    && matches!(
+                        &action,
+                        BatchImageAction::Move { .. } | BatchImageAction::Delete { .. }
+                    )
                     && !access.allows(&gallery_comments::comments_path(&source_key)))
             {
-                return Err(io::Error::other("图片或评论文件超出分享范围"));
+                return Err(io::Error::other("文件或评论文件超出分享范围"));
             }
             match &action {
                 BatchImageAction::Move {
@@ -2807,7 +2846,8 @@ fn batch_images_with_access(
                     let target_directory = root.join(&target_relative);
                     if !access.allows_request(root, &target_relative)
                         || !access.allows(&target_directory)
-                        || !access.allows(&target_directory.join("gallery-comments.json"))
+                        || (is_gallery_media(&source)
+                            && !access.allows(&target_directory.join("gallery-comments.json")))
                     {
                         return Err(io::Error::other("目标目录或评论文件超出分享范围"));
                     }
@@ -2826,9 +2866,13 @@ fn batch_images_with_access(
                     state.set_favourite(&target, liked)?;
                     state.set_image_tag(&target, tag)?;
                     state.clear_image_state(&source_key)?;
-                    gallery_comments::move_for_image(&source_key, &target).map_err(|error| {
-                        io::Error::other(format!("图片已移动，但转移评论失败：{error}"))
-                    })?;
+                    if is_gallery_media(&source) {
+                        gallery_comments::move_for_image(&source_key, &target).map_err(
+                            |error| {
+                                io::Error::other(format!("文件已移动，但转移评论失败：{error}"))
+                            },
+                        )?;
+                    }
                 }
                 BatchImageAction::Delete { .. } => {
                     fs::remove_file(&source)?;
@@ -2837,6 +2881,25 @@ fn batch_images_with_access(
                 }
                 BatchImageAction::ClearMark { .. } => {
                     changed_paths.push(source_key);
+                }
+                BatchImageAction::Mark { mark, .. } => {
+                    let tag = match mark {
+                        ImageFilter::Favourite => None,
+                        ImageFilter::Tag1 => Some(1),
+                        ImageFilter::Tag2 => Some(2),
+                        ImageFilter::Tag3 => Some(3),
+                        ImageFilter::Tag4 => Some(4),
+                        ImageFilter::Tag5 => Some(5),
+                        ImageFilter::All => {
+                            return Err(io::Error::other("请选择喜欢或 1–5 数字标记"))
+                        }
+                    };
+                    if let Some(tag) = tag {
+                        state.set_image_tag(&source_key, Some(tag))?;
+                    } else {
+                        state.set_favourite(&source_key, true)?;
+                    }
+                    result.affected += 1;
                 }
             }
             Ok(())
@@ -2861,10 +2924,13 @@ fn batch_images_with_access(
             if let Err(error) = state.clear_images(&changed_paths, true, true, true) {
                 result
                     .errors
-                    .push(format!("图片已删除，但清理标记失败：{error}"));
+                    .push(format!("文件已删除，但清理标记失败：{error}"));
             }
             let mut comment_groups = std::collections::BTreeMap::<_, Vec<_>>::new();
-            for path in changed_paths {
+            for path in changed_paths
+                .into_iter()
+                .filter(|path| is_gallery_media(path))
+            {
                 comment_groups
                     .entry(gallery_comments::comments_path(&path))
                     .or_default()
@@ -2873,13 +2939,13 @@ fn batch_images_with_access(
             for (comments_path, paths) in comment_groups {
                 if let Err(error) = gallery_comments::remove_for_images(&paths) {
                     result.errors.push(format!(
-                        "图片已删除，但清理评论 {} 失败：{error}",
+                        "文件已删除，但清理评论 {} 失败：{error}",
                         comments_path.display()
                     ));
                 }
             }
         }
-        BatchImageAction::Move { .. } => {}
+        BatchImageAction::Move { .. } | BatchImageAction::Mark { .. } => {}
     }
     let organise_directory = directory
         .file_name()
@@ -2998,7 +3064,17 @@ fn render_directory_favourites_with_access(
     let mut items = String::new();
     for path in &favourites {
         let relative = path.strip_prefix(root).unwrap_or(Path::new(""));
-        let href = url_for_path(relative, true);
+        let href = url_for_path(relative, path.is_dir());
+        let open_href = if path.is_file() && is_gallery_media(path) {
+            format!(
+                "{}?view=gallery&open={}",
+                url_for_path(relative.parent().unwrap_or(Path::new("")), true),
+                percent_encode_component(&relative.file_name().unwrap().to_string_lossy()),
+            )
+        } else {
+            href.clone()
+        };
+        let open_href = escape_html(&open_href);
         let display_relative = access
             .scope
             .as_ref()
@@ -3033,13 +3109,20 @@ fn render_directory_favourites_with_access(
             ""
         };
         let item = format!(
-            "<span class=\"directory-favourite\" data-directory-favourite-path=\"{href}\" draggable=\"true\"><button class=\"directory-favourite-drag\" type=\"button\" aria-label=\"拖动排序：{label}\" title=\"拖动排序\">⠿</button><a href=\"{href}\"{active} title=\"{label}\">{label_html}</a><button type=\"button\" data-directory-favourite-remove=\"{href}\" aria-label=\"移出收藏夹：{label}\" title=\"移出收藏夹\">×</button></span>"
+            "<span class=\"directory-favourite\" data-directory-favourite-path=\"{href}\" draggable=\"true\"><button class=\"directory-favourite-drag\" type=\"button\" aria-label=\"拖动排序：{label}\" title=\"拖动排序\">⠿</button><a href=\"{open_href}\"{active} title=\"{label}\">{label_html}</a><button type=\"button\" data-directory-favourite-remove=\"{href}\" aria-label=\"移出收藏夹：{label}\" title=\"移出收藏夹\">×</button></span>"
         );
         items.push_str(&item);
     }
     Ok(format!(
-        "<nav class=\"directory-favourites\" aria-label=\"收藏目录\"><span class=\"directory-favourites-label\"><svg viewBox=\"0 0 20 20\" aria-hidden=\"true\"><path d=\"M5.5 3h9a1 1 0 0 1 1 1v13L10 13.5 4.5 17V4a1 1 0 0 1 1-1Z\"/></svg><span>收藏夹</span></span><div class=\"directory-favourites-list\">{items}</div></nav>"
+        "<nav class=\"directory-favourites\" aria-label=\"收藏夹\">{}</nav>",
+        render_favourites_menu(&items, favourites.len())
     ))
+}
+
+fn render_favourites_menu(items: &str, count: usize) -> String {
+    format!(
+        "<details class=\"favourites-dropdown\"><summary aria-label=\"收藏夹\">{FAVOURITE_ICON}<span>收藏夹</span><span class=\"favourites-count\">{count}</span><svg class=\"favourites-chevron\" viewBox=\"0 0 16 16\" aria-hidden=\"true\"><path d=\"m4.5 6 3.5 3.5L11.5 6\"/></svg></summary><div class=\"directory-favourites-panel\"><label class=\"favourites-search-box\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"10.5\" cy=\"10.5\" r=\"6.5\"/><path d=\"m15.5 15.5 5 5\"/></svg><input class=\"favourites-search\" type=\"search\" aria-label=\"搜索收藏夹\" placeholder=\"搜索别名、文件名或拼音…\" autocomplete=\"off\"></label><div class=\"directory-favourites-list\">{items}</div><p class=\"favourites-empty\" role=\"status\" hidden>没有匹配的收藏</p></div></details>"
+    )
 }
 
 #[cfg(test)]
@@ -3090,7 +3173,9 @@ fn read_directory_entries(
             .map_or_else(|| file_type.is_dir(), fs::Metadata::is_dir);
         let is_image = metadata.as_ref().is_some_and(|m| m.is_file()) && is_image_file(&path);
         let is_video = metadata.as_ref().is_some_and(|m| m.is_file()) && is_video_file(&path);
-        let canonical = (is_image || is_video)
+        let canonical = metadata
+            .as_ref()
+            .is_some_and(|m| m.is_file())
             .then(|| fs::canonicalize(&path))
             .transpose()?;
         let (favourite, image_tag) = match canonical.as_deref() {
@@ -3140,8 +3225,7 @@ fn read_directory_entries(
                 .map_or(0, |d| d.as_millis()),
             favourite: favourite.to_string(),
             image_tag: image_tag.map(|tag| tag.to_string()).unwrap_or_default(),
-            directory_favourite: is_dir
-                && state.is_directory_favourite(&root.join(&entry_relative))?,
+            directory_favourite: state.is_directory_favourite(&root.join(&entry_relative))?,
             file_path: entry_relative.to_string_lossy().into_owned(),
             file_size: if is_dir {
                 "目录".into()
@@ -3208,14 +3292,18 @@ fn render_directory_page_with_access(
     let file_root = escape_html(&root.to_string_lossy());
     let initial_view = if gallery_requested { "gallery" } else { "list" };
     let directory_favourite_toggle = if directory == root {
-        ""
-    } else if directory_favourite {
-        "<button class=\"directory-favourite-toggle\" id=\"directory-favourite-toggle\" type=\"button\" aria-pressed=\"true\">移出收藏夹</button>"
+        String::new()
     } else {
-        "<button class=\"directory-favourite-toggle\" id=\"directory-favourite-toggle\" type=\"button\" aria-pressed=\"false\">添加到收藏夹</button>"
+        let label = if directory_favourite {
+            "移出收藏夹"
+        } else {
+            "添加到收藏夹"
+        };
+        format!("<button class=\"directory-favourite-toggle\" id=\"directory-favourite-toggle\" type=\"button\" aria-pressed=\"{directory_favourite}\">{FAVOURITE_ICON}<span>{label}</span></button>")
     };
+    let favourite_menu_template = render_favourites_menu("", 0);
     let body = format!(
-        "<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">\n<title>{title} · 文件浏览</title>\n<style>{DIRECTORY_CSS}{DIRECTORY_LOADING_CSS}</style>\n</head>\n<body data-file-root=\"{file_root}\" data-can-share=\"{can_share}\" data-directory-view=\"{initial_view}\"><script>const initialDirectoryView = new URLSearchParams(location.search).get('view') ?? localStorage.getItem(`webdir-directory-view:${{location.pathname}}`) ?? 'list'; document.body.classList.toggle('gallery-mode', initialDirectoryView === 'gallery');</script>\n<main><nav class=\"breadcrumbs\" aria-label=\"当前位置\">{breadcrumbs}</nav>{directory_favourites}<header><p class=\"eyebrow\">WEBDIR / DIRECTORY</p><h1>{title}</h1><p class=\"summary\">正在加载目录…</p>{directory_favourite_toggle}{gallery_toggle}<div class=\"directory-browser-tools\"><div class=\"file-search\" id=\"file-search\"><label class=\"file-search-box\" for=\"file-search-input\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"10\" cy=\"10\" r=\"6.5\"></circle><path d=\"m14.8 14.8 5.2 5.2\"></path></svg><input id=\"file-search-input\" type=\"search\" aria-label=\"搜索当前目录中的文件和文件夹\" placeholder=\"搜索当前目录…\" autocomplete=\"off\"></label></div><label class=\"directory-sort\">排序<select id=\"directory-sort\" aria-label=\"目录排序\"><option value=\"name\">按名称</option><option value=\"modified\">按修改时间</option></select></label></div>{gallery_tools}<p class=\"directory-notice\" id=\"directory-notice\" role=\"status\" hidden></p></header><section class=\"listing\" aria-busy=\"true\" aria-label=\"目录内容\">{rows}</section></main><nav class=\"scroll-jumps\" id=\"scroll-jumps\" aria-label=\"页面快速跳转\" hidden><button id=\"scroll-to-top\" type=\"button\" aria-label=\"回到顶部\" title=\"回到顶部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 14 6-6 6 6\"></path><path d=\"M6 19h12\"></path></svg></button><button id=\"scroll-to-bottom\" type=\"button\" aria-label=\"回到底部\" title=\"回到底部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 10 6 6 6-6\"></path><path d=\"M6 5h12\"></path></svg></button></nav><div class=\"image-lightbox\" id=\"image-lightbox\" role=\"dialog\" aria-modal=\"true\" aria-label=\"图片预览\" hidden><button class=\"lightbox-close\" type=\"button\" aria-label=\"关闭图片预览\">×</button><div class=\"lightbox-shell\"><div class=\"lightbox-position\" id=\"lightbox-position\" aria-live=\"polite\"></div><nav class=\"lightbox-filmstrip\" id=\"lightbox-filmstrip\" aria-label=\"图片缩略图导航\"></nav><figure><div class=\"lightbox-stage\"><img class=\"lightbox-image\" alt=\"\"><div class=\"favourite-burst\" id=\"favourite-burst\" aria-hidden=\"true\" hidden><svg viewBox=\"0 0 24 24\"><path d=\"M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21l7.7-7.5 1.1-1.1a5.5 5.5 0 0 0 0-7.8Z\"></path></svg></div></div><figcaption><span class=\"lightbox-name\"></span><span class=\"lightbox-controls\"><button class=\"preview-step\" id=\"preview-previous\" type=\"button\" aria-label=\"上一张\" title=\"上一张\">←</button><button class=\"favourite-toggle\" id=\"favourite-toggle\" type=\"button\" aria-label=\"点赞 (f)\" aria-pressed=\"false\" title=\"点赞 (f)\">♡</button><button class=\"preview-step\" id=\"preview-next\" type=\"button\" aria-label=\"下一张\" title=\"下一张\">→</button><button class=\"carousel-toggle\" id=\"carousel-toggle\" type=\"button\" aria-label=\"进入全屏轮播 (pp)\" aria-pressed=\"false\" title=\"进入全屏轮播 (pp)\">轮播</button></span></figcaption><p class=\"lightbox-error\" id=\"favourite-error\" role=\"status\" hidden></p><p class=\"lightbox-error\" id=\"image-tag-error\" role=\"status\" hidden></p></figure></div>{GALLERY_DELETE_DIALOG}</div>{GALLERY_BATCH_DELETE_DIALOG}\n<script>{DIRECTORY_VIEW_JS}</script><script>{VIDEO_THUMBNAILS_JS}</script><script>{FILE_SHORTCUT_JS}</script><script>{DIRECTORY_JS}</script>\n</body>\n</html>"
+        "<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">\n<title>{title} · 文件浏览</title>\n<style>{DIRECTORY_CSS}{DIRECTORY_LOADING_CSS}{FAVOURITE_ICON_CSS}</style>\n</head>\n<body data-file-root=\"{file_root}\" data-can-share=\"{can_share}\" data-directory-view=\"{initial_view}\"><script>const initialDirectoryView = new URLSearchParams(location.search).get('view') ?? localStorage.getItem(`webdir-directory-view:${{location.pathname}}`) ?? 'list'; document.body.classList.toggle('gallery-mode', initialDirectoryView === 'gallery');</script>\n<main><nav class=\"breadcrumbs\" aria-label=\"当前位置\">{breadcrumbs}</nav>{directory_favourites}<header><p class=\"eyebrow\">WEBDIR / DIRECTORY</p><h1>{title}</h1><p class=\"summary\">正在加载目录…</p>{directory_favourite_toggle}{gallery_toggle}<div class=\"directory-browser-tools\"><div class=\"file-search\" id=\"file-search\"><label class=\"file-search-box\" for=\"file-search-input\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"10\" cy=\"10\" r=\"6.5\"></circle><path d=\"m14.8 14.8 5.2 5.2\"></path></svg><input id=\"file-search-input\" type=\"search\" aria-label=\"搜索当前目录中的文件和文件夹\" placeholder=\"搜索当前目录…\" autocomplete=\"off\"></label></div><label class=\"directory-sort\">排序<select id=\"directory-sort\" aria-label=\"目录排序\"><option value=\"name\">按名称</option><option value=\"modified\">按修改时间</option></select></label></div>{gallery_tools}<p class=\"directory-notice\" id=\"directory-notice\" role=\"status\" hidden></p></header><section class=\"listing\" aria-busy=\"true\" aria-label=\"目录内容\">{rows}</section></main><nav class=\"scroll-jumps\" id=\"scroll-jumps\" aria-label=\"页面快速跳转\" hidden><button id=\"scroll-to-top\" type=\"button\" aria-label=\"回到顶部\" title=\"回到顶部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 14 6-6 6 6\"></path><path d=\"M6 19h12\"></path></svg></button><button id=\"scroll-to-bottom\" type=\"button\" aria-label=\"回到底部\" title=\"回到底部\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m6 10 6 6 6-6\"></path><path d=\"M6 5h12\"></path></svg></button></nav><div class=\"image-lightbox\" id=\"image-lightbox\" role=\"dialog\" aria-modal=\"true\" aria-label=\"图片预览\" hidden><button class=\"lightbox-close\" type=\"button\" aria-label=\"关闭图片预览\">×</button><div class=\"lightbox-shell\"><div class=\"lightbox-position\" id=\"lightbox-position\" aria-live=\"polite\"></div><nav class=\"lightbox-filmstrip\" id=\"lightbox-filmstrip\" aria-label=\"图片缩略图导航\"></nav><figure><div class=\"lightbox-stage\"><img class=\"lightbox-image\" alt=\"\"><div class=\"favourite-burst\" id=\"favourite-burst\" aria-hidden=\"true\" hidden><svg viewBox=\"0 0 24 24\"><path d=\"M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21l7.7-7.5 1.1-1.1a5.5 5.5 0 0 0 0-7.8Z\"></path></svg></div></div><figcaption><span class=\"lightbox-name\"></span><span class=\"lightbox-controls\"><button class=\"preview-step\" id=\"preview-previous\" type=\"button\" aria-label=\"上一张\" title=\"上一张\">←</button><button class=\"favourite-toggle\" id=\"favourite-toggle\" type=\"button\" aria-label=\"点赞 (f)\" aria-pressed=\"false\" title=\"点赞 (f)\">♡</button><button class=\"preview-step\" id=\"preview-next\" type=\"button\" aria-label=\"下一张\" title=\"下一张\">→</button><button class=\"carousel-toggle\" id=\"carousel-toggle\" type=\"button\" aria-label=\"进入全屏轮播 (pp)\" aria-pressed=\"false\" title=\"进入全屏轮播 (pp)\">轮播</button></span></figcaption><p class=\"lightbox-error\" id=\"favourite-error\" role=\"status\" hidden></p><p class=\"lightbox-error\" id=\"image-tag-error\" role=\"status\" hidden></p></figure></div>{GALLERY_DELETE_DIALOG}</div>{GALLERY_BATCH_DELETE_DIALOG}<template id=\"favourite-icon\">{FAVOURITE_ICON}</template><template id=\"favourites-menu-template\">{favourite_menu_template}</template>\n<script>{DIRECTORY_VIEW_JS}</script><script>{VIDEO_THUMBNAILS_JS}</script><script>{FILE_SHORTCUT_JS}</script><script src=\"{PINYIN_PATH}\"></script><script>{DIRECTORY_JS}</script>\n</body>\n</html>"
     )
     .replacen(
         "</head>",
@@ -3943,7 +4031,7 @@ fn render_drawio_page(diagram: &str, title: &str, size: u64) -> String {
     let config = escape_html(&config);
     let title = escape_html(title);
     format!(
-        "<!doctype html>\n<html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'self' data: blob:; connect-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; object-src 'none'; base-uri 'none'; frame-src 'none'; worker-src 'self' blob:\"><link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\"><title>{title}</title><style>{DRAWIO_CSS}</style></head><body><header><button class=\"back\" id=\"history-back\" type=\"button\" aria-label=\"返回上一页\">←</button><span class=\"kind\">DRAWIO</span><span class=\"filename\">{title}</span><span class=\"meta\">{size}</span><a class=\"raw\" href=\"?mode=raw\">Raw</a><a class=\"raw\" href=\"?mode=raw\" download=\"{title}\">下载</a></header><main class=\"canvas\"><div id=\"viewer-status\" class=\"viewer-status\"><span class=\"spinner\" aria-hidden=\"true\"></span><strong>正在渲染图表</strong><small>本地 Draw.io Viewer</small></div><div class=\"mxgraph\" data-mxgraph=\"{config}\"></div></main><script>{DRAWIO_JS}</script><script src=\"{viewer_path}\" onerror=\"drawioViewerFailed()\"></script></body></html>",
+        "<!doctype html>\n<html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'self' data: blob:; connect-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; object-src 'none'; base-uri 'none'; frame-src 'none'; worker-src 'self' blob:\"><link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\"><title>{title}</title><style>{DRAWIO_CSS}</style></head><body><header><button class=\"back\" id=\"history-back\" type=\"button\" aria-label=\"返回上一页\">←</button><span class=\"kind\">DRAWIO</span><span class=\"filename\">{title}</span><span class=\"meta\">{size}</span><a class=\"raw\" href=\"?mode=raw\">Raw</a><a class=\"raw\" href=\"?mode=raw\" download=\"{title}\">下载</a></header><main class=\"canvas\"><div id=\"viewer-status\" class=\"viewer-status\"><span class=\"spinner\" aria-hidden=\"true\"></span><strong>正在渲染图表</strong><small>本地 Draw.io Viewer</small></div><div class=\"mxgraph\" data-mxgraph=\"{config}\"></div></main><script>{DRAWIO_JS}</script><script src=\"{viewer_path}\" onerror=\"drawioViewerFailed()\"></script></body></html>",
         size = human_size(size),
         viewer_path = DRAWIO_VIEWER_PATH
     )
@@ -4263,14 +4351,16 @@ window.onDrawioViewerLoad = () => {
 "#;
 
 const GALLERY_ORGANISE_TOOLS: &str = r#"
-<div class="gallery-organise" id="gallery-organise" role="group" aria-label="筛选和批量操作图片">
+<div class="gallery-organise" id="gallery-organise" role="group" aria-label="筛选和批量操作文件">
   <button id="select-images" type="button" disabled>多选</button>
-  <span id="image-selection-count" role="status" hidden>已选 0 张</span>
+  <span id="image-selection-count" role="status" hidden>已选 0 个文件</span>
   <button id="select-all-images" type="button" hidden>全选</button>
   <button id="clear-image-selection" type="button" hidden>清空选择</button>
-  <span class="image-filter-control"><select id="image-filter" aria-label="图片标记筛选"><option value="all">全部</option></select><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m5 6.5 3 3 3-3"/></svg></span>
+  <button id="finish-file-selection" type="button" hidden>完成选择</button>
+  <span class="image-filter-control"><select id="image-filter" aria-label="文件标记筛选"><option value="all">全部</option></select><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m5 6.5 3 3 3-3"/></svg></span>
   <button id="move-images" type="button" disabled>移动到…</button>
   <button id="delete-images" type="button" disabled>批量删除</button>
+  <select id="mark-files" aria-label="批量标记" disabled><option value="" selected disabled>批量标记…</option><option value="favourite">喜欢</option><option value="tag1">标记1 · 绿色</option><option value="tag2">标记2 · 红色</option><option value="tag3">标记3 · 黄色</option><option value="tag4">标记4 · 蓝色</option><option value="tag5">标记5 · 黑色</option></select>
   <button id="clear-image-marks" type="button" disabled>批量取消标记</button>
 </div>
 "#;
@@ -4287,8 +4377,8 @@ const GALLERY_DELETE_DIALOG: &str = r#"
 
 const GALLERY_BATCH_DELETE_DIALOG: &str = r#"
 <dialog class="delete-dialog" id="batch-delete-dialog" aria-labelledby="batch-delete-title" aria-describedby="batch-delete-description">
-  <h2 id="batch-delete-title">删除这些图片？</h2>
-  <p id="batch-delete-description">所选图片将从磁盘中删除，此操作无法撤销。</p>
+  <h2 id="batch-delete-title">删除这些文件？</h2>
+  <p id="batch-delete-description">所选文件将从磁盘中删除，此操作无法撤销。</p>
   <p class="delete-error" id="batch-delete-error" role="alert" hidden></p>
   <div class="delete-actions"><button id="batch-delete-cancel" type="button" autofocus>取消</button><button id="batch-delete-confirm" type="button">全部删除</button></div>
 </dialog>
@@ -4319,36 +4409,42 @@ main { width:min(100% - 2rem,980px); margin:0 auto; padding:clamp(1.5rem,6vw,5re
 .breadcrumbs .path-search { position:sticky; right:0; z-index:1; padding-left:.45rem; background:var(--paper); }
 .breadcrumbs a { color:inherit; text-decoration:none; white-space:nowrap; }
 .breadcrumbs a:hover { color:var(--accent); }
-.directory-shortcuts { display:flex; align-items:center; gap:.8rem; margin:-.35rem 0 1rem; padding:.45rem 0; }
+.directory-shortcuts { position:relative; z-index:5; display:flex; align-items:center; gap:.8rem; margin:-.35rem 0 1rem; padding:.45rem 0; }
 .directory-shortcuts .recent-link { display:inline-flex; align-items:center; gap:.35rem; flex:0 0 auto; min-height:2rem; padding:.4rem .6rem; border:1px solid color-mix(in srgb,var(--accent) 18%,var(--line)); border-radius:.5rem; color:var(--accent); background:var(--accent-soft); font:600 .75rem/1.2 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans-serif; text-decoration:none; white-space:nowrap; transition:background .16s ease,border-color .16s ease; }
 .directory-shortcuts .recent-link:hover { border-color:var(--accent); background:color-mix(in srgb,var(--accent) 12%,var(--surface)); }
 .directory-shortcuts .recent-link:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
 .directory-shortcuts svg { flex:0 0 auto; width:1rem; height:1rem; fill:none; stroke:currentColor; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; }
-.directory-favourites { display:flex; align-items:center; flex:1; min-width:0; gap:.45rem; padding-left:.8rem; border-left:1px solid var(--line); color:var(--muted); }
-.directory-favourites-label { display:inline-flex; align-items:center; gap:.3rem; flex:0 0 auto; padding-right:.15rem; font:600 .72rem/1.2 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans-serif; white-space:nowrap; }
-.directory-favourites-list { display:flex; flex:1 1 auto; gap:.45rem; min-width:0; overflow:hidden; }
-.directory-favourites-more { position:relative; flex:0 0 auto; }
-.directory-favourites-more summary { display:flex; align-items:center; gap:.18rem; min-height:1.8rem; padding:.38rem .48rem .38rem .62rem; border:1px solid var(--line); border-radius:.5rem; color:var(--muted); background:var(--surface); font:700 .7rem/1 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans-serif; cursor:pointer; list-style:none; transition:border-color .16s ease,color .16s ease,background-color .16s ease; }
-.directory-favourites-more summary::-webkit-details-marker { display:none; }
-.directory-favourites-more summary:hover,.directory-favourites-more[open] summary { border-color:var(--accent); color:var(--accent); background:var(--accent-soft); }
-.directory-favourites-more summary:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
-.directory-favourites-more summary svg { width:.9rem; height:.9rem; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; transition:transform .18s ease; }
-.directory-favourites-more[open] summary svg { transform:rotate(180deg); }
-.directory-favourites-menu { position:absolute; z-index:4; top:calc(100% + .45rem); right:0; display:grid; gap:.35rem; width:min(24rem,calc(100vw - 2rem)); max-height:min(60vh,28rem); overflow:auto; padding:.45rem; border:1px solid var(--line); border-radius:.65rem; background:var(--surface); box-shadow:0 12px 28px rgba(27,31,52,.16); }
-.directory-favourites-menu .directory-favourite { width:100%; }
-.directory-favourites-menu .directory-favourite a { max-width:none; flex:1 1 auto; }
-.directory-favourite { flex:0 0 auto; display:flex; overflow:hidden; border:1px solid var(--line); border-radius:.5rem; background:var(--surface); transition:opacity .12s ease,transform .12s ease; }
-.directory-favourite.dragging { opacity:.5; transform:scale(.98); }
-.directory-favourite a { display:flex; align-items:center; max-width:min(15rem,55vw); min-width:0; overflow:hidden; padding:.42rem .25rem .42rem .6rem; color:var(--ink); font:600 .72rem/1 ui-monospace,SFMono-Regular,Consolas,monospace; text-decoration:none; white-space:nowrap; }
-.directory-favourite a.editing { min-width:8rem; padding:.18rem .25rem; -webkit-user-drag:none; }
-.directory-favourite-name-input { width:100%; min-width:0; padding:.22rem .35rem; border:1px solid var(--accent); border-radius:.28rem; color:var(--ink); background:var(--paper); font:inherit; outline:0; user-select:text; -webkit-user-drag:none; }
-.directory-favourite-prefix { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.directory-favourites { position:relative; color:var(--accent); }
+.favourites-dropdown summary { display:flex; align-items:center; gap:.4rem; min-height:2rem; padding:.35rem .55rem; border:1px solid var(--line); border-radius:.5rem; background:var(--surface); font:600 .75rem/1.2 ui-sans-serif,-apple-system,sans-serif; cursor:pointer; list-style:none; }
+.favourites-dropdown summary::-webkit-details-marker { display:none; }
+.favourites-dropdown summary:hover,.favourites-dropdown[open] summary { border-color:var(--accent); background:var(--accent-soft); }
+.favourites-dropdown summary:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+.favourites-count { padding:.1rem .3rem; border-radius:.3rem; color:var(--muted); background:var(--paper); font:600 .65rem/1.2 ui-monospace,monospace; }
+.directory-shortcuts .favourites-chevron { width:.85rem; height:.85rem; margin-left:.15rem; transition:transform .16s ease; }
+.favourites-dropdown[open] .favourites-chevron { transform:rotate(180deg); }
+.directory-favourites-panel { position:absolute; z-index:10; top:calc(100% + .5rem); left:0; width:min(26rem,calc(100vw - 2rem)); padding:.5rem; border:1px solid var(--line); border-radius:.8rem; color:var(--ink); background:var(--surface); box-shadow:0 16px 42px rgba(12,15,35,.2); }
+.favourites-search-box { display:flex; align-items:center; gap:.5rem; margin-bottom:.4rem; padding:0 .6rem; border:1px solid var(--line); border-radius:.5rem; color:var(--muted); background:var(--paper); }
+.favourites-search-box:focus-within { border-color:var(--accent); box-shadow:0 0 0 2px var(--accent-soft); }
+.favourites-search { min-width:0; width:100%; height:2.3rem; padding:0; border:0; outline:0; color:var(--ink); background:transparent; font:500 .8rem/1.3 ui-sans-serif,-apple-system,sans-serif; }
+.favourites-search:focus-visible { outline:0; }
+.favourites-search::placeholder { color:var(--muted); }
+.directory-favourites-list { display:grid; gap:.2rem; max-height:min(55vh,23rem); overflow-y:auto; overscroll-behavior:contain; }
+.favourites-empty { margin:0; padding:1.3rem .6rem; color:var(--muted); text-align:center; font-size:.8rem; }
+.directory-favourite { display:flex; min-width:0; min-height:2.5rem; border-radius:.45rem; transition:opacity .12s ease; }
+.directory-favourite[hidden],.favourites-empty[hidden] { display:none; }
+.directory-favourite:hover,.directory-favourite:focus-within { background:var(--accent-soft); }
+.directory-favourite.dragging { opacity:.45; }
+.directory-favourite a { display:flex; align-items:center; flex:1; min-width:0; overflow:hidden; padding:.55rem .35rem; color:var(--ink); font:600 .75rem/1.4 ui-monospace,SFMono-Regular,Consolas,monospace; text-decoration:none; white-space:nowrap; }
+.directory-favourite a.editing { padding:.18rem .25rem; -webkit-user-drag:none; }
+.directory-favourite-name-input { width:100%; min-width:0; padding:.3rem .35rem; border:1px solid var(--accent); border-radius:.28rem; color:var(--ink); background:var(--paper); font:inherit; outline:0; user-select:text; -webkit-user-drag:none; }
+.directory-favourite-prefix { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted); }
 .directory-favourite-separator,.directory-favourite-leaf { flex:0 0 auto; }
-.directory-favourite a:hover,.directory-favourite a[aria-current="page"] { color:var(--accent); background:var(--accent-soft); }
-.directory-favourite button { width:1.8rem; padding:0; border:0; border-left:1px solid var(--line); color:var(--muted); background:transparent; font-size:1rem; cursor:pointer; }
-.directory-favourite button:hover { color:var(--accent); background:var(--accent-soft); }
-.directory-favourite .directory-favourite-drag { border-right:1px solid var(--line); border-left:0; font-size:.82rem; cursor:grab; touch-action:none; user-select:none; }
+.directory-favourite a:hover,.directory-favourite a[aria-current="page"] { color:var(--accent); }
+.directory-favourite button { flex:0 0 1.8rem; padding:0; border:0; border-radius:.35rem; color:var(--muted); background:transparent; font-size:1rem; cursor:pointer; }
+.directory-favourite button:hover { color:var(--accent); background:var(--paper); }
+.directory-favourite .directory-favourite-drag { font-size:.82rem; cursor:grab; touch-action:none; user-select:none; }
 .directory-favourite .directory-favourite-drag:active { cursor:grabbing; }
+@media (max-width:650px) { .directory-favourites { position:static; } .directory-favourites-panel { top:100%; } }
 main>header { position:relative; padding:clamp(1.4rem,4vw,2.5rem); border:1px solid var(--line); border-radius:1.1rem 1.1rem 0 0; background:var(--surface); }
 main>header::after { position:absolute; right:-1.4rem; bottom:-3.2rem; width:9rem; height:7rem; border:1.1rem solid var(--accent-soft); border-radius:1.2rem; content:""; transform:rotate(-8deg); pointer-events:none; }
 .view-toggle { position:absolute; z-index:2; right:clamp(1rem,3vw,2rem); top:4.65rem; display:flex; align-items:center; gap:.45rem; min-height:2.35rem; padding:.55rem .8rem; border:1px solid var(--line); border-radius:.65rem; color:var(--ink); background:var(--surface); box-shadow:0 6px 18px rgba(54,59,92,.08); font:700 .75rem/1 ui-sans-serif,-apple-system,sans-serif; cursor:pointer; }
@@ -4363,7 +4459,7 @@ main>header::after { position:absolute; right:-1.4rem; bottom:-3.2rem; width:9re
 .eyebrow { margin:0 0 .7rem; color:var(--accent); font:700 .72rem/1 ui-monospace,SFMono-Regular,Consolas,monospace; letter-spacing:.14em; }
 h1 { position:relative; z-index:1; margin:0; overflow-wrap:anywhere; font-family:"Iowan Old Style","Noto Serif SC","Songti SC",Georgia,serif; font-size:clamp(2rem,6vw,3.8rem); line-height:1.08; letter-spacing:-.035em; }
 .summary { position:relative; z-index:1; margin:.8rem 0 0; color:var(--muted); font-size:.88rem; }
-.directory-favourite-toggle { position:relative; z-index:2; min-height:2rem; margin-top:.85rem; padding:.38rem .65rem; border:1px solid var(--line); border-radius:.45rem; color:var(--muted); background:var(--surface); font:600 .72rem/1 ui-sans-serif,-apple-system,sans-serif; cursor:pointer; }
+.directory-favourite-toggle { display:inline-flex; align-items:center; gap:.4rem; position:relative; z-index:2; min-height:2rem; margin-top:.85rem; padding:.38rem .65rem; border:1px solid var(--line); border-radius:.45rem; color:var(--muted); background:var(--surface); font:600 .72rem/1 ui-sans-serif,-apple-system,sans-serif; cursor:pointer; }
 .directory-favourite-toggle:hover,.directory-favourite-toggle[aria-pressed="true"] { border-color:var(--accent); color:var(--accent); background:var(--accent-soft); }
 .directory-favourite-toggle:disabled { opacity:.5; cursor:wait; }
 .directory-browser-tools { position:relative; z-index:3; display:flex; align-items:flex-start; gap:.75rem; margin-top:1.25rem; }
@@ -4405,24 +4501,33 @@ h1 { position:relative; z-index:1; margin:0; overflow-wrap:anywhere; font-family
 @media (max-width:600px) { .move-heading { padding:1.1rem 1rem; } .move-browser-heading { padding:.85rem 1rem .55rem; } .move-tree { margin:0 1rem; height:45dvh; } .move-footer { padding:.85rem 1rem 1rem; } }
 @media (prefers-reduced-motion:reduce) { .move-tree-expand { transition:none; } }
 .gallery-organise { position:relative; z-index:1; display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:.4rem; margin-top:.75rem; }
-.gallery-organise button { display:inline-flex; align-items:center; gap:.4rem; min-height:2rem; padding:.35rem .6rem; border:1px solid var(--line); border-radius:.45rem; color:var(--muted); background:var(--surface); font:500 .72rem/1.3 ui-sans-serif,-apple-system,sans-serif; cursor:pointer; transition:color .15s ease,border-color .15s ease,background .15s ease; }
+.gallery-organise button,#mark-files { display:inline-flex; align-items:center; gap:.4rem; min-height:2rem; padding:.35rem .6rem; border:1px solid var(--line); border-radius:.45rem; color:var(--muted); background:var(--surface); font:500 .72rem/1.3 ui-sans-serif,-apple-system,sans-serif; cursor:pointer; transition:color .15s ease,border-color .15s ease,background .15s ease; }
 .gallery-organise button:hover:not(:disabled) { border-color:var(--accent); color:var(--ink); background:var(--accent-soft); }
-.gallery-organise button:disabled { opacity:.5; cursor:not-allowed; }
+.gallery-organise button:disabled,#mark-files:disabled { opacity:.5; cursor:not-allowed; }
 #image-selection-count { color:var(--muted); font-size:.75rem; }
 .image-selection-indicator { display:none; }
-.gallery.selecting-images .image-selection-indicator { position:absolute; z-index:3; top:.5rem; right:.5rem; display:grid; place-items:center; width:1.5rem; height:1.5rem; border:2px solid #fff; border-radius:50%; color:transparent; background:rgba(0,0,0,.4); font:700 .9rem/1 ui-sans-serif,sans-serif; pointer-events:none; }
-.gallery.selecting-images .image-selected .image-selection-indicator { color:#fff; background:var(--accent); }
-.gallery.selecting-images .entry:is(.image,.video).image-selected::before { position:absolute; z-index:3; inset:0; border:3px solid var(--accent); border-radius:inherit; content:""; pointer-events:none; }
-.gallery.selecting-images .entry:is(.image,.video) .glyph { cursor:pointer; }
+.listing.selecting-images .image-selection-indicator { position:absolute; z-index:3; top:.5rem; right:.5rem; display:grid; place-items:center; width:1.5rem; height:1.5rem; border:2px solid #fff; border-radius:50%; color:transparent; background:rgba(0,0,0,.4); font:700 .9rem/1 ui-sans-serif,sans-serif; pointer-events:none; }
+.listing.selecting-images .image-selected .image-selection-indicator { color:#fff; background:var(--accent); }
+.gallery.selecting-images .entry.file.image-selected::before { position:absolute; z-index:3; inset:0; border:3px solid var(--accent); border-radius:inherit; content:""; pointer-events:none; }
+.listing.selecting-images .entry.file .glyph { cursor:pointer; }
+.listing:not(.gallery).selecting-images .image-selection-indicator { left:1.5rem; right:auto; top:50%; transform:translateY(-50%); border-color:var(--line); background:var(--surface); }
+.listing:not(.gallery).selecting-images .image-selected .image-selection-indicator { color:#fff; background:var(--accent); border-color:var(--accent); }
+.listing:not(.gallery).selecting-images .entry.file .glyph { visibility:hidden; }
+.listing:not(.gallery).selecting-images .image-selected { background:var(--accent-soft); }
+.gallery.selecting-images .entry.file > .folder-favourite-toggle { top:2.5rem; }
+
 .gallery-organise #delete-images:not(:disabled) { border-color:color-mix(in srgb,#b42336 55%,var(--line)); color:light-dark(#a51d31,#ff9ba9); }
 .directory-notice { position:relative; z-index:1; margin:.75rem 0 0; color:var(--muted); font-size:.78rem; line-height:1.6; overflow-wrap:anywhere; }
 .listing { overflow:hidden; border:1px solid var(--line); border-top:0; border-radius:0 0 1.1rem 1.1rem; background:var(--surface); box-shadow:0 25px 70px rgba(54,59,92,.09); }
-.entry { display:grid; grid-template-columns:2.55rem minmax(0,1fr) 5rem 6rem 1.5rem; align-items:center; gap:.85rem; min-height:4.25rem; padding:.7rem 1.2rem; border-top:1px solid var(--line); color:var(--ink); text-decoration:none; transition:background .15s ease,transform .18s cubic-bezier(.16,1,.3,1); }
+.entry { position:relative; display:grid; grid-template-columns:2.55rem minmax(0,1fr) 5rem 6rem 1.5rem; align-items:center; gap:.85rem; min-height:4.25rem; padding:.7rem 1.2rem; border-top:1px solid var(--line); color:var(--ink); text-decoration:none; transition:background .15s ease,transform .18s cubic-bezier(.16,1,.3,1); }
 .entry:first-child { border-top:0; }
 .entry:hover { background:var(--accent-soft); transform:translateX(.2rem); }
 .folder-open { display:contents; color:inherit; text-decoration:none; }
-.folder:focus-within { background:var(--accent-soft); }
-.folder .arrow { display:none; }
+.file-open { display:grid; grid-template-columns:subgrid; grid-column:1/-1; grid-row:1; align-items:center; gap:inherit; min-width:0; color:inherit; text-decoration:none; }
+.gallery .file-open { grid-row:1/-1; grid-template-rows:subgrid; }
+.listing.gallery .entry:is(.image,.video) .file-open { position:absolute; inset:0; display:block; }
+.entry:focus-within { background:var(--accent-soft); }
+.entry .arrow { display:none; }
 .folder-favourite-toggle { position:absolute; right:1.15rem; display:grid; place-items:center; width:1.8rem; height:1.8rem; padding:0; border:0; border-radius:.45rem; color:var(--muted); background:transparent; font-size:1.25rem; line-height:1; cursor:pointer; }
 .folder-favourite-toggle:hover,.folder-favourite-toggle[aria-pressed="true"] { color:var(--accent); background:var(--accent-soft); }
 .folder-favourite-toggle:disabled { opacity:.5; cursor:wait; }
@@ -4448,6 +4553,8 @@ h1 { position:relative; z-index:1; margin:0; overflow-wrap:anywhere; font-family
 .favourite-mark path { fill:currentColor; stroke:rgba(255,255,255,.9); stroke-width:.75; stroke-linejoin:round; }
 .gallery .favourite-mark { right:.45rem; bottom:.45rem; width:1.35rem; height:1.35rem; }
 .image-tag { position:absolute; left:.15rem; top:.15rem; padding:.15rem .3rem; border-radius:.3rem; color:#fff; background:#b42336; box-shadow:0 2px 7px rgba(0,0,0,.25); font:700 .52rem/1.2 ui-sans-serif,-apple-system,sans-serif; white-space:nowrap; pointer-events:none; }
+.entry.file:not(.image):not(.video) .image-tag { left:-.35rem; top:-.5rem; }
+.entry.file:not(.image):not(.video) .favourite-mark { right:-.45rem; bottom:-.35rem; }
 .gallery .image-tag { left:.4rem; top:.4rem; padding:.25rem .4rem; font-size:.65rem; }
 .entry:is(.image,.video) .glyph img { width:100%; height:100%; object-fit:cover; object-position:center; display:block; pointer-events:none; transition:transform .2s ease; }
 .entry:is(.image,.video) .glyph img:not([src]) { visibility:hidden; }
@@ -4541,13 +4648,13 @@ h1 { position:relative; z-index:1; margin:0; overflow-wrap:anywhere; font-family
 .image-lightbox figcaption { display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:.65rem .75rem; min-width:0; padding:0 .25rem .15rem; font-size:.82rem; transition:opacity .22s ease,transform .3s cubic-bezier(.16,1,.3,1); }
 .lightbox-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .lightbox-controls { display:flex; flex-shrink:0; align-items:center; gap:.4rem; transition:opacity .22s ease,transform .3s cubic-bezier(.16,1,.3,1); }
-.preview-step,.carousel-toggle,.comment-toggle,.image-download,.viewer-more-toggle,.viewer-tools button,.shortcut-help-toggle { position:relative; display:grid; place-items:center; min-width:2.75rem; height:2.75rem; padding:0 .7rem; border:1px solid rgba(255,255,255,.26); border-radius:.8rem; color:#fff; background:rgba(255,255,255,.045); font:650 .72rem/1 sans-serif; cursor:pointer; transition:background .18s ease,border-color .18s ease,transform .18s cubic-bezier(.16,1,.3,1); }
-.preview-step,.carousel-toggle,.comment-toggle,.image-download,.viewer-more-toggle { width:2.75rem; padding:0; }
-.preview-step svg,.carousel-toggle svg,.comment-toggle svg,.image-download svg,.viewer-more-toggle svg,.viewer-tools svg,.shortcut-help-toggle svg,.lightbox-close svg,.gallery-comments button svg { width:1.15rem; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+:is(.preview-step,.gallery-favourite-toggle),.carousel-toggle,.comment-toggle,.image-download,.viewer-more-toggle,.viewer-tools button,.shortcut-help-toggle { position:relative; display:grid; place-items:center; min-width:2.75rem; height:2.75rem; padding:0 .7rem; border:1px solid rgba(255,255,255,.26); border-radius:.8rem; color:#fff; background:rgba(255,255,255,.045); font:650 .72rem/1 sans-serif; cursor:pointer; transition:background .18s ease,border-color .18s ease,transform .18s cubic-bezier(.16,1,.3,1); }
+:is(.preview-step,.gallery-favourite-toggle),.carousel-toggle,.comment-toggle,.image-download,.viewer-more-toggle { width:2.75rem; padding:0; }
+:is(.preview-step,.gallery-favourite-toggle) svg,.carousel-toggle svg,.comment-toggle svg,.image-download svg,.viewer-more-toggle svg,.viewer-tools svg,.shortcut-help-toggle svg,.lightbox-close svg,.gallery-comments button svg { width:1.15rem; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
 .image-download { text-decoration:none; }
 .carousel-toggle .icon-fill { fill:currentColor; stroke:none; }
-.preview-step:hover,.carousel-toggle:hover,.comment-toggle:hover,.image-download:hover,.viewer-more-toggle:hover,.viewer-tools button:hover,.shortcut-help-toggle:hover { background:rgba(255,255,255,.12); transform:translateY(-1px); }
-.preview-step:disabled,.carousel-toggle:disabled { opacity:.35; cursor:default; }
+:is(.preview-step,.gallery-favourite-toggle):hover,.carousel-toggle:hover,.comment-toggle:hover,.image-download:hover,.viewer-more-toggle:hover,.viewer-tools button:hover,.shortcut-help-toggle:hover { background:rgba(255,255,255,.12); transform:translateY(-1px); }
+:is(.preview-step,.gallery-favourite-toggle):disabled,.carousel-toggle:disabled { opacity:.35; cursor:default; }
 .carousel-toggle[aria-pressed="true"] { border-color:rgba(255,255,255,.82); background:rgba(255,255,255,.16); }
 .comment-toggle[aria-expanded="true"] { border-color:#b9b5ff; color:#d5d2ff; background:rgba(91,91,214,.25); }
 .comment-toggle b { position:absolute; top:-.35rem; right:-.35rem; display:grid; place-items:center; min-width:1.15rem; height:1.15rem; padding:0 .25rem; border:2px solid #11131a; border-radius:999px; color:#11131a; background:#d5d2ff; font:750 .6rem/1 ui-monospace,SFMono-Regular,Consolas,monospace; }
@@ -4637,12 +4744,14 @@ h1 { position:relative; z-index:1; margin:0; overflow-wrap:anywhere; font-family
 .empty span { font:300 3rem/1 ui-monospace,SFMono-Regular,Consolas,monospace; }
 .empty p { margin:.8rem 0 0; }
 :focus-visible { outline:3px solid color-mix(in srgb,var(--accent) 55%,transparent); outline-offset:-3px; }
-@media (max-width:650px) { main,.gallery-mode main { width:100%; padding:1rem; } main>header { padding:1.5rem 1.1rem; } .directory-browser-tools { flex-wrap:wrap; } .file-search { flex-basis:100%; } .directory-sort { margin-left:auto; } .view-toggle { position:relative; right:auto; top:auto; width:max-content; margin-top:1rem; } .entry { grid-template-columns:2.4rem minmax(0,1fr) auto; padding-inline:1rem; } .kind,.arrow { display:none; } .detail { grid-column:3; } .folder .detail { display:none; } .folder-favourite-toggle { position:static; grid-column:3; justify-self:end; } .entry:is(.image,.video) .glyph { width:2.4rem; height:2.4rem; } .gallery-mode .listing { grid-template-columns:repeat(auto-fill,minmax(145px,1fr)); gap:.65rem; padding:.65rem; } .gallery .entry { grid-template-columns:minmax(0,1fr); grid-template-rows:8.5rem auto auto; padding:.6rem; } .gallery .entry:hover { padding:.6rem; } .gallery .entry:is(.image,.video) .glyph { width:100%; height:100%; } .gallery .detail { grid-column:1; grid-row:3; justify-self:start; } .scroll-jumps { right:max(.4rem,env(safe-area-inset-right)); } .scroll-jumps button { width:2.8rem; height:2.8rem; } .image-lightbox { padding:max(.7rem,env(safe-area-inset-top)) max(.7rem,env(safe-area-inset-right)) max(.7rem,env(safe-area-inset-bottom)) max(.7rem,env(safe-area-inset-left)); } .lightbox-shell { gap:.45rem; } .lightbox-filmstrip { grid-template-columns:repeat(5,3.35rem); gap:.25rem; } .filmstrip-slot { width:3.35rem; } .filmstrip-slot[data-distance="3"] { display:none; } .image-lightbox figcaption { flex-wrap:wrap; } .lightbox-name { width:100%; text-align:center; } .lightbox-controls { gap:.25rem; } .preview-step,.carousel-toggle,.comment-toggle,.image-download,.viewer-more-toggle { min-width:2.8rem; width:2.8rem; height:2.8rem; } .favourite-toggle { width:2.9rem; height:2.9rem; } .gallery-comments { inset:auto max(.45rem,env(safe-area-inset-right)) max(.45rem,env(safe-area-inset-bottom)) max(.45rem,env(safe-area-inset-left)); width:auto; height:min(92dvh,42rem); border-radius:1.15rem; animation-name:gallery-comments-mobile-in; } @keyframes gallery-comments-mobile-in { from { opacity:0; transform:translateY(1.5rem) scale(.985); } } .gallery-comment-composer textarea { min-height:4.8rem; } }
+@media (max-width:650px) { main,.gallery-mode main { width:100%; padding:1rem; } main>header { padding:1.5rem 1.1rem; } .directory-browser-tools { flex-wrap:wrap; } .file-search { flex-basis:100%; } .directory-sort { margin-left:auto; } .view-toggle { position:relative; right:auto; top:auto; width:max-content; margin-top:1rem; } .entry { grid-template-columns:2.4rem minmax(0,1fr) auto; padding-inline:1rem; } .kind,.arrow { display:none; } .detail { grid-column:3; } .folder .detail { display:none; } .listing:not(.gallery) .entry { grid-template-columns:2.4rem minmax(0,1fr) auto 1.8rem; } .folder-favourite-toggle { position:static; grid-column:4; grid-row:1; justify-self:end; } .entry:is(.image,.video) .glyph { width:2.4rem; height:2.4rem; } .gallery-mode .listing { grid-template-columns:repeat(auto-fill,minmax(145px,1fr)); gap:.65rem; padding:.65rem; } .gallery .entry { grid-template-columns:minmax(0,1fr); grid-template-rows:8.5rem auto auto; padding:.6rem; } .gallery .entry:hover { padding:.6rem; } .gallery .entry:is(.image,.video) .glyph { width:100%; height:100%; } .gallery .detail { grid-column:1; grid-row:3; justify-self:start; } .scroll-jumps { right:max(.4rem,env(safe-area-inset-right)); } .scroll-jumps button { width:2.8rem; height:2.8rem; } .image-lightbox { padding:max(.7rem,env(safe-area-inset-top)) max(.7rem,env(safe-area-inset-right)) max(.7rem,env(safe-area-inset-bottom)) max(.7rem,env(safe-area-inset-left)); } .lightbox-shell { gap:.45rem; } .lightbox-filmstrip { grid-template-columns:repeat(5,3.35rem); gap:.25rem; } .filmstrip-slot { width:3.35rem; } .filmstrip-slot[data-distance="3"] { display:none; } .image-lightbox figcaption { flex-wrap:wrap; } .lightbox-name { width:100%; text-align:center; } .lightbox-controls { gap:.25rem; } :is(.preview-step,.gallery-favourite-toggle),.carousel-toggle,.comment-toggle,.image-download,.viewer-more-toggle { min-width:2.8rem; width:2.8rem; height:2.8rem; } .favourite-toggle { width:2.9rem; height:2.9rem; } .gallery-comments { inset:auto max(.45rem,env(safe-area-inset-right)) max(.45rem,env(safe-area-inset-bottom)) max(.45rem,env(safe-area-inset-left)); width:auto; height:min(92dvh,42rem); border-radius:1.15rem; animation-name:gallery-comments-mobile-in; } @keyframes gallery-comments-mobile-in { from { opacity:0; transform:translateY(1.5rem) scale(.985); } } .gallery-comment-composer textarea { min-height:4.8rem; } }
 @media (max-height:620px) { .gallery-comments>header { padding:.7rem .9rem .6rem; } .gallery-comments>header button { width:2.15rem; height:2.15rem; } .gallery-comments-image { grid-template-columns:2.7rem minmax(0,1fr) auto; gap:.65rem; padding:.55rem .9rem; } .gallery-comments-image img { width:2.7rem; height:2.7rem; } .gallery-comment-empty { gap:.25rem; padding:.75rem; } .gallery-comment-composer { max-height:58dvh; gap:.5rem; padding:.7rem .9rem; } .gallery-comment-composer textarea { min-height:4rem; } .gallery-comments>footer { display:none; } }
-@media (max-width:1024px),(hover:none) and (pointer:coarse) { .preview-step,.carousel-toggle,.comment-toggle,.image-download,.viewer-more-toggle,.viewer-tools button,.shortcut-help-toggle { min-width:3rem; height:3rem; } .lightbox-controls { width:100%; min-width:0; flex-shrink:1; justify-content:center; flex-wrap:wrap; } .viewer-extras,.viewer-tools { width:100%; justify-content:center; border:0; } .image-info,.shortcut-help { left:50%; right:auto; bottom:8.7rem; width:max-content; max-width:calc(100vw - 2rem); transform:translateX(-50%); } }
+@media (max-width:1024px),(hover:none) and (pointer:coarse) { :is(.preview-step,.gallery-favourite-toggle),.carousel-toggle,.comment-toggle,.image-download,.viewer-more-toggle,.viewer-tools button,.shortcut-help-toggle { min-width:3rem; height:3rem; } .lightbox-controls { width:100%; min-width:0; flex-shrink:1; justify-content:center; flex-wrap:wrap; } .viewer-extras,.viewer-tools { width:100%; justify-content:center; border:0; } .image-info,.shortcut-help { left:50%; right:auto; bottom:8.7rem; width:max-content; max-width:calc(100vw - 2rem); transform:translateX(-50%); } }
 @media (hover:none) and (pointer:coarse) { .listing.gallery .entry:is(.image,.video),.listing.gallery .entry:is(.image,.video):hover { display:block; padding:0; } .listing.gallery .entry:is(.image,.video)::after,.listing.gallery .entry:is(.image,.video) .entry-name,.listing.gallery .entry:is(.image,.video) .detail { opacity:1; transform:none; } .image-lightbox figcaption { padding-bottom:max(.2rem,env(safe-area-inset-bottom)); } }
 :root[data-theme="dark"] { --paper:#11131b; --surface:#191c27; --ink:#edf0f7; --muted:#a7adbd; --line:#303545; --accent:#a9a5ff; --accent-soft:#292943; --folder:#8e8af5; --grid:#262b38; } :where(:root[data-theme="dark"]) body { background-image:radial-gradient(circle at 50% -20%,#252943 0,transparent 38rem); } :where(:root[data-theme="dark"]) .listing { box-shadow:0 25px 70px rgba(0,0,0,.25); }
 @media (prefers-reduced-motion:reduce) { .entry,.arrow,.entry:is(.image,.video) .glyph img,.filmstrip-thumb { transition:none; } .entry:is(.image,.video):hover .glyph img,.gallery .entry:hover,.filmstrip-thumb { transform:none; } }
+.gallery .folder-favourite-toggle { position:absolute; z-index:3; top:.4rem; right:.4rem; background:var(--surface); }
+#gallery-favourite-toggle[aria-pressed="true"] { color:#b8b3ff; }
 "#;
 
 const MARKDOWN_CSS: &str = r#"
@@ -7046,6 +7155,74 @@ mod tests {
     }
 
     #[test]
+    fn batch_actions_mark_clear_and_delete_mixed_file_types() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(directory.path()).unwrap();
+        let state = StateStore::new(None).unwrap();
+        let names = ["notes.md", "data.json", "archive.zip", "cat.svg"];
+        for name in names {
+            fs::write(root.join(name), "content").unwrap();
+        }
+        fs::write(root.join("keep.txt"), "keep").unwrap();
+        fs::create_dir(root.join("folder")).unwrap();
+        let files = || names.iter().map(|name| (*name).to_owned()).collect();
+        for mark in [ImageFilter::Favourite, ImageFilter::Tag3] {
+            let result = batch_images(
+                &root,
+                &root,
+                &state,
+                BatchImageAction::Mark {
+                    files: files(),
+                    mark,
+                },
+            );
+            assert_eq!(result.affected, names.len());
+            assert!(result.errors.is_empty());
+        }
+        let entries =
+            read_directory_entries(&root, &root, Path::new(""), &state, &Access::default())
+                .unwrap();
+        for name in names {
+            let entry = entries.iter().find(|entry| entry.name == name).unwrap();
+            assert_eq!(entry.favourite, "true");
+            assert_eq!(entry.image_tag, "3");
+        }
+        let cleared = batch_images(
+            &root,
+            &root,
+            &state,
+            BatchImageAction::ClearMark {
+                files: vec!["notes.md".into(), "archive.zip".into()],
+                filter: ImageFilter::Tag3,
+            },
+        );
+        assert_eq!(cleared.affected, 2);
+        assert_eq!(state.image_tag(&root.join("notes.md")).unwrap(), None);
+        assert!(state.is_favourite(&root.join("notes.md")).unwrap());
+        assert_eq!(state.image_tag(&root.join("data.json")).unwrap(), Some(3));
+        let deleted = batch_images(
+            &root,
+            &root,
+            &state,
+            BatchImageAction::Delete {
+                files: vec![
+                    "notes.md".into(),
+                    "archive.zip".into(),
+                    "missing.txt".into(),
+                ],
+            },
+        );
+        assert_eq!(deleted.affected, 2);
+        assert_eq!(deleted.errors.len(), 1);
+        assert!(!root.join("notes.md").exists());
+        assert!(!root.join("archive.zip").exists());
+        assert!(!state.is_favourite(&root.join("notes.md")).unwrap());
+        for name in ["data.json", "cat.svg", "keep.txt", "folder"] {
+            assert!(root.join(name).exists());
+        }
+    }
+
+    #[test]
     fn batch_clear_marks_respects_filter_and_exact_file_list() {
         for filter in [ImageFilter::All, ImageFilter::Favourite, ImageFilter::Tag3] {
             let directory = tempfile::tempdir().unwrap();
@@ -7555,9 +7732,8 @@ mod tests {
         });
 
         let listed = test_http_request(address, "GET", "/", "");
-        assert!(listed.contains("data-directory-favourite-remove=\"/nested/\""));
-        let response =
-            test_http_request(address, "DELETE", "/nested/?mode=directory-favourite", "");
+        assert!(listed.contains("data-directory-favourite-remove=\"/nested\""));
+        let response = test_http_request(address, "DELETE", "/nested?mode=directory-favourite", "");
         assert!(response.starts_with("HTTP/1.1 204"), "{response}");
         let removed = test_http_request(address, "GET", "/", "");
         assert!(!removed.contains("class=\"directory-favourites\""));
@@ -7605,6 +7781,27 @@ mod tests {
         let removed = request("GET", "/");
         assert!(!removed.contains("class=\"directory-favourites\""));
         server.join().unwrap();
+    }
+
+    #[test]
+    fn file_favourites_link_to_viewers_and_gallery_images() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(directory.path()).unwrap();
+        let state = StateStore::new(None).unwrap();
+        for name in ["notes.txt", "image + #图.svg"] {
+            let path = root.join(name);
+            fs::write(&path, "content").unwrap();
+            state.set_directory_favourite(&path, true).unwrap();
+        }
+
+        let page = render_directory_page(&root, &root, &state).unwrap();
+        assert!(page.contains("href=\"/notes.txt\""));
+        assert!(page.contains("data-directory-favourite-path=\"/image%20%2B%20%23%E5%9B%BE.svg\""));
+        assert!(page.contains("href=\"/?view=gallery&amp;open=image%20%2B%20%23%E5%9B%BE.svg\""));
+        let entries =
+            read_directory_entries(&root, &root, Path::new(""), &state, &Access::default())
+                .unwrap();
+        assert!(entries.iter().all(|entry| entry.directory_favourite));
     }
 
     #[test]
@@ -7690,9 +7887,8 @@ mod tests {
         assert!(favourite.starts_with("HTTP/1.1 204 No Content"));
         let listing = test_http_request(address, "GET", "/Documents/", "");
         assert!(listing.starts_with("HTTP/1.1 200 OK"));
-        assert!(listing.contains(
-            "id=\"directory-favourite-toggle\" type=\"button\" aria-pressed=\"true\">移出收藏夹"
-        ));
+        assert!(listing
+            .contains("id=\"directory-favourite-toggle\" type=\"button\" aria-pressed=\"true\">"));
         let entries = test_http_request(address, "GET", "/Documents/?mode=directory-entries", "");
         assert!(entries.contains("\"listHref\":\"/Documents/nested/\""));
         let file = test_http_request(address, "GET", "/Documents/nested/note.txt", "");
@@ -8740,7 +8936,7 @@ mod tests {
         assert!(page.starts_with("<!doctype html>"));
         assert!(page.contains("class=\"mxgraph\""));
         assert!(page.contains(DRAWIO_VIEWER_PATH));
-        assert!(page.contains("connect-src 'none'"));
+        assert!(page.contains("connect-src 'self'"));
         assert!(page.contains("toolbar&quot;:&quot;zoom layers lightbox"));
         assert!(page.contains("system&lt;&amp;&gt;.drawio"));
         assert!(!page.contains("<script>alert(1)</script>"));

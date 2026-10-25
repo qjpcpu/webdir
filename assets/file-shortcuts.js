@@ -200,6 +200,25 @@
     toastTimer = setTimeout(() => { toast.hidden = true; }, 2200);
   };
 
+  const favouriteToggle = document.querySelector('#file-favourite-toggle');
+  favouriteToggle?.addEventListener('click', async () => {
+    const favourite = favouriteToggle.getAttribute('aria-pressed') !== 'true';
+    favouriteToggle.disabled = true;
+    try {
+      const url = new URL(location.pathname, location.origin);
+      url.searchParams.set('mode', 'directory-favourite');
+      const response = await fetch(url, {method: favourite ? 'PUT' : 'DELETE'});
+      if (!response.ok) throw new Error('保存收藏失败，请重试。');
+      favouriteToggle.setAttribute('aria-pressed', String(favourite));
+      favouriteToggle.title = favourite ? '移出收藏夹' : '添加到收藏夹';
+      favouriteToggle.setAttribute('aria-label', favouriteToggle.title);
+    } catch (error) {
+      notify(error.message);
+    } finally {
+      favouriteToggle.disabled = false;
+    }
+  });
+
   const copyText = (text, message) => {
     const focused = document.activeElement;
     const selection = window.getSelection();

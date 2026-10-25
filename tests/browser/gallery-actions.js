@@ -62,17 +62,17 @@ module.exports = () => test.describe('gallery image actions', () => {
     await expect(page.locator('#delete-images')).toBeDisabled();
     await entry(page, names[0]).click();
     await entry(page, names[2]).click();
-    await expect(page.locator('#image-selection-count')).toHaveText('已选 2 张');
+    await expect(page.locator('#image-selection-count')).toHaveText('已选 2 个文件');
     await expect(page.locator('#image-lightbox')).toBeHidden();
     await entry(page, names[2]).click();
-    await expect(page.locator('#image-selection-count')).toHaveText('已选 1 张');
+    await expect(page.locator('#image-selection-count')).toHaveText('已选 1 个文件');
     await choose(page, 'tag3');
     await page.locator('#select-all-images').click();
     await expect(page.locator('.image-selected')).toHaveCount(2);
     await page.locator('#file-search-input').fill('01');
-    await expect(page.locator('#image-selection-count')).toHaveText('已选 1 张');
+    await expect(page.locator('#image-selection-count')).toHaveText('已选 1 个文件');
     await page.locator('#file-search-input').fill('');
-    await expect(page.locator('#image-selection-count')).toHaveText('已选 1 张');
+    await expect(page.locator('#image-selection-count')).toHaveText('已选 1 个文件');
     await page.locator('#clear-image-selection').click();
     await expect(page.locator('#delete-images')).toBeDisabled();
     const checkbox = page.getByRole('checkbox', {name: new RegExp(names[0])});
@@ -92,8 +92,9 @@ module.exports = () => test.describe('gallery image actions', () => {
     await expect(page.locator('#select-images')).toBeHidden();
     await expect(page).toHaveURL(url);
     await page.locator('#gallery-toggle').click();
-    await page.locator('#select-images').click();
-    await expect(page.locator('#image-selection-count')).toHaveText('已选 0 张');
+    await expect(page.locator('#image-selection-count')).toHaveText('已选 1 个文件');
+    await page.locator('#finish-file-selection').click();
+    await expect(page.locator('#select-images')).toBeVisible();
   });
 
   test('Escape exits multi-select after dismissing an open batch dialog', async ({page}) => {
@@ -162,7 +163,7 @@ module.exports = () => test.describe('gallery image actions', () => {
       };
       const [button, description, confirm] = controls[action];
       await page.locator(button).click();
-      await expect(page.locator(description)).toContainText('已选的 2 张图片');
+      await expect(page.locator(description)).toContainText('已选的 2 个文件');
       if (action === 'move') {
         await moveNode(page, `${url}chosen/`).click();
       }
@@ -190,13 +191,13 @@ module.exports = () => test.describe('gallery image actions', () => {
     await entry(page, names[0]).click();
     await page.locator('#delete-images').click();
     await page.locator('#batch-delete-cancel').click();
-    await expect(page.locator('#image-selection-count')).toHaveText('已选 1 张');
+    await expect(page.locator('#image-selection-count')).toHaveText('已选 1 个文件');
     await page.route('**/*?mode=batch-images', route => route.fulfill({status: 500, body: '删除失败'}));
     await page.locator('#delete-images').click();
     await page.locator('#batch-delete-confirm').click();
     await expect(page.locator('#directory-notice')).toHaveText('删除失败');
     await expect(page.locator('#delete-images')).toBeEnabled();
-    await expect(page.locator('#image-selection-count')).toHaveText('已选 1 张');
+    await expect(page.locator('#image-selection-count')).toHaveText('已选 1 个文件');
     expect(fs.existsSync(path.join(directory, names[0]))).toBe(true);
   });
 
@@ -379,13 +380,13 @@ module.exports = () => test.describe('gallery image actions', () => {
     await page.locator('#file-search-input').fill('01');
     await page.locator('#move-images').click();
     await expect(page.locator('.move-tree [aria-selected="true"]')).toContainText(path.basename(directory));
-    await expect(page.locator('.move-description')).toContainText('1 张');
+    await expect(page.locator('.move-description')).toContainText('1 个文件');
     await moveNode(page, `${url}chosen/`).click();
     await reloadAfter(page, () => page.locator('[data-move-confirm]').click());
     await expect(page.locator('#image-filter')).toHaveValue('favourite');
     await expect(page.locator('#file-search-input')).toHaveValue('01');
     await expect(visible(page)).toHaveCount(0);
-    await expect(page.locator('#directory-notice')).toContainText('已移动 1 张图片');
+    await expect(page.locator('#directory-notice')).toContainText('已移动 1 个文件');
     expect(fs.existsSync(path.join(directory, names[0]))).toBe(false);
     expect(fs.existsSync(path.join(directory, names[1]))).toBe(true);
     expect(fs.readFileSync(path.join(directory, 'chosen', names[0]), 'utf8')).toBe('existing');
@@ -399,9 +400,9 @@ module.exports = () => test.describe('gallery image actions', () => {
     await choose(page, 'tag3');
     await page.locator('#move-images').click();
     await moveNode(page, url).click();
-    await expect(page.locator('.move-description')).toContainText('1 张');
+    await expect(page.locator('.move-description')).toContainText('1 个文件');
     await reloadAfter(page, () => page.locator('[data-move-confirm]').click());
-    await expect(page.locator('#directory-notice')).toContainText('已移动 1 张图片');
+    await expect(page.locator('#directory-notice')).toContainText('已移动 1 个文件');
     expect(fs.existsSync(path.join(directory, 'chosen', movedName))).toBe(false);
     expect(fs.existsSync(path.join(directory, movedName))).toBe(true);
     await page.goto(`${url}?view=gallery`);
@@ -445,7 +446,7 @@ module.exports = () => test.describe('gallery image actions', () => {
       await expect(page).toHaveURL(`${url}?view=gallery`);
       await expect(page.locator('.listing')).toHaveClass(/gallery/);
       await expect(page.locator('#file-search-input')).toHaveValue('');
-      await expect(page.locator('#directory-notice')).toContainText('已移动 1 张图片，已删除空目录');
+      await expect(page.locator('#directory-notice')).toContainText('已移动 1 个文件，已删除空目录');
       expect(fs.existsSync(source)).toBe(false);
       expect(fs.existsSync(path.join(directory, name))).toBe(true);
       await expect(entry(page, name)).toHaveAttribute('data-image-tag', '3');
@@ -466,7 +467,7 @@ module.exports = () => test.describe('gallery image actions', () => {
       await choose(page, filter);
       await page.locator('#file-search-input').fill('01');
       await page.locator('#clear-image-marks').click();
-      await expect(page.locator('#clear-marks-description')).toContainText('1 张图片');
+      await expect(page.locator('#clear-marks-description')).toContainText('1 个文件');
       await expect(page.locator('#clear-marks-description')).toContainText(filter === 'all' ? '喜欢和数字标记' : filter === 'favourite' ? '喜欢标记' : '数字标记');
       await reloadAfter(page, () => page.locator('#clear-marks-confirm').click());
       const response = await page.request.get(`${url}?mode=directory-entries`);
@@ -480,7 +481,7 @@ module.exports = () => test.describe('gallery image actions', () => {
     }
   });
 
-  test('batch actions confirm their counts and are disabled when the search has no images', async ({page}) => {
+  test('batch actions confirm their counts and are disabled when the search has no files', async ({page}) => {
     await like(page, names[0]);
     await tag(page, names[0], 3);
     await page.goto(`${url}?view=gallery`);
@@ -496,7 +497,7 @@ module.exports = () => test.describe('gallery image actions', () => {
     for (const [button, dialog, description, cancel] of actions) {
       await page.locator(button).click();
       await expect(page.locator(dialog)).toBeVisible();
-      await expect(page.locator(description)).toContainText('3 张图片');
+      await expect(page.locator(description)).toContainText('4 个文件');
       await page.locator(cancel).click();
       await expect(page.locator(dialog)).toBeHidden();
       expect(batchRequests).toBe(0);
@@ -509,7 +510,7 @@ module.exports = () => test.describe('gallery image actions', () => {
     await page.locator('#file-search-input').fill('01');
     for (const [button] of actions) await expect(page.locator(button)).toBeEnabled();
     await page.locator('#clear-image-marks').click();
-    await expect(page.locator('#clear-marks-description')).toContainText('1 张图片');
+    await expect(page.locator('#clear-marks-description')).toContainText('1 个文件');
     await page.locator('#clear-marks-cancel').click();
   });
 
@@ -520,18 +521,18 @@ module.exports = () => test.describe('gallery image actions', () => {
     await page.locator('[data-move-cancel]').click();
     await page.locator('#file-search-input').fill('01');
     await page.locator('#delete-images').click();
-    await expect(page.locator('#batch-delete-description')).toContainText('1 张图片');
+    await expect(page.locator('#batch-delete-description')).toContainText('1 个文件');
     await reloadAfter(page, () => page.locator('#batch-delete-confirm').click());
     expect(fs.existsSync(path.join(directory, names[0]))).toBe(false);
     expect(fs.existsSync(path.join(directory, names[1]))).toBe(true);
     await page.locator('#file-search-input').fill('');
     await page.locator('#delete-images').click();
-    await expect(page.locator('#batch-delete-description')).toContainText('2 张图片');
+    await expect(page.locator('#batch-delete-description')).toContainText('3 个文件');
     await reloadAfter(page, () => page.locator('#batch-delete-confirm').click());
     await expect(visible(page)).toHaveCount(0);
     await expect(page.locator('#image-filter')).toHaveValue('all');
     await expect(page.locator('#delete-images')).toBeDisabled();
-    expect(fs.readFileSync(path.join(directory, 'notes.txt'), 'utf8')).toBe('keep');
+    expect(fs.existsSync(path.join(directory, 'notes.txt'))).toBe(false);
   });
 
   test('yy copies ordered filtered basenames and the current viewer basename', async ({page}) => {

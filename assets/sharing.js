@@ -1,7 +1,6 @@
 (() => {
   const style = document.createElement('style');
   style.textContent = `
-    .file-open { display:contents; color:inherit; text-decoration:none; }
     .share-button { flex:0 0 auto; padding:.45rem .65rem; border:1px solid var(--line); border-radius:.45rem; color:var(--muted); background:var(--surface); font:600 .72rem/1.3 system-ui; cursor:pointer; }
     .share-button:hover { color:var(--accent); border-color:var(--accent); }
     .share-icon { display:inline-flex; align-items:center; justify-content:center; width:2rem; height:2rem; padding:.35rem; }

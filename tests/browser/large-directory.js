@@ -72,15 +72,15 @@ module.exports = () => test.describe('large directories', () => {
     await page.goto(`${url}1000/?view=gallery`);
     await page.locator('#select-images').click();
     await page.locator('#select-all-images').click();
-    await expect(page.locator('#image-selection-count')).toHaveText('已选 1000 张');
+    await expect(page.locator('#image-selection-count')).toHaveText('已选 1000 个文件');
     await page.locator('#delete-images').click();
-    await expect(page.locator('#batch-delete-description')).toContainText('1000 张图片');
+    await expect(page.locator('#batch-delete-description')).toContainText('1000 个文件');
     await page.locator('#batch-delete-cancel').click();
     await page.evaluate(() => scrollTo(0, document.documentElement.scrollHeight));
     const last = page.locator('.entry.image').filter({hasText: name(999)});
     await expect(last).toHaveClass(/image-selected/);
     await page.locator('#file-search-input').fill('image-00999');
-    await expect(page.locator('#image-selection-count')).toHaveText('已选 1 张');
+    await expect(page.locator('#image-selection-count')).toHaveText('已选 1 个文件');
     await page.keyboard.press('Tab');
     await page.keyboard.press('Escape');
     await last.click();
@@ -152,9 +152,12 @@ module.exports = () => test.describe('large directories', () => {
     const lastMounted = page.locator('.entry.image').last();
     const lastName = await lastMounted.locator('.entry-name').textContent();
     const next = name(Number(lastName.match(/\d+/)[0]) + 1);
-    await lastMounted.focus();
+    const lastEntry = page.locator('.entry.image').filter({hasText: lastName});
+    await lastEntry.locator('.file-open').focus();
     await page.keyboard.press('Tab');
-    await expect(page.locator('.entry.image').filter({hasText: next})).toBeFocused();
+    await expect(lastEntry.locator('.folder-favourite-toggle')).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(page.locator('.entry.image').filter({hasText: next}).locator('.file-open')).toBeFocused();
     expect(await page.locator('.entry').count()).toBeLessThan(150);
   });
 

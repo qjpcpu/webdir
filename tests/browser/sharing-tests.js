@@ -171,6 +171,7 @@ module.exports = () => {
     await login(page);
     await page.goto(`${origin}/docs/other/private.md`);
     await page.goto(`${origin}/docs/project/note.md`);
+    await page.locator('.file-breadcrumbs a').last().click();
     await page.locator('.recent-link').click();
     await expect(page.locator('.listing .entry')).toHaveCount(2);
     await expect(page.locator('.listing .entry').first()).toHaveAttribute('href', '/docs/project/note.md');
@@ -188,6 +189,7 @@ module.exports = () => {
       await recipient.goto(`${origin}/docs/project/note.md`);
       await recipient.goto(`${origin}/docs/project/sub/child.txt`);
       await recipient.goto(`${origin}/docs/project/note.md`);
+      await recipient.locator('.file-breadcrumbs a').last().click();
       await recipient.locator('.recent-link').click();
       const entries = recipient.locator('.listing .entry');
       await expect(entries).toHaveCount(2);

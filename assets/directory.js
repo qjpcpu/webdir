@@ -19,7 +19,17 @@ const createDirectoryFavouriteItem = path => {
   item.dataset.directoryFavouritePath = favouritePathname(path);
   item.draggable = true;
   const link = document.createElement('a');
-  link.href = path;
+  const entry = directoryEntries.find(entry => entry.listHref === favouritePathname(path));
+  if (entry && (entry.isImage || entry.isVideo)) {
+    const url = new URL(entry.listHref, location.origin);
+    const name = decodeURIComponent(url.pathname.slice(url.pathname.lastIndexOf('/') + 1));
+    url.pathname = url.pathname.slice(0, url.pathname.lastIndexOf('/') + 1);
+    url.searchParams.set('view', 'gallery');
+    url.searchParams.set('open', name);
+    link.href = url.pathname + url.search;
+  } else {
+    link.href = path;
+  }
   const parts = favouritePathname(path).split('/').filter(Boolean).map(decodeURIComponent);
   const label = parts.length ? parts.join('/') : 'root';
   link.title = label;
@@ -58,63 +68,73 @@ const ensureDirectoryFavourites = () => {
   if (nav) return nav;
   nav = document.createElement('nav');
   nav.className = 'directory-favourites';
-  nav.setAttribute('aria-label', '收藏目录');
-  nav.innerHTML = '<span class="directory-favourites-label"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5.5 3h9a1 1 0 0 1 1 1v13L10 13.5 4.5 17V4a1 1 0 0 1 1-1Z"/></svg><span>收藏夹</span></span><div class="directory-favourites-list"></div>';
+  nav.setAttribute('aria-label', '收藏夹');
+  nav.append(document.querySelector('#favourites-menu-template').content.cloneNode(true));
   document.querySelector('.directory-shortcuts').append(nav);
-  directoryFavouritesResizeObserver.observe(nav);
   return nav;
 };
-const ensureDirectoryFavouritesMore = nav => {
-  let more = nav.querySelector('.directory-favourites-more');
-  if (more) return more.querySelector('.directory-favourites-menu');
-  more = document.createElement('details');
-  more.className = 'directory-favourites-more';
-  more.innerHTML = '<summary aria-label="展开更多收藏目录"><span>更多</span><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4.5 6 3.5 3.5L11.5 6"/></svg></summary><div class="directory-favourites-menu"></div>';
-  nav.append(more);
-  return more.querySelector('.directory-favourites-menu');
-};
-const directoryFavouriteItems = () => Array.from(
-  document.querySelectorAll('.directory-favourites-list .directory-favourite, .directory-favourites-menu .directory-favourite')
-);
-const renderDirectoryFavouriteOrder = items => {
+const directoryFavouriteItems = () => Array.from(document.querySelectorAll('.directory-favourites-list .directory-favourite'));
+const filterDirectoryFavourites = () => {
   const nav = document.querySelector('.directory-favourites');
   if (!nav) return;
-  const list = nav.querySelector('.directory-favourites-list');
+  const query = nav.querySelector('.favourites-search').value.trim().toLocaleLowerCase();
+  const items = directoryFavouriteItems();
+  let matches = 0;
+  for (const item of items) {
+    const label = item.querySelector('a').textContent;
+    const path = favouriteLabel(item.dataset.directoryFavouritePath);
+    item.hidden = ![label, path].some(value => {
+      const text = value.toLocaleLowerCase();
+      return text.includes(query) || pinyinPro.match(text, query, {continuous: true}) !== null;
+    });
+    if (!item.hidden) matches++;
+  }
+  nav.querySelector('.favourites-count').textContent = items.length;
+  nav.querySelector('.favourites-empty').hidden = matches > 0;
+};
+const renderDirectoryFavouriteOrder = items => {
+  const list = document.querySelector('.directory-favourites-list');
+  if (!list) return;
   list.replaceChildren(...items);
-  const menu = ensureDirectoryFavouritesMore(nav);
-  const more = menu.parentElement;
-  more.style.display = 'none';
-  const gap = parseFloat(getComputedStyle(list).columnGap);
-  const widths = items.map(item => item.getBoundingClientRect().width);
-  const totalWidth = widths.reduce((total, width) => total + width, 0)
-    + Math.max(0, items.length - 1) * gap;
-  if (totalWidth <= list.getBoundingClientRect().width) {
-    more.remove();
+  filterDirectoryFavourites();
+};
+document.addEventListener('toggle', event => {
+  if (!event.target.matches?.('.favourites-dropdown') || !event.target.open) return;
+  const input = event.target.querySelector('.favourites-search');
+  input.value = '';
+  filterDirectoryFavourites();
+  input.focus();
+}, true);
+document.addEventListener('input', event => {
+  if (event.target.matches('.favourites-search')) filterDirectoryFavourites();
+});
+document.addEventListener('click', event => {
+  const dropdown = document.querySelector('.favourites-dropdown[open]');
+  if (dropdown && !dropdown.contains(event.target)) dropdown.open = false;
+});
+document.addEventListener('keydown', event => {
+  const dropdown = event.target.closest('.favourites-dropdown[open]');
+  if (!dropdown || event.target.matches('.directory-favourite-name-input')) return;
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    event.stopPropagation();
+    dropdown.open = false;
+    dropdown.querySelector('summary').focus();
     return;
   }
-  more.style.display = '';
-  const availableWidth = list.getBoundingClientRect().width;
-  let usedWidth = 0;
-  let visibleCount = 0;
-  for (const width of widths) {
-    const nextWidth = usedWidth + (visibleCount ? gap : 0) + width;
-    if (nextWidth > availableWidth) break;
-    usedWidth = nextWidth;
-    visibleCount++;
+  const links = directoryFavouriteItems().filter(item => !item.hidden).map(item => item.querySelector('a'));
+  const input = dropdown.querySelector('.favourites-search');
+  if (event.key === 'Enter' && event.target === input) {
+    event.preventDefault();
+    links[0]?.click();
+  } else if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && (event.target === input || links.includes(event.target))) {
+    event.preventDefault();
+    const index = links.indexOf(event.target);
+    const next = index + (event.key === 'ArrowDown' ? 1 : -1);
+    if (next < 0) input.focus();
+    else links[Math.min(next, links.length - 1)]?.focus();
   }
-  menu.replaceChildren(...items.slice(visibleCount));
-};
-let directoryFavouritesWidth = 0;
-const directoryFavouritesResizeObserver = new ResizeObserver(entries => {
-  const width = entries[0].contentRect.width;
-  if (width === directoryFavouritesWidth) return;
-  directoryFavouritesWidth = width;
-  renderDirectoryFavouriteOrder(directoryFavouriteItems());
 });
-const directoryFavouritesNav = document.querySelector('.directory-favourites');
-if (directoryFavouritesNav) directoryFavouritesResizeObserver.observe(directoryFavouritesNav);
-renderDirectoryFavouriteOrder(directoryFavouriteItems());
-document.fonts.ready.then(() => renderDirectoryFavouriteOrder(directoryFavouriteItems()));
 const moveDirectoryFavourite = (dragged, target) => {
   const items = directoryFavouriteItems();
   const from = items.indexOf(dragged);
@@ -296,14 +316,13 @@ const setDirectoryFavouriteState = (path, favourite) => {
   document.querySelectorAll('[data-directory-favourite-toggle]').forEach(button => {
     if (favouritePathname(button.dataset.directoryFavouriteToggle) !== pathname) return;
     button.setAttribute('aria-pressed', String(favourite));
-    button.textContent = favourite ? '★' : '☆';
-    const label = button.closest('.entry').querySelector('.entry-name').textContent;
+    const label = record?.name || favouriteLabel(path);
     button.title = favourite ? '移出收藏夹' : '添加到收藏夹';
     button.setAttribute('aria-label', `${button.title}：${label}`);
   });
   if (pathname === location.pathname && directoryFavouriteToggle) {
     directoryFavouriteToggle.setAttribute('aria-pressed', String(favourite));
-    directoryFavouriteToggle.textContent = favourite ? '移出收藏夹' : '添加到收藏夹';
+    directoryFavouriteToggle.querySelector('span').textContent = favourite ? '移出收藏夹' : '添加到收藏夹';
   }
   const existing = Array.from(document.querySelectorAll('[data-directory-favourite-remove]'))
     .filter(button => favouritePathname(button.dataset.directoryFavouriteRemove) === pathname)
@@ -317,7 +336,6 @@ const setDirectoryFavouriteState = (path, favourite) => {
     const items = directoryFavouriteItems();
     if (items.length) renderDirectoryFavouriteOrder(items);
     else {
-      directoryFavouritesResizeObserver.unobserve(nav);
       nav.remove();
     }
   }
@@ -328,12 +346,13 @@ const updateDirectoryFavourite = async (path, method, button) => {
     const url = new URL(path, location.origin);
     url.searchParams.set('mode', 'directory-favourite');
     const response = await fetch(url, {method});
-    if (!response.ok) throw new Error('保存目录收藏失败，请重试。');
+    if (!response.ok) throw new Error('保存收藏失败，请重试。');
     setDirectoryFavouriteState(path, method === 'PUT');
     button.disabled = false;
   } catch (error) {
-    directoryNotice.textContent = error.message;
-    directoryNotice.hidden = false;
+    const notice = document.querySelector('#image-lightbox:not([hidden]) #favourite-error') || directoryNotice;
+    notice.textContent = error.message;
+    notice.hidden = false;
     button.disabled = false;
   }
 };
@@ -367,7 +386,7 @@ const listing = document.querySelector('.listing');
 const DIRECTORY_VIEW_KEY = `webdir-directory-view:${location.pathname}`;
 const directoryView = new URLSearchParams(location.search).get('view')
   ?? localStorage.getItem(DIRECTORY_VIEW_KEY);
-const galleryAvailable = directoryEntries.some(entry => entry.isImage || entry.isVideo) || directoryView === 'gallery';
+const galleryAvailable = directoryEntries.some(entry => !entry.isDir) || directoryView === 'gallery';
 const directoryViewModel = new DirectoryView(directoryEntries);
 window.webdirDirectory = directoryViewModel;
 const directorySort = document.querySelector('#directory-sort');
@@ -375,11 +394,11 @@ const directoryEmpty = document.querySelector('#directory-empty');
 const imageFilter = document.querySelector('#image-filter');
 const IMAGE_FILTER_KEY = `webdir-image-filter:${location.pathname}`;
 const filterLabels = {all: '全部', favourite: '喜欢', tag1: '标记1', tag2: '标记2', tag3: '标记3', tag4: '标记4', tag5: '标记5'};
-let selectedImageFilter = galleryAvailable ? localStorage.getItem(IMAGE_FILTER_KEY) || 'all' : 'all';
+let selectedImageFilter = localStorage.getItem(IMAGE_FILTER_KEY) || 'all';
 if (!filterLabels[selectedImageFilter]) selectedImageFilter = 'all';
 const refreshImageFilters = () => {
   if (!imageFilter) return;
-  const entries = directoryEntries.filter(entry => entry.isImage || entry.isVideo);
+  const entries = directoryEntries.filter(entry => !entry.isDir);
   const available = new Set(['all', selectedImageFilter]);
   entries.forEach(entry => {
     if (entry.favourite === 'true') available.add('favourite');
@@ -394,7 +413,7 @@ refreshImageFilters();
 if (typeof history.state?.fileSearch === 'string') {
   fileSearchInput.value = history.state.fileSearch;
 }
-if (galleryAvailable) {
+if (directoryEntries.some(entry => entry.isImage || entry.isVideo)) {
   const option = document.createElement('option');
   option.value = 'similarity';
   option.textContent = '按图片相似度';
@@ -468,7 +487,7 @@ const filterDirectory = () => {
   const otherHeading = listing.querySelector('.gallery-other-heading');
   if (otherHeading) otherHeading.hidden = !directoryEntries.some(entry => !entry.isDir && !entry.isImage && !entry.isVideo && !entry.hidden);
   directoryEmpty.querySelector('p').textContent = markedOnly
-    ? '没有符合筛选条件的图片或视频'
+    ? '没有符合筛选条件的文件'
     : query ? '没有匹配的文件或目录' : '这个目录是空的';
   directoryViewModel.schedule(true);
   document.dispatchEvent(new Event('gallery-filter-change'));
@@ -524,7 +543,6 @@ updateScrollJumps();
 
 const galleryToggle = document.querySelector('#gallery-toggle');
 galleryToggle.hidden = !galleryAvailable;
-document.querySelector('#gallery-organise').hidden = !galleryAvailable;
 if (galleryToggle) {
   const organise = document.querySelector('#gallery-organise');
   const moveImagesButton = organise.querySelector('#move-images');
@@ -532,6 +550,8 @@ if (galleryToggle) {
   const selectionCount = organise.querySelector('#image-selection-count');
   const selectAllImagesButton = organise.querySelector('#select-all-images');
   const clearSelectionButton = organise.querySelector('#clear-image-selection');
+  const finishSelectionButton = organise.querySelector('#finish-file-selection');
+  const markFilesSelect = organise.querySelector('#mark-files');
   let selectingImages = false;
   const selectedImages = new Set();
   const lightbox = document.querySelector('#image-lightbox');
@@ -595,6 +615,12 @@ if (galleryToggle) {
   carouselHud.innerHTML = '<span class="carousel-notice" hidden></span><button type="button" data-carousel-pause>暂停</button><button type="button" data-carousel-exit>退出轮播</button>';
   lightbox.append(carouselHud);
   const viewerControls = lightbox.querySelector('.lightbox-controls');
+  const bookmarkToggle = document.createElement('button');
+  bookmarkToggle.id = 'gallery-favourite-toggle';
+  bookmarkToggle.type = 'button';
+  bookmarkToggle.className = 'gallery-favourite-toggle';
+  bookmarkToggle.innerHTML = document.querySelector('#favourite-icon').innerHTML;
+  viewerControls.insertBefore(bookmarkToggle, carouselToggle);
   const svgIcon = paths => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths}</svg>`;
   const strokePath = path => `<path d="${path}"></path>`;
   const commentToggle = document.createElement('button');
@@ -680,7 +706,8 @@ if (galleryToggle) {
   const REVIEW_IDENTITY_KEY = 'webdir-review-identity';
   const mediaModel = () => directoryEntries.filter(entry => entry.isImage || entry.isVideo);
   const visibleMedia = () => mediaModel().filter(entry => !entry.hidden);
-  const batchImages = () => visibleMedia().filter(entry => !selectingImages || selectedImages.has(entry));
+  const visibleFiles = () => directoryEntries.filter(entry => !entry.isDir && !entry.hidden);
+  const batchImages = () => visibleFiles().filter(entry => !selectingImages || selectedImages.has(entry));
   let previewTrigger = null;
   let deleting = false;
   let liking = 0;
@@ -776,7 +803,7 @@ if (galleryToggle) {
       const selected = selectedImages.has(entry);
       node.classList.toggle('image-selected', selected);
       const link = node.querySelector('.file-open') || node;
-      if (selectingImages && (entry.isImage || entry.isVideo)) {
+      if (selectingImages && !entry.isDir) {
         link.setAttribute('role', 'checkbox');
         link.setAttribute('aria-checked', String(selected));
       } else {
@@ -785,12 +812,12 @@ if (galleryToggle) {
       }
     };
     for (const node of directoryViewModel.nodes.values()) directoryViewModel.refresh(directoryViewModel.fromNode(node));
-    selectionCount.textContent = `已选 ${selectedImages.size} ${[...selectedImages].some(entry => entry.isVideo) ? '个' : '张'}`;
-    selectAllImagesButton.disabled = moving || visibleMedia().length === selectedImages.size;
+    selectionCount.textContent = `已选 ${selectedImages.size} 个文件`;
+    selectAllImagesButton.disabled = moving || visibleFiles().length === selectedImages.size;
     clearSelectionButton.disabled = moving || selectedImages.size === 0;
-    selectImagesButton.disabled = moving;
+    selectImagesButton.disabled = moving || visibleFiles().length === 0;
     const count = batchImages().length;
-    for (const button of [moveImagesButton, deleteImagesButton, clearImageMarksButton]) {
+    for (const button of [moveImagesButton, deleteImagesButton, clearImageMarksButton, markFilesSelect]) {
       button.disabled = count === 0 || moving || liking > 0 || marking > 0 || deleting;
     }
     updateLightboxState();
@@ -807,8 +834,8 @@ if (galleryToggle) {
     selectingImages = enabled;
     selectedImages.clear();
     listing.classList.toggle('selecting-images', enabled);
-    selectImagesButton.hidden = enabled || !listing.classList.contains('gallery');
-    for (const control of [selectionCount, selectAllImagesButton, clearSelectionButton]) control.hidden = !enabled;
+    selectImagesButton.hidden = enabled;
+    for (const control of [selectionCount, selectAllImagesButton, clearSelectionButton, finishSelectionButton]) control.hidden = !enabled;
     updateImageControls();
   };
   const toggleImageSelection = entry => {
@@ -818,8 +845,9 @@ if (galleryToggle) {
     updateImageControls();
   };
   selectImagesButton.addEventListener('click', () => setImageSelection(true));
+  finishSelectionButton.addEventListener('click', () => setImageSelection(false));
   selectAllImagesButton.addEventListener('click', () => {
-    visibleMedia().forEach(entry => selectedImages.add(entry));
+    visibleFiles().forEach(entry => selectedImages.add(entry));
     updateImageControls();
   });
   clearSelectionButton.addEventListener('click', () => {
@@ -1618,21 +1646,19 @@ if (galleryToggle) {
   clearMarksDialog.id = 'clear-marks-dialog';
   clearMarksDialog.setAttribute('aria-labelledby', 'clear-marks-title');
   clearMarksDialog.setAttribute('aria-describedby', 'clear-marks-description');
-  clearMarksDialog.innerHTML = '<h2 id="clear-marks-title">取消这些图片的标记？</h2><p id="clear-marks-description"></p><div class="delete-actions"><button type="button" id="clear-marks-cancel" autofocus>取消</button><button type="button" id="clear-marks-confirm">确认取消标记</button></div>';
+  clearMarksDialog.innerHTML = '<h2 id="clear-marks-title">取消这些文件的标记？</h2><p id="clear-marks-description"></p><div class="delete-actions"><button type="button" id="clear-marks-cancel" autofocus>取消</button><button type="button" id="clear-marks-confirm">确认取消标记</button></div>';
   document.body.append(clearMarksDialog);
   let batchFiles = [];
   let batchFilter = 'all';
   const captureBatchFiles = () => batchImages().map(entryName);
   const batchScope = () => selectingImages ? '已选的' : '当前筛选的';
-  const batchUnit = () => batchImages().some(entry => entry.isVideo) ? '个文件' : '张图片';
   const runBatch = async action => {
     if (!action.files.length || moving || liking || marking || deleting) return;
     moving = true;
     updateImageControls();
-    const descriptions = {move: '移动', delete: '删除', 'clear-mark': '取消标记'};
+    const descriptions = {move: '移动', delete: '删除', 'clear-mark': '取消标记', mark: '标记'};
     const description = descriptions[action.action];
-    const unit = batchUnit();
-    directoryNotice.textContent = `正在${description} ${action.files.length} ${unit}…`;
+    directoryNotice.textContent = `正在${description} ${action.files.length} 个文件…`;
     directoryNotice.hidden = false;
     try {
       const url = new URL(location.href);
@@ -1642,12 +1668,12 @@ if (galleryToggle) {
       });
       if (!response.ok) throw new Error(await response.text());
       const result = await response.json();
-      let notice = `已${description} ${result.affected} ${unit}`;
+      let notice = `已${description} ${result.affected} 个文件`;
       if (result.directory_removed) notice += '，已删除空目录';
       if (result.errors.length) notice += `；未完成的操作：${result.errors.join('；')}`;
       if (result.directory_removed) {
         const parent = new URL('../', location.href);
-        parent.search = '?view=gallery';
+        parent.search = listing.classList.contains('gallery') ? '?view=gallery' : '';
         history.replaceState({moveNotice: notice, previewImage: null}, '', parent);
       } else {
         history.replaceState({...history.state, moveNotice: notice, previewImage: null}, '');
@@ -1662,9 +1688,9 @@ if (galleryToggle) {
   moveImagesButton.addEventListener('click', () => {
     batchFiles = captureBatchFiles();
     if (!batchFiles.length || moving) return;
-    moveDialog.querySelector('.move-description').textContent = `移动${batchScope()} ${batchFiles.length} ${batchUnit()}`;
-    moveDialog.querySelector('#move-title').textContent = batchImages().some(entry => entry.isVideo) ? '移动这些文件' : '移动这些图片';
-    moveConfirm.textContent = batchImages().some(entry => entry.isVideo) ? '移动文件' : '移动图片';
+    moveDialog.querySelector('.move-description').textContent = `移动${batchScope()} ${batchFiles.length} 个文件`;
+    moveDialog.querySelector('#move-title').textContent = '移动这些文件';
+    moveConfirm.textContent = '移动文件';
     selectedMovePath = null;
     moveTree.textContent = '正在打开目录…';
     moveTarget.textContent = '请选择目标文件夹';
@@ -1692,8 +1718,8 @@ if (galleryToggle) {
     batchFiles = captureBatchFiles();
     if (!batchFiles.length || moving) return;
     batchDeleteError.hidden = true;
-    batchDeleteDialog.querySelector('#batch-delete-title').textContent = batchImages().some(entry => entry.isVideo) ? '删除这些文件？' : '删除这些图片？';
-    batchDeleteDialog.querySelector('#batch-delete-description').textContent = `${batchScope()} ${batchFiles.length} ${batchUnit()}将从磁盘中删除，此操作无法撤销。`;
+    batchDeleteDialog.querySelector('#batch-delete-title').textContent = '删除这些文件？';
+    batchDeleteDialog.querySelector('#batch-delete-description').textContent = `${batchScope()} ${batchFiles.length} 个文件将从磁盘中删除，此操作无法撤销。`;
     batchDeleteDialog.showModal();
   });
   batchDeleteCancel.addEventListener('click', () => batchDeleteDialog.close());
@@ -1701,13 +1727,18 @@ if (galleryToggle) {
     batchDeleteDialog.close();
     runBatch({action: 'delete', files: batchFiles});
   });
+  markFilesSelect.addEventListener('change', () => {
+    const mark = markFilesSelect.value;
+    markFilesSelect.value = '';
+    runBatch({action: 'mark', files: captureBatchFiles(), mark});
+  });
   clearImageMarksButton.addEventListener('click', () => {
     batchFiles = captureBatchFiles();
     if (!batchFiles.length || moving) return;
     batchFilter = selectedImageFilter;
     const marks = batchFilter === 'all' ? '喜欢和数字标记' : batchFilter === 'favourite' ? '喜欢标记' : '数字标记';
-    clearMarksDialog.querySelector('#clear-marks-title').textContent = batchImages().some(entry => entry.isVideo) ? '取消这些文件的标记？' : '取消这些图片的标记？';
-    clearMarksDialog.querySelector('#clear-marks-description').textContent = `将取消${batchScope()} ${batchFiles.length} ${batchUnit()}的${marks}，文件会保留。`;
+    clearMarksDialog.querySelector('#clear-marks-title').textContent = '取消这些文件的标记？';
+    clearMarksDialog.querySelector('#clear-marks-description').textContent = `将取消${batchScope()} ${batchFiles.length} 个文件的${marks}，文件会保留。`;
     clearMarksDialog.showModal();
   });
   clearMarksDialog.querySelector('#clear-marks-cancel').addEventListener('click', () => clearMarksDialog.close());
@@ -1895,17 +1926,11 @@ if (galleryToggle) {
   };
 
   const setGallery = (enabled, updateUrl = true) => {
-    if (!enabled && history.state?.gallerySelection) {
-      window.addEventListener('popstate', () => setGallery(false, updateUrl), {once: true});
-      history.back();
-      return;
-    }
     localStorage.setItem(DIRECTORY_VIEW_KEY, enabled ? 'gallery' : 'list');
     listing.classList.toggle('gallery', enabled);
     filterDirectory();
     document.body.classList.toggle('gallery-mode', enabled);
-    selectImagesButton.hidden = !enabled || selectingImages;
-    if (!enabled) setImageSelection(false);
+    selectImagesButton.hidden = selectingImages;
     galleryToggle.setAttribute('aria-pressed', String(enabled));
     galleryToggle.innerHTML = enabled
       ? '<span aria-hidden="true">☷</span> 列表'
@@ -2207,6 +2232,10 @@ if (galleryToggle) {
       history.pushState({...state, galleryPreview: true}, '');
     }
     previewTrigger = entry;
+    bookmarkToggle.dataset.directoryFavouriteToggle = entry.listHref;
+    bookmarkToggle.setAttribute('aria-pressed', String(entry.directoryFavourite));
+    bookmarkToggle.title = entry.directoryFavourite ? '移出收藏夹' : '添加到收藏夹';
+    bookmarkToggle.setAttribute('aria-label', `${bookmarkToggle.title}：${entry.name}`);
     if (entry.isImage) {
       const visitUrl = new URL(entry.listHref, location.href);
       visitUrl.searchParams.set('mode', 'visit');
@@ -2337,17 +2366,19 @@ if (galleryToggle) {
   deleteDialog.addEventListener('close', scheduleCarousel);
 
   listing.addEventListener('click', event => {
-    const entry = directoryViewModel.fromNode(event.target.closest('.entry[data-preview-src]'));
-    if (!listing.classList.contains('gallery') || !entry) return;
-    event.preventDefault();
-    if (selectingImages && (entry.isImage || entry.isVideo)) {
+    if (event.target.closest('button')) return;
+    const entry = directoryViewModel.fromNode(event.target.closest('.entry.file'));
+    if (!entry) return;
+    if (selectingImages) {
+      event.preventDefault();
       toggleImageSelection(entry);
-      return;
+    } else if (listing.classList.contains('gallery') && (entry.isImage || entry.isVideo)) {
+      event.preventDefault();
+      openLightbox(entry);
     }
-    openLightbox(entry);
   });
   listing.addEventListener('keydown', event => {
-    const entry = directoryViewModel.fromNode(event.target.closest('.entry[data-preview-src]'));
+    const entry = directoryViewModel.fromNode(event.target.closest('.entry.file'));
     if (!selectingImages || !entry || event.key !== ' ' || event.target.getAttribute('role') !== 'checkbox') return;
     event.preventDefault();
     toggleImageSelection(entry);
@@ -2699,7 +2730,7 @@ if (galleryToggle) {
       closeLightbox();
     }
   });
-  if (listing.classList.contains('gallery') && history.state?.gallerySelection) {
+  if (history.state?.gallerySelection) {
     setImageSelection(true, false);
   }
   if (listing.classList.contains('gallery') && history.state?.previewImage) {

@@ -81,11 +81,9 @@ test('mobile directory favourites keep every shortcut reachable without overlapp
   }
 
   await page.goto('/');
-  await expect(page.locator('.directory-favourites-list .directory-favourite')).toHaveCount(0);
-  await expect(page.locator('.directory-favourites-more')).toBeVisible();
-  await page.locator('.directory-favourites-more summary').click();
-  await expect(page.locator('.directory-favourites-menu .directory-favourite')).toHaveCount(4);
-  for (const item of await page.locator('.directory-favourites-menu .directory-favourite').all()) {
+  await page.locator('.favourites-dropdown summary').click();
+  await expect(page.locator('.directory-favourites-list .directory-favourite')).toHaveCount(4);
+  for (const item of await page.locator('.directory-favourites-list .directory-favourite').all()) {
     await expect(item).toBeVisible();
   }
 
@@ -98,6 +96,15 @@ test('mobile directory favourites keep every shortcut reachable without overlapp
     };
   }));
   expect(folderControls.every(({overlap, detailVisible}) => !overlap && !detailVisible)).toBe(true);
+  const panel = await page.locator('.directory-favourites-panel').boundingBox();
+  expect(panel.x).toBeGreaterThanOrEqual(0);
+  expect(panel.x + panel.width).toBeLessThanOrEqual(page.viewportSize().width);
+  const search = page.getByRole('searchbox', {name: '搜索收藏夹'});
+  await search.fill('folder-2');
+  await expect(page.locator('.directory-favourite:visible')).toHaveCount(1);
+  await page.locator('.directory-favourite:visible a').click();
+  await expect(page).toHaveURL('/shortcut-folder-2/');
+
 
   for (const suffix of ['', '-2', '-3', '-4']) {
     await page.request.delete(`/shortcut-folder${suffix}/?mode=directory-favourite`);

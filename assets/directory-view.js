@@ -2,14 +2,13 @@
   const listing = document.querySelector('.listing');
   listing.classList.toggle('gallery', document.body.classList.contains('gallery-mode'));
   const galleryToggle = document.querySelector('#gallery-toggle');
-  document.querySelector('#select-images').hidden = !listing.classList.contains('gallery');
   if (listing.classList.contains('gallery')) {
     galleryToggle.setAttribute('aria-pressed', 'true');
     galleryToggle.innerHTML = '<span aria-hidden="true">☷</span> 列表';
   }
   const loading = document.querySelector('#directory-loading');
   const error = document.querySelector('#directory-load-error');
-  const controls = [...document.querySelectorAll('.directory-browser-tools input, .directory-browser-tools select, #gallery-toggle, #gallery-organise button, #image-filter')];
+  const controls = [...document.querySelectorAll('.directory-browser-tools input, .directory-browser-tools select, #gallery-toggle, #gallery-organise button, #gallery-organise select')];
   controls.forEach(control => { control.disabled = true; });
   window.directoryData = new Promise(resolve => {
     const load = async () => {
@@ -122,8 +121,7 @@
       controls[last ? controls.length - 1 : 0]?.focus({preventScroll: true});
     }
     create(entry) {
-      const sharing = document.body.dataset.canShare === 'true';
-      const node = document.createElement(entry.isDir || sharing ? 'div' : 'a');
+      const node = document.createElement('div');
       node.className = `entry ${entry.isDir ? 'folder' : 'file'}${entry.isImage ? ' image' : ''}${entry.vector ? ' vector' : ''}${entry.isVideo ? ' video' : ''}`;
       Object.assign(node.dataset, {filePath: entry.filePath, modified: entry.modified});
       if (entry.isImage || entry.isVideo) Object.assign(node.dataset, {previewSrc: entry.previewSrc, originalSrc: entry.originalSrc, listHref: entry.listHref, galleryHref: entry.galleryHref, fileSize: entry.fileSize});
@@ -131,21 +129,19 @@
       if (entry.listSrc) glyph = `<img data-list-src="${escape(entry.listSrc)}" data-gallery-src="${escape(entry.gallerySrc)}" alt="" decoding="async" draggable="false">`;
       else if (entry.isVideo) glyph = '<svg viewBox="0 0 24 18"><rect x="1" y="1" width="22" height="16" rx="3"></rect><path d="m10 5.5 6 3.5-6 3.5Z"></path></svg>';
       if (entry.isVideo) glyph += '<span class="video-badge" title="视频">▶ 视频</span>';
-      if (entry.isImage || entry.isVideo) glyph += `<span class="favourite-mark" title="已点赞" hidden>${heart}</span><span class="image-tag" hidden></span>`;
+      if (!entry.isDir) glyph += `<span class="favourite-mark" title="已点赞" hidden>${heart}</span><span class="image-tag" hidden></span>`;
       const content = `<span class="glyph" aria-hidden="true">${glyph}</span><span class="entry-name">${escape(entry.name)}</span><span class="kind">${escape(entry.kind)}</span><span class="detail">${escape(entry.fileSize)}</span><span class="arrow" aria-hidden="true">→</span>`;
-      node.innerHTML = node.tagName === 'A' ? content : `<a class="${entry.isDir ? 'folder-open' : 'file-open'}">${content}</a>`;
-      if (entry.isDir) {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = 'folder-favourite-toggle';
-        button.dataset.directoryFavouriteToggle = entry.listHref;
-        button.setAttribute('aria-pressed', String(entry.directoryFavourite));
-        button.textContent = entry.directoryFavourite ? '★' : '☆';
-        button.title = entry.directoryFavourite ? '移出收藏夹' : '添加到收藏夹';
-        button.setAttribute('aria-label', `${button.title}：${entry.name}`);
-        node.append(button);
-      }
-      if (entry.isImage || entry.isVideo) {
+      node.innerHTML = `<a class="${entry.isDir ? 'folder-open' : 'file-open'}">${content}</a>`;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'folder-favourite-toggle';
+      button.dataset.directoryFavouriteToggle = entry.listHref;
+      button.setAttribute('aria-pressed', String(entry.directoryFavourite));
+      button.innerHTML = document.querySelector('#favourite-icon').innerHTML;
+      button.title = entry.directoryFavourite ? '移出收藏夹' : '添加到收藏夹';
+      button.setAttribute('aria-label', `${button.title}：${entry.name}`);
+      node.append(button);
+      if (!entry.isDir) {
         const indicator = document.createElement('span');
         indicator.className = 'image-selection-indicator';
         indicator.setAttribute('aria-hidden', 'true');
