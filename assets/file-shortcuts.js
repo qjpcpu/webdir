@@ -203,6 +203,9 @@
   const favouriteToggle = document.querySelector('#file-favourite-toggle');
   favouriteToggle?.addEventListener('click', async () => {
     const favourite = favouriteToggle.getAttribute('aria-pressed') !== 'true';
+    const title = document.querySelector('#article h1')?.textContent.trim() || '';
+    const alias = favourite ? window.prompt('设置收藏别名（留空则使用原名称）', title) : '';
+    if (alias === null) return;
     favouriteToggle.disabled = true;
     try {
       const url = new URL(location.pathname, location.origin);
@@ -212,6 +215,11 @@
       favouriteToggle.setAttribute('aria-pressed', String(favourite));
       favouriteToggle.title = favourite ? '移出收藏夹' : '添加到收藏夹';
       favouriteToggle.setAttribute('aria-label', favouriteToggle.title);
+      if (alias.trim()) {
+        url.searchParams.set('mode', 'directory-favourite-label');
+        const response = await fetch(url, {method: 'POST', body: JSON.stringify(alias.trim())});
+        if (!response.ok) throw new Error('保存收藏名称失败，请重试。');
+      }
     } catch (error) {
       notify(error.message);
     } finally {

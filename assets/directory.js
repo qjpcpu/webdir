@@ -13,7 +13,7 @@ const favouriteLabel = path => {
   const parts = favouritePathname(path).split('/').filter(Boolean).map(decodeURIComponent);
   return parts.length ? parts.join('/') : 'root';
 };
-const createDirectoryFavouriteItem = path => {
+const createDirectoryFavouriteItem = (path, alias = '') => {
   const item = document.createElement('span');
   item.className = 'directory-favourite';
   item.dataset.directoryFavouritePath = favouritePathname(path);
@@ -31,9 +31,9 @@ const createDirectoryFavouriteItem = path => {
     link.href = path;
   }
   const parts = favouritePathname(path).split('/').filter(Boolean).map(decodeURIComponent);
-  const label = parts.length ? parts.join('/') : 'root';
+  const label = alias || (parts.length ? parts.join('/') : 'root');
   link.title = label;
-  if (parts.length > 1) {
+  if (!alias && parts.length > 1) {
     const prefix = document.createElement('span');
     prefix.className = 'directory-favourite-prefix';
     prefix.textContent = parts.slice(0, -1).join('/');
@@ -309,7 +309,7 @@ document.addEventListener('dblclick', event => {
   event.preventDefault();
   renameDirectoryFavourite(item);
 });
-const setDirectoryFavouriteState = (path, favourite) => {
+const setDirectoryFavouriteState = (path, favourite, alias = '') => {
   const pathname = favouritePathname(path);
   const record = directoryEntries.find(entry => entry.listHref === pathname);
   if (record) record.directoryFavourite = favourite;
@@ -329,7 +329,10 @@ const setDirectoryFavouriteState = (path, favourite) => {
     .map(button => button.closest('.directory-favourite'));
   if (favourite && !existing.length) {
     ensureDirectoryFavourites();
-    renderDirectoryFavouriteOrder([...directoryFavouriteItems(), createDirectoryFavouriteItem(path)]);
+    renderDirectoryFavouriteOrder([...directoryFavouriteItems(), createDirectoryFavouriteItem(path, alias)]);
+  } else if (favourite && alias) {
+    existing.forEach(item => item.replaceWith(createDirectoryFavouriteItem(path, alias)));
+    filterDirectoryFavourites();
   } else if (!favourite && existing.length) {
     const nav = existing[0].closest('.directory-favourites');
     existing.forEach(item => item.remove());
@@ -341,6 +344,8 @@ const setDirectoryFavouriteState = (path, favourite) => {
   }
 };
 const updateDirectoryFavourite = async (path, method, button) => {
+  const alias = method === 'PUT' ? window.prompt('设置收藏别名（留空则使用原名称）', '') : '';
+  if (alias === null) return;
   button.disabled = true;
   try {
     const url = new URL(path, location.origin);
@@ -348,6 +353,12 @@ const updateDirectoryFavourite = async (path, method, button) => {
     const response = await fetch(url, {method});
     if (!response.ok) throw new Error('保存收藏失败，请重试。');
     setDirectoryFavouriteState(path, method === 'PUT');
+    if (alias.trim()) {
+      url.searchParams.set('mode', 'directory-favourite-label');
+      const response = await fetch(url, {method: 'POST', body: JSON.stringify(alias.trim())});
+      if (!response.ok) throw new Error('保存收藏名称失败，请重试。');
+      setDirectoryFavouriteState(path, true, alias.trim());
+    }
     button.disabled = false;
   } catch (error) {
     const notice = document.querySelector('#image-lightbox:not([hidden]) #favourite-error') || directoryNotice;

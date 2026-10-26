@@ -48,6 +48,7 @@ test('directory search survives a page reload', async ({page}) => {
 });
 
 test('favourites dropdown searches names and paths and saves renames and order', async ({page}) => {
+  page.on('dialog', dialog => dialog.accept(''));
   for (const suffix of ['', '-2', '-3', '-4']) {
     await page.request.delete(`/shortcut-folder${suffix}/?mode=directory-favourite`);
   }

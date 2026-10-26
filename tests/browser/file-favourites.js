@@ -6,7 +6,8 @@ module.exports = () => test.describe('File favourites', () => {
   let directory;
   let base;
   const files = ['notes.txt', 'review.md', 'image.svg', 'image.png', 'clip.mp4', 'diagram.drawio', '我的系统架构图.md'];
-  test.beforeEach(() => {
+  test.beforeEach(({page}) => {
+    page.on('dialog', dialog => dialog.accept(''));
     directory = fs.mkdtempSync(path.join(__dirname, 'fixtures', 'favourites-'));
     base = `/${path.basename(directory)}/`;
     fs.writeFileSync(path.join(directory, 'notes.txt'), 'Favourite file');
@@ -18,6 +19,7 @@ module.exports = () => test.describe('File favourites', () => {
     fs.writeFileSync(path.join(directory, 'diagram.drawio'), '<mxfile><diagram><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel></diagram></mxfile>');
   });
   test.afterEach(async ({request}) => {
+    await request.delete(`${base}?mode=directory-favourite`);
     for (const name of files) await request.delete(`${base}${name}?mode=directory-favourite`);
     fs.rmSync(directory, {recursive: true, force: true});
   });
@@ -26,6 +28,59 @@ module.exports = () => test.describe('File favourites', () => {
     if (!await shortcut(page, name).isVisible()) await page.locator('.favourites-dropdown summary').click();
     return shortcut(page, name);
   };
+
+  test('prompts for an alias when adding the current directory or a list entry', async ({page}) => {
+    await page.goto(`${base}?view=list`);
+    for (const [selector, name, alias] of [
+      ['#directory-favourite-toggle', '', '工作目录'],
+      [`[data-directory-favourite-toggle="${base}notes.txt"]`, 'notes.txt', '阅读笔记']
+    ]) {
+      page.removeAllListeners('dialog');
+      page.once('dialog', async dialog => {
+        expect(dialog.type()).toBe('prompt');
+        expect(dialog.defaultValue()).toBe('');
+        await dialog.accept(alias);
+      });
+      await page.locator(selector).click();
+      await expect(shortcut(page, name).locator('a')).toHaveText(alias);
+      await page.reload();
+      await expect(shortcut(page, name).locator('a')).toHaveText(alias);
+    }
+  });
+
+  test('Markdown favourites prefill the document title and allow clearing it', async ({page}) => {
+    await page.goto(base + 'review.md');
+    const star = page.locator('#file-favourite-toggle');
+    for (const alias of ['Favourite file', '']) {
+      page.removeAllListeners('dialog');
+      page.once('dialog', async dialog => {
+        expect(dialog.defaultValue()).toBe('Favourite file');
+        await dialog.accept(alias);
+      });
+      await Promise.all([
+        page.waitForResponse(response => response.url().includes(
+          alias ? 'mode=directory-favourite-label' : 'mode=directory-favourite'
+        ) && response.request().method() === (alias ? 'POST' : 'PUT')),
+        star.click()
+      ]);
+      await page.goto(`${base}?view=list`);
+      await expect(shortcut(page, 'review.md').locator('a')).toHaveText(alias || `${path.basename(directory)}/review.md`);
+      await page.goto(base + 'review.md');
+      await star.click();
+      await expect(star).toHaveAttribute('aria-pressed', 'false');
+    }
+  });
+
+  test('cancelling the alias prompt leaves the file unbookmarked', async ({page}) => {
+    await page.goto(base + 'notes.txt');
+    page.removeAllListeners('dialog');
+    page.once('dialog', dialog => dialog.dismiss());
+    const star = page.locator('#file-favourite-toggle');
+    await star.click();
+    await expect(star).toHaveAttribute('aria-pressed', 'false');
+    await page.reload();
+    await expect(star).toHaveAttribute('aria-pressed', 'false');
+  });
 
   test('searches aliases and real filenames by Chinese, full pinyin and initials', async ({page}) => {
     const filename = '我的系统架构图.md';
@@ -119,7 +174,10 @@ module.exports = () => test.describe('File favourites', () => {
     const viewerStar = page.locator('#gallery-favourite-toggle');
     await expect(page.locator('#image-lightbox')).toBeVisible();
     await page.locator('.lightbox-image').click();
+    page.removeAllListeners('dialog');
+    page.on('dialog', dialog => dialog.accept('精选图片'));
     await viewerStar.click();
+    await expect(shortcut(page, 'image.svg').locator('a')).toHaveText('精选图片');
     await expect(viewerStar).toHaveAttribute('aria-pressed', 'true');
     await page.locator('#preview-previous').click();
     await expect(viewerStar).toHaveAttribute('aria-pressed', 'false');
