@@ -2818,15 +2818,17 @@ fn batch_images_with_access(
     for name in files {
         let outcome = (|| -> io::Result<()> {
             if !is_file_name(name) {
-                return Err(io::Error::other("请选择当前目录的文件"));
+                return Err(io::Error::other("请选择当前目录的文件或文件夹"));
             }
             let source = directory.join(name);
-            if !source.is_file() {
-                return Err(io::Error::other("文件不存在"));
+            if !source.is_file() && !source.is_dir() {
+                return Err(io::Error::other("文件或文件夹不存在"));
             }
             let source_key = fs::canonicalize(&source)?;
+            let is_dir = source.is_dir();
             if !access.allows(&source_key)
-                || (is_gallery_media(&source)
+                || (!is_dir
+                    && is_gallery_media(&source)
                     && matches!(
                         &action,
                         BatchImageAction::Move { .. } | BatchImageAction::Delete { .. }
@@ -2846,7 +2848,8 @@ fn batch_images_with_access(
                     let target_directory = root.join(&target_relative);
                     if !access.allows_request(root, &target_relative)
                         || !access.allows(&target_directory)
-                        || (is_gallery_media(&source)
+                        || (!is_dir
+                            && is_gallery_media(&source)
                             && !access.allows(&target_directory.join("gallery-comments.json")))
                     {
                         return Err(io::Error::other("目标目录或评论文件超出分享范围"));
@@ -2858,7 +2861,16 @@ fn batch_images_with_access(
                     if target_directory == directory {
                         return Err(io::Error::other("请选择其他目录"));
                     }
+                    if is_dir && target_directory.starts_with(&source_key) {
+                        return Err(io::Error::other("不能将文件夹移动到自身或其子目录中"));
+                    }
                     let target = available_destination_path(&target_directory, OsStr::new(name))?;
+                    if is_dir {
+                        fs::rename(&source, &target)?;
+                        result.affected += 1;
+                        state.relocate_directory_state(&source, Some(&target))?;
+                        return Ok(());
+                    }
                     let liked = state.is_favourite(&source_key)?;
                     let tag = state.image_tag(&source_key)?;
                     fs::rename(&source, &target)?;
@@ -2875,6 +2887,12 @@ fn batch_images_with_access(
                     }
                 }
                 BatchImageAction::Delete { .. } => {
+                    if is_dir {
+                        fs::remove_dir_all(&source)?;
+                        result.affected += 1;
+                        state.relocate_directory_state(&source, None)?;
+                        return Ok(());
+                    }
                     fs::remove_file(&source)?;
                     result.affected += 1;
                     changed_paths.push(source_key);
@@ -3175,7 +3193,7 @@ fn read_directory_entries(
         let is_video = metadata.as_ref().is_some_and(|m| m.is_file()) && is_video_file(&path);
         let canonical = metadata
             .as_ref()
-            .is_some_and(|m| m.is_file())
+            .is_some_and(|m| m.is_file() || m.is_dir())
             .then(|| fs::canonicalize(&path))
             .transpose()?;
         let (favourite, image_tag) = match canonical.as_deref() {
@@ -4351,7 +4369,7 @@ window.onDrawioViewerLoad = () => {
 "#;
 
 const GALLERY_ORGANISE_TOOLS: &str = r#"
-<div class="gallery-organise" id="gallery-organise" role="group" aria-label="筛选和批量操作文件">
+<div class="gallery-organise" id="gallery-organise" role="group" aria-label="筛选和批量操作文件及文件夹">
   <button id="select-images" type="button" disabled>多选</button>
   <span id="image-selection-count" role="status" hidden>已选 0 个文件</span>
   <button id="select-all-images" type="button" hidden>全选</button>
@@ -4508,13 +4526,13 @@ h1 { position:relative; z-index:1; margin:0; overflow-wrap:anywhere; font-family
 .image-selection-indicator { display:none; }
 .listing.selecting-images .image-selection-indicator { position:absolute; z-index:3; top:.5rem; right:.5rem; display:grid; place-items:center; width:1.5rem; height:1.5rem; border:2px solid #fff; border-radius:50%; color:transparent; background:rgba(0,0,0,.4); font:700 .9rem/1 ui-sans-serif,sans-serif; pointer-events:none; }
 .listing.selecting-images .image-selected .image-selection-indicator { color:#fff; background:var(--accent); }
-.gallery.selecting-images .entry.file.image-selected::before { position:absolute; z-index:3; inset:0; border:3px solid var(--accent); border-radius:inherit; content:""; pointer-events:none; }
-.listing.selecting-images .entry.file .glyph { cursor:pointer; }
+.gallery.selecting-images .entry.image-selected::before { position:absolute; z-index:3; inset:0; border:3px solid var(--accent); border-radius:inherit; content:""; pointer-events:none; }
+.listing.selecting-images .entry .glyph { cursor:pointer; }
 .listing:not(.gallery).selecting-images .image-selection-indicator { left:1.5rem; right:auto; top:50%; transform:translateY(-50%); border-color:var(--line); background:var(--surface); }
 .listing:not(.gallery).selecting-images .image-selected .image-selection-indicator { color:#fff; background:var(--accent); border-color:var(--accent); }
-.listing:not(.gallery).selecting-images .entry.file .glyph { visibility:hidden; }
+.listing:not(.gallery).selecting-images .entry { padding-left:3.6rem; }
 .listing:not(.gallery).selecting-images .image-selected { background:var(--accent-soft); }
-.gallery.selecting-images .entry.file > .folder-favourite-toggle { top:2.5rem; }
+.gallery.selecting-images .entry > .folder-favourite-toggle { top:2.5rem; }
 
 .gallery-organise #delete-images:not(:disabled) { border-color:color-mix(in srgb,#b42336 55%,var(--line)); color:light-dark(#a51d31,#ff9ba9); }
 .directory-notice { position:relative; z-index:1; margin:.75rem 0 0; color:var(--muted); font-size:.78rem; line-height:1.6; overflow-wrap:anywhere; }
@@ -4522,9 +4540,8 @@ h1 { position:relative; z-index:1; margin:0; overflow-wrap:anywhere; font-family
 .entry { position:relative; display:grid; grid-template-columns:2.55rem minmax(0,1fr) 5rem 6rem 1.5rem; align-items:center; gap:.85rem; min-height:4.25rem; padding:.7rem 1.2rem; border-top:1px solid var(--line); color:var(--ink); text-decoration:none; transition:background .15s ease,transform .18s cubic-bezier(.16,1,.3,1); }
 .entry:first-child { border-top:0; }
 .entry:hover { background:var(--accent-soft); transform:translateX(.2rem); }
-.folder-open { display:contents; color:inherit; text-decoration:none; }
-.file-open { display:grid; grid-template-columns:subgrid; grid-column:1/-1; grid-row:1; align-items:center; gap:inherit; min-width:0; color:inherit; text-decoration:none; }
-.gallery .file-open { grid-row:1/-1; grid-template-rows:subgrid; }
+.file-open,.folder-open { display:grid; grid-template-columns:subgrid; grid-column:1/-1; grid-row:1; align-items:center; gap:inherit; min-width:0; color:inherit; text-decoration:none; }
+.gallery .file-open,.gallery .folder-open { grid-row:1/-1; grid-template-rows:subgrid; }
 .listing.gallery .entry:is(.image,.video) .file-open { position:absolute; inset:0; display:block; }
 .entry:focus-within { background:var(--accent-soft); }
 .entry .arrow { display:none; }
@@ -4553,8 +4570,8 @@ h1 { position:relative; z-index:1; margin:0; overflow-wrap:anywhere; font-family
 .favourite-mark path { fill:currentColor; stroke:rgba(255,255,255,.9); stroke-width:.75; stroke-linejoin:round; }
 .gallery .favourite-mark { right:.45rem; bottom:.45rem; width:1.35rem; height:1.35rem; }
 .image-tag { position:absolute; left:.15rem; top:.15rem; padding:.15rem .3rem; border-radius:.3rem; color:#fff; background:#b42336; box-shadow:0 2px 7px rgba(0,0,0,.25); font:700 .52rem/1.2 ui-sans-serif,-apple-system,sans-serif; white-space:nowrap; pointer-events:none; }
-.entry.file:not(.image):not(.video) .image-tag { left:-.35rem; top:-.5rem; }
-.entry.file:not(.image):not(.video) .favourite-mark { right:-.45rem; bottom:-.35rem; }
+.entry:not(.image):not(.video) .image-tag { left:-.35rem; top:-.5rem; }
+.entry:not(.image):not(.video) .favourite-mark { right:-.45rem; bottom:-.35rem; }
 .gallery .image-tag { left:.4rem; top:.4rem; padding:.25rem .4rem; font-size:.65rem; }
 .entry:is(.image,.video) .glyph img { width:100%; height:100%; object-fit:cover; object-position:center; display:block; pointer-events:none; transition:transform .2s ease; }
 .entry:is(.image,.video) .glyph img:not([src]) { visibility:hidden; }
@@ -7220,6 +7237,190 @@ mod tests {
         for name in ["data.json", "cat.svg", "keep.txt", "folder"] {
             assert!(root.join(name).exists());
         }
+    }
+
+    #[test]
+    fn batch_folder_actions_preserve_contents_and_nested_marks() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(directory.path()).unwrap();
+        let state = StateStore::new(None).unwrap();
+        let folder = root.join("folder");
+        fs::create_dir_all(folder.join("nested")).unwrap();
+        fs::create_dir_all(root.join("target/folder")).unwrap();
+        fs::create_dir(root.join("folder-other")).unwrap();
+        fs::write(folder.join("nested/child.txt"), "content").unwrap();
+        fs::write(folder.join("gallery-comments.json"), "comments").unwrap();
+        for name in ["folder", "folder/nested/child.txt", "folder-other"] {
+            state.set_favourite(&root.join(name), true).unwrap();
+            state.set_image_tag(&root.join(name), Some(3)).unwrap();
+        }
+        state
+            .set_directory_favourite(&folder.join("nested"), true)
+            .unwrap();
+        state
+            .set_directory_favourite_label(&folder.join("nested"), "收藏")
+            .unwrap();
+        let files = || vec!["folder".to_owned()];
+        let marked = batch_images(
+            &root,
+            &root,
+            &state,
+            BatchImageAction::Mark {
+                files: files(),
+                mark: ImageFilter::Tag2,
+            },
+        );
+        assert_eq!(marked.affected, 1);
+        assert!(marked.errors.is_empty());
+        let entries =
+            read_directory_entries(&root, &root, Path::new(""), &state, &Access::default())
+                .unwrap();
+        let entry = entries.iter().find(|entry| entry.name == "folder").unwrap();
+        assert_eq!(entry.favourite, "true");
+        assert_eq!(entry.image_tag, "2");
+        let cleared = batch_images(
+            &root,
+            &root,
+            &state,
+            BatchImageAction::ClearMark {
+                files: files(),
+                filter: ImageFilter::Favourite,
+            },
+        );
+        assert_eq!(cleared.affected, 1);
+        assert!(!state.is_favourite(&folder).unwrap());
+        assert_eq!(state.image_tag(&folder).unwrap(), Some(2));
+        assert!(state
+            .is_favourite(&folder.join("nested/child.txt"))
+            .unwrap());
+        for destination in ["/folder/", "/folder/nested/"] {
+            let result = batch_images(
+                &root,
+                &root,
+                &state,
+                BatchImageAction::Move {
+                    files: files(),
+                    directory: destination.into(),
+                },
+            );
+            assert_eq!(result.affected, 0);
+            assert_eq!(result.errors.len(), 1);
+        }
+        let moved = batch_images(
+            &root,
+            &root,
+            &state,
+            BatchImageAction::Move {
+                files: files(),
+                directory: "/target/".into(),
+            },
+        );
+        assert_eq!(moved.affected, 1);
+        assert!(moved.errors.is_empty(), "{:?}", moved.errors);
+        let target = root.join("target/folder_2");
+        assert_eq!(
+            fs::read_to_string(target.join("nested/child.txt")).unwrap(),
+            "content"
+        );
+        assert_eq!(
+            fs::read_to_string(target.join("gallery-comments.json")).unwrap(),
+            "comments"
+        );
+        assert!(!folder.exists());
+        assert_eq!(state.image_tag(&folder).unwrap(), None);
+        assert_eq!(state.image_tag(&target).unwrap(), Some(2));
+        assert!(state
+            .is_favourite(&target.join("nested/child.txt"))
+            .unwrap());
+        assert!(state
+            .is_directory_favourite(&target.join("nested"))
+            .unwrap());
+        assert_eq!(
+            state
+                .directory_favourite_label(&target.join("nested"))
+                .unwrap()
+                .as_deref(),
+            Some("收藏")
+        );
+        let deleted = batch_images(
+            &root,
+            &root.join("target"),
+            &state,
+            BatchImageAction::Delete {
+                files: vec!["folder_2".into()],
+            },
+        );
+        assert_eq!(deleted.affected, 1);
+        assert!(deleted.errors.is_empty());
+        assert!(!target.exists());
+        assert_eq!(state.image_tag(&target).unwrap(), None);
+        assert!(!state
+            .is_favourite(&target.join("nested/child.txt"))
+            .unwrap());
+        assert!(!state
+            .is_directory_favourite(&target.join("nested"))
+            .unwrap());
+        assert!(state
+            .directory_favourite_label(&target.join("nested"))
+            .unwrap()
+            .is_none());
+        assert!(state.is_favourite(&root.join("folder-other")).unwrap());
+        assert_eq!(
+            state.image_tag(&root.join("folder-other")).unwrap(),
+            Some(3)
+        );
+        assert!(root.join("target/folder").is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn batch_folder_symlinks_keep_their_target_and_its_marks() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(directory.path()).unwrap();
+        let state = StateStore::new(None).unwrap();
+        let target = root.join("target");
+        fs::create_dir(&target).unwrap();
+        fs::create_dir(root.join("destination")).unwrap();
+        fs::write(target.join("child.txt"), "keep").unwrap();
+        state.set_image_tag(&target, Some(2)).unwrap();
+        std::os::unix::fs::symlink(&target, root.join("link")).unwrap();
+        state
+            .set_directory_favourite(&root.join("link"), true)
+            .unwrap();
+        let moved = batch_images(
+            &root,
+            &root,
+            &state,
+            BatchImageAction::Move {
+                files: vec!["link".into()],
+                directory: "/destination/".into(),
+            },
+        );
+        assert_eq!(moved.affected, 1);
+        assert!(moved.errors.is_empty());
+        assert_eq!(state.image_tag(&target).unwrap(), Some(2));
+        assert!(state
+            .is_directory_favourite(&root.join("destination/link"))
+            .unwrap());
+        let deleted = batch_images(
+            &root,
+            &root.join("destination"),
+            &state,
+            BatchImageAction::Delete {
+                files: vec!["link".into()],
+            },
+        );
+        assert_eq!(deleted.affected, 1);
+        assert!(deleted.errors.is_empty());
+        assert!(!root.join("destination/link").exists());
+        assert_eq!(
+            fs::read_to_string(target.join("child.txt")).unwrap(),
+            "keep"
+        );
+        assert_eq!(state.image_tag(&target).unwrap(), Some(2));
+        assert!(!state
+            .is_directory_favourite(&root.join("destination/link"))
+            .unwrap());
     }
 
     #[test]

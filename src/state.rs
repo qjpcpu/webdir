@@ -324,6 +324,44 @@ impl StateStore {
         self.clear_images(&[path.to_path_buf()], true, true, true)
     }
 
+    pub(crate) fn relocate_directory_state(
+        &self,
+        source: &Path,
+        destination: Option<&Path>,
+    ) -> io::Result<()> {
+        let source = path_bytes(source);
+        let mut lower = source.to_vec();
+        lower.push(std::path::MAIN_SEPARATOR as u8);
+        let mut upper = lower.clone();
+        *upper.last_mut().unwrap() += 1;
+        let mut connection = self.connection.lock().unwrap();
+        let transaction = connection.transaction().map_err(sqlite_error)?;
+        for table in [
+            "favourites",
+            "image_tags",
+            "directory_favourites",
+            "directory_favourite_labels",
+            "image_similarity_features",
+            "image_similarity_orders",
+        ] {
+            let range = "WHERE path = ?1 OR (path >= ?2 AND path < ?3)";
+            if let Some(destination) = destination {
+                transaction.execute(
+                    &format!("UPDATE OR REPLACE {table} SET path = CAST(?4 || substr(path, ?5) AS BLOB) {range}"),
+                    params![source, lower, upper, path_bytes(destination), source.len() as i64 + 1],
+                ).map_err(sqlite_error)?;
+            } else {
+                transaction
+                    .execute(
+                        &format!("DELETE FROM {table} {range}"),
+                        params![source, lower, upper],
+                    )
+                    .map_err(sqlite_error)?;
+            }
+        }
+        transaction.commit().map_err(sqlite_error)
+    }
+
     pub(crate) fn clear_images(
         &self,
         paths: &[PathBuf],

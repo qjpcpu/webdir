@@ -129,7 +129,7 @@
       if (entry.listSrc) glyph = `<img data-list-src="${escape(entry.listSrc)}" data-gallery-src="${escape(entry.gallerySrc)}" alt="" decoding="async" draggable="false">`;
       else if (entry.isVideo) glyph = '<svg viewBox="0 0 24 18"><rect x="1" y="1" width="22" height="16" rx="3"></rect><path d="m10 5.5 6 3.5-6 3.5Z"></path></svg>';
       if (entry.isVideo) glyph += '<span class="video-badge" title="视频">▶ 视频</span>';
-      if (!entry.isDir) glyph += `<span class="favourite-mark" title="已点赞" hidden>${heart}</span><span class="image-tag" hidden></span>`;
+      glyph += `<span class="favourite-mark" title="已点赞" hidden>${heart}</span><span class="image-tag" hidden></span>`;
       const content = `<span class="glyph" aria-hidden="true">${glyph}</span><span class="entry-name">${escape(entry.name)}</span><span class="kind">${escape(entry.kind)}</span><span class="detail">${escape(entry.fileSize)}</span><span class="arrow" aria-hidden="true">→</span>`;
       node.innerHTML = `<a class="${entry.isDir ? 'folder-open' : 'file-open'}">${content}</a>`;
       const button = document.createElement('button');
@@ -141,13 +141,11 @@
       button.title = entry.directoryFavourite ? '移出收藏夹' : '添加到收藏夹';
       button.setAttribute('aria-label', `${button.title}：${entry.name}`);
       node.append(button);
-      if (!entry.isDir) {
-        const indicator = document.createElement('span');
-        indicator.className = 'image-selection-indicator';
-        indicator.setAttribute('aria-hidden', 'true');
-        indicator.textContent = '✓';
-        node.append(indicator);
-      }
+      const indicator = document.createElement('span');
+      indicator.className = 'image-selection-indicator';
+      indicator.setAttribute('aria-hidden', 'true');
+      indicator.textContent = '✓';
+      node.append(indicator);
       const image = node.querySelector('.glyph img');
       image?.addEventListener('error', () => { image.hidden = true; image.closest('.glyph').classList.add('thumbnail-error'); });
       return node;

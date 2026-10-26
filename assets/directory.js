@@ -409,9 +409,8 @@ let selectedImageFilter = localStorage.getItem(IMAGE_FILTER_KEY) || 'all';
 if (!filterLabels[selectedImageFilter]) selectedImageFilter = 'all';
 const refreshImageFilters = () => {
   if (!imageFilter) return;
-  const entries = directoryEntries.filter(entry => !entry.isDir);
   const available = new Set(['all', selectedImageFilter]);
-  entries.forEach(entry => {
+  directoryEntries.forEach(entry => {
     if (entry.favourite === 'true') available.add('favourite');
     if (entry.imageTag) available.add(`tag${entry.imageTag}`);
   });
@@ -478,6 +477,8 @@ const sortDirectory = async () => {
   }
   directoryViewModel.schedule(true);
 };
+const matchesEntryMark = entry => selectedImageFilter === 'all' || (selectedImageFilter === 'favourite'
+  ? entry.favourite === 'true' : `tag${entry.imageTag}` === selectedImageFilter);
 const filterDirectory = () => {
   const query = fileSearchInput.value.trim().toLowerCase();
   const markedOnly = !!imageFilter && selectedImageFilter !== 'all';
@@ -485,9 +486,7 @@ const filterDirectory = () => {
   let fileCount = 0;
   directoryEntries.forEach(entry => {
     const matchesName = entry.name.toLowerCase().includes(query);
-    const matchesMark = !markedOnly || (selectedImageFilter === 'favourite'
-      ? entry.favourite === 'true' : `tag${entry.imageTag}` === selectedImageFilter);
-    entry.hidden = !matchesName || !matchesMark || (listing.classList.contains('gallery') && entry.isEmptyDir);
+    entry.hidden = !matchesName || !matchesEntryMark(entry) || (listing.classList.contains('gallery') && entry.isEmptyDir && !listing.classList.contains('selecting-images'));
     if (entry.hidden) return;
     if (entry.isDir) directoryCount++;
     else fileCount++;
@@ -498,7 +497,7 @@ const filterDirectory = () => {
   const otherHeading = listing.querySelector('.gallery-other-heading');
   if (otherHeading) otherHeading.hidden = !directoryEntries.some(entry => !entry.isDir && !entry.isImage && !entry.isVideo && !entry.hidden);
   directoryEmpty.querySelector('p').textContent = markedOnly
-    ? '没有符合筛选条件的文件'
+    ? '没有符合筛选条件的文件或文件夹'
     : query ? '没有匹配的文件或目录' : '这个目录是空的';
   directoryViewModel.schedule(true);
   document.dispatchEvent(new Event('gallery-filter-change'));
@@ -717,8 +716,12 @@ if (galleryToggle) {
   const REVIEW_IDENTITY_KEY = 'webdir-review-identity';
   const mediaModel = () => directoryEntries.filter(entry => entry.isImage || entry.isVideo);
   const visibleMedia = () => mediaModel().filter(entry => !entry.hidden);
-  const visibleFiles = () => directoryEntries.filter(entry => !entry.isDir && !entry.hidden);
-  const batchImages = () => visibleFiles().filter(entry => !selectingImages || selectedImages.has(entry));
+  const visibleEntries = () => directoryEntries.filter(entry => !entry.hidden);
+  const describeEntries = entries => {
+    const folders = entries.filter(entry => entry.isDir).length;
+    return folders ? `${entries.length} 项（含 ${folders} 个文件夹）` : `${entries.length} 个文件`;
+  };
+  const batchImages = () => visibleEntries().filter(entry => !selectingImages || selectedImages.has(entry));
   let previewTrigger = null;
   let deleting = false;
   let liking = 0;
@@ -813,8 +816,8 @@ if (galleryToggle) {
     directoryViewModel.onRefresh = (node, entry) => {
       const selected = selectedImages.has(entry);
       node.classList.toggle('image-selected', selected);
-      const link = node.querySelector('.file-open') || node;
-      if (selectingImages && !entry.isDir) {
+      const link = node.querySelector('.file-open, .folder-open') || node;
+      if (selectingImages) {
         link.setAttribute('role', 'checkbox');
         link.setAttribute('aria-checked', String(selected));
       } else {
@@ -823,10 +826,11 @@ if (galleryToggle) {
       }
     };
     for (const node of directoryViewModel.nodes.values()) directoryViewModel.refresh(directoryViewModel.fromNode(node));
-    selectionCount.textContent = `已选 ${selectedImages.size} 个文件`;
-    selectAllImagesButton.disabled = moving || visibleFiles().length === selectedImages.size;
+    selectionCount.textContent = `已选 ${describeEntries([...selectedImages])}`;
+    selectAllImagesButton.disabled = moving || visibleEntries().length === selectedImages.size;
     clearSelectionButton.disabled = moving || selectedImages.size === 0;
-    selectImagesButton.disabled = moving || visibleFiles().length === 0;
+    selectImagesButton.disabled = moving || !directoryEntries.some(entry =>
+      matchesEntryMark(entry) && entry.name.toLowerCase().includes(fileSearchInput.value.trim().toLowerCase()));
     const count = batchImages().length;
     for (const button of [moveImagesButton, deleteImagesButton, clearImageMarksButton, markFilesSelect]) {
       button.disabled = count === 0 || moving || liking > 0 || marking > 0 || deleting;
@@ -845,6 +849,7 @@ if (galleryToggle) {
     selectingImages = enabled;
     selectedImages.clear();
     listing.classList.toggle('selecting-images', enabled);
+    filterDirectory();
     selectImagesButton.hidden = enabled;
     for (const control of [selectionCount, selectAllImagesButton, clearSelectionButton, finishSelectionButton]) control.hidden = !enabled;
     updateImageControls();
@@ -858,7 +863,7 @@ if (galleryToggle) {
   selectImagesButton.addEventListener('click', () => setImageSelection(true));
   finishSelectionButton.addEventListener('click', () => setImageSelection(false));
   selectAllImagesButton.addEventListener('click', () => {
-    visibleFiles().forEach(entry => selectedImages.add(entry));
+    visibleEntries().forEach(entry => selectedImages.add(entry));
     updateImageControls();
   });
   clearSelectionButton.addEventListener('click', () => {
@@ -1657,19 +1662,23 @@ if (galleryToggle) {
   clearMarksDialog.id = 'clear-marks-dialog';
   clearMarksDialog.setAttribute('aria-labelledby', 'clear-marks-title');
   clearMarksDialog.setAttribute('aria-describedby', 'clear-marks-description');
-  clearMarksDialog.innerHTML = '<h2 id="clear-marks-title">取消这些文件的标记？</h2><p id="clear-marks-description"></p><div class="delete-actions"><button type="button" id="clear-marks-cancel" autofocus>取消</button><button type="button" id="clear-marks-confirm">确认取消标记</button></div>';
+  clearMarksDialog.innerHTML = '<h2 id="clear-marks-title">取消这些项目的标记？</h2><p id="clear-marks-description"></p><div class="delete-actions"><button type="button" id="clear-marks-cancel" autofocus>取消</button><button type="button" id="clear-marks-confirm">确认取消标记</button></div>';
   document.body.append(clearMarksDialog);
   let batchFiles = [];
   let batchFilter = 'all';
   const captureBatchFiles = () => batchImages().map(entryName);
   const batchScope = () => selectingImages ? '已选的' : '当前筛选的';
+  const batchEntries = files => {
+    const names = new Set(files);
+    return directoryEntries.filter(entry => names.has(entry.name));
+  };
   const runBatch = async action => {
     if (!action.files.length || moving || liking || marking || deleting) return;
     moving = true;
     updateImageControls();
     const descriptions = {move: '移动', delete: '删除', 'clear-mark': '取消标记', mark: '标记'};
     const description = descriptions[action.action];
-    directoryNotice.textContent = `正在${description} ${action.files.length} 个文件…`;
+    directoryNotice.textContent = `正在${description} ${describeEntries(batchEntries(action.files))}…`;
     directoryNotice.hidden = false;
     try {
       const url = new URL(location.href);
@@ -1679,7 +1688,7 @@ if (galleryToggle) {
       });
       if (!response.ok) throw new Error(await response.text());
       const result = await response.json();
-      let notice = `已${description} ${result.affected} 个文件`;
+      let notice = `已${description} ${result.affected} ${batchEntries(action.files).some(entry => entry.isDir) ? '项' : '个文件'}`;
       if (result.directory_removed) notice += '，已删除空目录';
       if (result.errors.length) notice += `；未完成的操作：${result.errors.join('；')}`;
       if (result.directory_removed) {
@@ -1699,9 +1708,9 @@ if (galleryToggle) {
   moveImagesButton.addEventListener('click', () => {
     batchFiles = captureBatchFiles();
     if (!batchFiles.length || moving) return;
-    moveDialog.querySelector('.move-description').textContent = `移动${batchScope()} ${batchFiles.length} 个文件`;
-    moveDialog.querySelector('#move-title').textContent = '移动这些文件';
-    moveConfirm.textContent = '移动文件';
+    moveDialog.querySelector('.move-description').textContent = `移动${batchScope()} ${describeEntries(batchEntries(batchFiles))}`;
+    moveDialog.querySelector('#move-title').textContent = '移动所选项目';
+    moveConfirm.textContent = '确认移动';
     selectedMovePath = null;
     moveTree.textContent = '正在打开目录…';
     moveTarget.textContent = '请选择目标文件夹';
@@ -1729,8 +1738,8 @@ if (galleryToggle) {
     batchFiles = captureBatchFiles();
     if (!batchFiles.length || moving) return;
     batchDeleteError.hidden = true;
-    batchDeleteDialog.querySelector('#batch-delete-title').textContent = '删除这些文件？';
-    batchDeleteDialog.querySelector('#batch-delete-description').textContent = `${batchScope()} ${batchFiles.length} 个文件将从磁盘中删除，此操作无法撤销。`;
+    batchDeleteDialog.querySelector('#batch-delete-title').textContent = '删除这些项目？';
+    batchDeleteDialog.querySelector('#batch-delete-description').textContent = `${batchScope()} ${describeEntries(batchEntries(batchFiles))}将从磁盘中删除${batchEntries(batchFiles).some(entry => entry.isDir) ? '，文件夹内的所有内容也会删除' : ''}，此操作无法撤销。`;
     batchDeleteDialog.showModal();
   });
   batchDeleteCancel.addEventListener('click', () => batchDeleteDialog.close());
@@ -1748,8 +1757,8 @@ if (galleryToggle) {
     if (!batchFiles.length || moving) return;
     batchFilter = selectedImageFilter;
     const marks = batchFilter === 'all' ? '喜欢和数字标记' : batchFilter === 'favourite' ? '喜欢标记' : '数字标记';
-    clearMarksDialog.querySelector('#clear-marks-title').textContent = '取消这些文件的标记？';
-    clearMarksDialog.querySelector('#clear-marks-description').textContent = `将取消${batchScope()} ${batchFiles.length} 个文件的${marks}，文件会保留。`;
+    clearMarksDialog.querySelector('#clear-marks-title').textContent = '取消这些项目的标记？';
+    clearMarksDialog.querySelector('#clear-marks-description').textContent = `将取消${batchScope()} ${describeEntries(batchEntries(batchFiles))}的${marks}，文件和文件夹会保留。`;
     clearMarksDialog.showModal();
   });
   clearMarksDialog.querySelector('#clear-marks-cancel').addEventListener('click', () => clearMarksDialog.close());
@@ -2378,7 +2387,7 @@ if (galleryToggle) {
 
   listing.addEventListener('click', event => {
     if (event.target.closest('button')) return;
-    const entry = directoryViewModel.fromNode(event.target.closest('.entry.file'));
+    const entry = directoryViewModel.fromNode(event.target.closest('.entry'));
     if (!entry) return;
     if (selectingImages) {
       event.preventDefault();
@@ -2389,7 +2398,7 @@ if (galleryToggle) {
     }
   });
   listing.addEventListener('keydown', event => {
-    const entry = directoryViewModel.fromNode(event.target.closest('.entry.file'));
+    const entry = directoryViewModel.fromNode(event.target.closest('.entry'));
     if (!selectingImages || !entry || event.key !== ' ' || event.target.getAttribute('role') !== 'checkbox') return;
     event.preventDefault();
     toggleImageSelection(entry);
