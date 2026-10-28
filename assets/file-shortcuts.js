@@ -121,12 +121,7 @@
     const search = async () => {
       const query = input.value.trim();
       const currentRequest = ++requestId;
-      if (!query) {
-        results.replaceChildren();
-        status.textContent = '输入文件、文件夹名或路径开始搜索';
-        return;
-      }
-      status.textContent = query.includes('/') ? '正在按路径搜索…' : '正在从根目录搜索…';
+      if (!query) return;
       try {
         const url = new URL(location.pathname, location.origin);
         url.searchParams.set('mode', 'file-search');
@@ -155,6 +150,11 @@
     input.addEventListener('input', () => {
       requestId++;
       clearTimeout(timer);
+      results.replaceChildren();
+      selected = -1;
+      const query = input.value.trim();
+      status.textContent = !query ? '输入文件、文件夹名或路径开始搜索'
+        : query.includes('/') ? '正在按路径搜索…' : '正在从根目录搜索…';
       timer = setTimeout(search, 220);
     });
     input.addEventListener('keydown', event => {
